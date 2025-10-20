@@ -21,28 +21,12 @@ namespace PhysicsSimulation
             var ctx = Helpers.CreateGLContextAndProgram();
 
             // Load scene using reflection
-            Objects.Scene scene;
-            try
-            {
-                Type? sceneType = Type.GetType("PhysicsSimulation." + sceneName);
-                if (sceneType == null)
-                {
-                    throw new Exception("Scene type not found: " + sceneName);
-                }
-                scene = (Objects.Scene)Activator.CreateInstance(sceneType);
-                Console.WriteLine("Loaded scene: " + sceneName);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to load {sceneName}: {ex.Message}");
-                Console.WriteLine(ex.StackTrace);
-                scene = new Objects.Scene();
-            }
+            Scene scene = LoadScene(sceneName);
 
             // Main loop
             var stopwatch = Stopwatch.StartNew();
             double lastTime = stopwatch.Elapsed.TotalSeconds;
-            window.RenderFrame += (args) =>
+            window.RenderFrame += (_) =>
             {
                 double currentTime = stopwatch.Elapsed.TotalSeconds;
                 float dt = (float)(currentTime - lastTime);
@@ -58,6 +42,24 @@ namespace PhysicsSimulation
             };
 
             window.Run();
+        }
+
+        private static Scene LoadScene(string sceneName)
+        {
+            try
+            {
+                Type? sceneType = Type.GetType($"PhysicsSimulation.{sceneName}");
+                if (sceneType == null)
+                    throw new Exception($"Scene type not found: {sceneName}");
+                Console.WriteLine($"Loaded scene: {sceneName}");
+                return (Scene)Activator.CreateInstance(sceneType)!;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load {sceneName}: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                return new Scene();
+            }
         }
     }
 }

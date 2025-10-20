@@ -1,7 +1,9 @@
 ﻿using System;
 using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.Common;
+using System.Collections.Generic;
 
 namespace PhysicsSimulation
 {
@@ -68,6 +70,28 @@ namespace PhysicsSimulation
             int vbo = GL.GenBuffer();
 
             return (program, vbo);
+        }
+
+        public static List<Vector2> PadWithDuplicates(List<Vector2> verts, int targetLen)
+        {
+            if (verts.Count == 0)
+                return new List<Vector2>(new Vector2[targetLen]);
+
+            if (verts.Count >= targetLen)
+            {
+                var step = verts.Count / (float)targetLen;
+                return Enumerable.Range(0, targetLen).Select(i => verts[(int)(i * step)]).ToList();
+            }
+
+            var newVerts = new List<Vector2>();
+            int q = targetLen / verts.Count;
+            int r = targetLen % verts.Count;
+            for (int i = 0; i < verts.Count; i++)
+            {
+                int repeats = q + (i < r ? 1 : 0);
+                newVerts.AddRange(Enumerable.Repeat(verts[i], repeats));
+            }
+            return newVerts;
         }
     }
 }
