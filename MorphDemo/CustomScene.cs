@@ -14,6 +14,10 @@ namespace PhysicsSimulation
             var t1 = new Text("PHYSICS", x: -0.7f, y: 0.6f, fontSize: 0.1f, color: new Vector3(0.2f, 0.7f, 1f));
             var t2 = new Text("SIMULATION", x: -0.8f, y: 0.4f, fontSize: 0.08f, color: new Vector3(1f, 0.5f, 0.2f));
             var t3 = new Text("BENCHMARK", x: -0.9f, y: 0.2f, fontSize: 0.09f, color: new Vector3(0.8f, 0.2f, 0.9f));
+            
+            var alph1 = new Text("ABCDEFGHIJKLMNOPQRSTUVWXYZ", x: 0.0f, y: 0.1f, fontSize: 0.09f, color: new Vector3(0.8f, 0.2f, 0.9f));
+            var alph2 = new Text("abcdefghijklmnopqrstuvwxyz", x: 0.0f, y: 0.0f, fontSize: 0.09f, color: new Vector3(0.8f, 0.2f, 0.9f));
+            Add(alph1.Draw(), alph2.Draw());
 
             Add(t1.Draw(1f), t2.Draw(1f), t3.Draw(1f));
             Wait(2f);

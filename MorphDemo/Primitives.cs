@@ -128,19 +128,23 @@ namespace PhysicsSimulation
         protected static List<Vector3> PrepareDrawVerts(List<Vector3> verts, bool filled)
         {
             if (verts.Count < 2) return new List<Vector3>();
+
+            // Ensure the contour is closed
+            var closedVerts = new List<Vector3>(verts);
+            if (verts[0] != verts[^1])
+                closedVerts.Add(verts[0]);
+
             if (filled)
             {
-                if (verts.Count < 3) return new List<Vector3>();
-                var centroid = verts.Aggregate(Vector3.Zero, (s, v) => s + v) / verts.Count;
-                var fan = new List<Vector3>(verts.Count + 1) { centroid };
-                fan.AddRange(verts);
+                if (closedVerts.Count < 3) return new List<Vector3>();
+                var centroid = closedVerts.Aggregate(Vector3.Zero, (s, v) => s + v) / closedVerts.Count;
+                var fan = new List<Vector3>(closedVerts.Count + 1) { centroid };
+                fan.AddRange(closedVerts);
                 return fan;
             }
             else
             {
-                var lines = new List<Vector3>(verts);
-                if (lines.Count > 0 && lines[^1] != lines[0]) lines.Add(lines[0]);
-                return lines;
+                return closedVerts;
             }
         }
 
@@ -374,9 +378,8 @@ namespace PhysicsSimulation
 
         private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, int program, int vbo)
         {
-            // compute flattened source vertices for this character
-            var flat = contours.SelectMany(ct => ct).ToList();
-            if (flat.Count == 0) return;
+            if (contours == null || contours.Count == 0)
+                return;
 
             // key is index to separate identical characters in different positions
             int key = index;
@@ -386,31 +389,53 @@ namespace PhysicsSimulation
                 _charCache[key] = cache;
             }
 
-            bool dirty = cache.CachedVerts.Length != flat.Count || cache.C != c;
-            // mark dirty if parent's transform changed
-            if (!dirty) dirty = cache.LastParentX != X || cache.LastParentY != Y || cache.LastParentScale != Scale || cache.LastParentRotation != Rotation;
+            bool dirty = cache.C != c ||
+                         cache.LastParentX != X ||
+                         cache.LastParentY != Y ||
+                         cache.LastParentScale != Scale ||
+                         cache.LastParentRotation != Rotation;
+
             if (dirty)
             {
-                // build transformed vertices
-                var transformed = new Vector3[flat.Count];
+                // rebuild cached vertices for each contour separately
+                var allTransformed = new List<Vector3>();
                 float cos = MathF.Cos(Rotation) * Scale;
                 float sin = MathF.Sin(Rotation) * Scale;
-                for (int i = 0; i < flat.Count; i++)
+
+                foreach (var contour in contours)
                 {
-                    var v = flat[i];
-                    transformed[i] = new Vector3(v.X * cos - v.Y * sin + X, v.X * sin + v.Y * cos + Y, 0f);
+                    foreach (var v in contour)
+                    {
+                        allTransformed.Add(new Vector3(v.X * cos - v.Y * sin + X, v.X * sin + v.Y * cos + Y, 0f));
+                    }
                 }
 
-                cache.CachedVerts = transformed;
+                cache.CachedVerts = allTransformed.ToArray();
                 cache.C = c;
-                cache.LastParentX = X; cache.LastParentY = Y; cache.LastParentScale = Scale; cache.LastParentRotation = Rotation;
+                cache.LastParentX = X;
+                cache.LastParentY = Y;
+                cache.LastParentScale = Scale;
+                cache.LastParentRotation = Rotation;
             }
 
-            // prepare draw verts
-            var drawList = new List<Vector3>(cache.CachedVerts);
-            var drawVerts = PrepareDrawVerts(drawList, Filled);
-            RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+            // Render each contour separately
+            float cosT = MathF.Cos(Rotation) * Scale;
+            float sinT = MathF.Sin(Rotation) * Scale;
+
+            foreach (var contour in contours)
+            {
+                if (contour.Count < 2)
+                    continue;
+
+                var transformed = contour
+                    .Select(v => new Vector3(v.X * cosT - v.Y * sinT + X, v.X * sinT + v.Y * cosT + Y, 0f))
+                    .ToList();
+
+                var drawVerts = PrepareDrawVerts(transformed, Filled);
+                RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+            }
         }
+
 
         private void RenderContours(List<List<Vector2>> contours, int program, int vbo)
         {
