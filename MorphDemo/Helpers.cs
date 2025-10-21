@@ -1,5 +1,4 @@
-﻿// Helpers.cs
-using OpenTK.Graphics.OpenGL4;
+﻿using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.Common;
@@ -10,6 +9,9 @@ namespace PhysicsSimulation
         // --- PadWithDuplicates для вершин ---
         public static List<Vector2> PadWithDuplicates(List<Vector2> verts, int targetLen)
         {
+            if (verts == null) throw new ArgumentNullException(nameof(verts));
+            if (targetLen <= 0) return new List<Vector2>();
+
             if (verts.Count == 0)
                 return Enumerable.Repeat(Vector2.Zero, targetLen).ToList();
 
@@ -19,7 +21,7 @@ namespace PhysicsSimulation
                 return Enumerable.Range(0, targetLen).Select(i => verts[(int)(i * step)]).ToList();
             }
 
-            var newVerts = new List<Vector2>();
+            var newVerts = new List<Vector2>(targetLen);
             int q = targetLen / verts.Count;
             int r = targetLen % verts.Count;
             for (int i = 0; i < verts.Count; i++)
@@ -35,7 +37,7 @@ namespace PhysicsSimulation
         {
             var nativeSettings = new NativeWindowSettings
             {
-                ClientSize = (1920, 1080),
+                Size = new OpenTK.Mathematics.Vector2i(1920, 1080),
                 Title = title,
                 Profile = ContextProfile.Core,
                 API = ContextAPI.OpenGL,
@@ -53,7 +55,7 @@ namespace PhysicsSimulation
 
             int vertexShader = CompileShader(ShaderType.VertexShader, @"
                 #version 330 core
-                in vec3 in_vert;
+                layout(location = 0) in vec3 in_vert;
                 void main() { gl_Position = vec4(in_vert, 1.0); }
             ");
 
@@ -97,13 +99,14 @@ namespace PhysicsSimulation
 
         public static void RenderVertices(int program, int vbo, List<Vector3> verts, Vector3 color, PrimitiveType mode, float lineWidth = 1.0f)
         {
-            if (verts.Count == 0) return;
+            if (verts == null || verts.Count == 0) return;
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
             GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(), BufferUsageHint.DynamicDraw);
 
             GL.UseProgram(program);
-            GL.Uniform3(GL.GetUniformLocation(program, "color"), color);
+            var loc = GL.GetUniformLocation(program, "color");
+            if (loc >= 0) GL.Uniform3(loc, color);
 
             if (mode == PrimitiveType.LineStrip || mode == PrimitiveType.Lines)
                 GL.LineWidth(lineWidth);

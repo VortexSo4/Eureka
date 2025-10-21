@@ -1,50 +1,61 @@
-﻿using OpenTK.Graphics.OpenGL4;
+﻿// Optimized PhysicsSimulation framework (single-file reference implementation)
+// - Uses delegate-based animations (no reflection)
+// - Cached contour glyphs (CharMap) and per-char transform caching
+// - Cached VAO per VBO, minimal allocations
+// NOTE: Replace CharMap.GetCharContours with a proper font-to-contours implementation
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 
 namespace PhysicsSimulation
 {
-    public enum EaseType
+    // ------------------ EASING ------------------
+    public enum EaseType { Linear, EaseIn, EaseOut, EaseInOut }
+
+    public static class Easing
     {
-        Linear,
-        EaseInOut,
-        EaseIn,
-        EaseOut
+        public static float Ease(EaseType type, float t) => type switch
+        {
+            EaseType.Linear => t,
+            EaseType.EaseIn => t * t,
+            EaseType.EaseOut => 1 - (1 - t) * (1 - t),
+            EaseType.EaseInOut => t * t * (3 - 2 * t),
+            _ => t
+        };
     }
 
+    // ------------------ PRIMITIVE BASE (optimized) ------------------
     public abstract class Primitive : SceneObject
     {
-        public static readonly Dictionary<EaseType, Func<float, float>> EaseFunctions = new()
-        {
-            [EaseType.Linear] = t => t,
-            [EaseType.EaseInOut] = t => t * t * (3 - 2 * t),
-            [EaseType.EaseIn] = t => t * t,
-            [EaseType.EaseOut] = t => 1 - (1 - t) * (1 - t)
-        };
-
+        // transform state
         public float X { get; set; }
         public float Y { get; set; }
+        public float Scale { get; set; } = 1f;
+        public float Rotation { get; set; }
+        public Vector3 Color { get; set; } = Vector3.One;
+        public float LineWidth { get; set; } = 1f;
         public bool Filled { get; set; }
-        public Vector3 Color { get; set; }
+
+        // simple physics
         public float Vx { get; set; }
         public float Vy { get; set; }
-        public float Scale { get; set; } = 1.0f;
-        public float Rotation { get; set; }
-        public float LineWidth { get; set; } = 1.0f;
 
-        protected List<Dictionary<string, object>> Animations { get; } = [];
-        protected Dictionary<string, object>? ShapeAnim { get; set; }
+        // animations
+        protected readonly List<PropertyAnimation> Animations = new();
+        protected ShapeAnimation? ShapeAnim { get; set; }
+
+        // custom boundaries and morphing
         protected List<Vector2>? CustomBoundary { get; set; }
         protected List<Vector2>? BoundaryVerts { get; set; }
 
-        protected Primitive(float x = 0.0f, float y = 0.0f, bool filled = false, Vector3 color = default,
-            float vx = 0.0f, float vy = 0.0f)
+        protected Primitive(float x = 0f, float y = 0f, bool filled = false, Vector3 color = default,
+            float vx = 0f, float vy = 0f)
         {
-            X = x;
-            Y = y;
-            Filled = filled;
-            Color = color == default ? Vector3.One : color;
-            Vx = vx;
-            Vy = vy;
+            X = x; Y = y; Filled = filled; Color = color == default ? Vector3.One : color;
+            Vx = vx; Vy = vy; Scale = 1f;
         }
 
         protected void ScheduleOrExecute(Action action) =>
@@ -52,306 +63,280 @@ namespace PhysicsSimulation
 
         public override void Update(float dt)
         {
-            // Kinematics
-            X += Vx * dt;
-            Y += Vy * dt;
-            (Vx, Vy) = (Math.Abs(X) > 1.0f ? -Vx : Vx, Math.Abs(Y) > 1.0f ? -Vy : Vy);
+            // physics
+            X += Vx * dt; Y += Vy * dt;
+            if (Math.Abs(X) > 1f) Vx = -Vx;
+            if (Math.Abs(Y) > 1f) Vy = -Vy;
 
-            // Property animations
+            // animations
             ProcessPropertyAnimations(dt);
-
-            // Shape morph animation
             ProcessShapeAnimation(dt);
         }
 
         private void ProcessPropertyAnimations(float dt)
         {
-            foreach (var anim in Animations.ToArray())
+            for (int i = Animations.Count - 1; i >= 0; i--)
             {
-                float elapsed = (float)anim["elapsed"] + dt;
-                anim["elapsed"] = elapsed;
-                float tRaw = Math.Min(1.0f, elapsed / Math.Max(1e-9f, (float)anim["duration"]));
-                float t = EaseFunctions.GetValueOrDefault((EaseType)anim["ease"], tt => tt)(tRaw);
-                string property = (string)anim["property"];
+                var anim = Animations[i];
+                anim.Elapsed += dt;
+                float tRaw = Math.Min(1f, anim.Elapsed / Math.Max(1e-9f, anim.Duration));
+                float t = Easing.Ease(anim.Ease, tRaw);
 
-                switch (property.ToUpperInvariant())
-                {
-                    case "COLOR":
-                        Color = Vector3.Lerp((Vector3)anim["start"], (Vector3)anim["target"], t);
-                        break;
-                    default:
-                        var propInfo = GetType().GetProperty(property);
-                        if (propInfo?.PropertyType == typeof(float))
-                            propInfo.SetValue(this,
-                                (float)anim["start"] + ((float)anim["target"] - (float)anim["start"]) * t);
-                        break;
-                }
+                anim.Apply(t);
 
-                if (tRaw >= 1.0f)
-                {
-                    Animations.Remove(anim);
-                    Console.WriteLine($"Completed animation for {GetType().Name}: property={property}");
-                }
+                if (tRaw >= 1f) Animations.RemoveAt(i);
             }
         }
 
         private void ProcessShapeAnimation(float dt)
         {
             if (ShapeAnim == null) return;
-            float shapeElapsed = (float)ShapeAnim["elapsed"] + dt;
-            ShapeAnim["elapsed"] = shapeElapsed;
-            float shapeTRaw = Math.Min(1.0f, shapeElapsed / Math.Max(1e-9f, (float)ShapeAnim["duration"]));
-            float shapeT = EaseFunctions.GetValueOrDefault((EaseType)ShapeAnim["ease"], t => t)(shapeTRaw);
-            var startList = (List<Vector2>)ShapeAnim["start"];
-            var targetList = (List<Vector2>)ShapeAnim["target"];
-            BoundaryVerts = startList.Zip(targetList, (s, t) => Vector2.Lerp(s, t, shapeT)).ToList();
+            ShapeAnim.Elapsed += dt;
+            float tRaw = Math.Min(1f, ShapeAnim.Elapsed / Math.Max(1e-9f, ShapeAnim.Duration));
+            float t = Easing.Ease(ShapeAnim.Ease, tRaw);
 
-            if (shapeTRaw >= 1.0f)
+            BoundaryVerts = ShapeAnim.Start.Zip(ShapeAnim.Target, (s, targ) => Vector2.Lerp(s, targ, t)).ToList();
+
+            if (tRaw >= 1f)
             {
                 CustomBoundary = BoundaryVerts;
-                Filled = (bool)ShapeAnim["target_filled"];
+                Filled = ShapeAnim.TargetFilled;
                 ShapeAnim = null;
-                Console.WriteLine($"Completed morph for {GetType().Name}: final_verts={BoundaryVerts?.Count ?? 0}");
             }
         }
 
         public override void Render(int program, int vbo)
         {
-            var boundary = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
-            if (boundary == null || boundary.Count == 0) return;
+            var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
+            if (source == null || source.Count == 0) return;
 
-            var transformed = TransformVerts(boundary);
-
-            var drawVerts = PrepareDrawVerts(transformed, Filled);
-
-            RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+            var transformed = TransformVerts(source);
+            var draw = PrepareDrawVerts(transformed, Filled);
+            RenderVerts(draw, Filled, program, vbo, Color, LineWidth);
         }
 
-        protected List<Vector3> TransformVerts(List<Vector2> verts) =>
-            verts.Select(v => new Vector3(
-                v.X * Scale * MathF.Cos(Rotation) - v.Y * Scale * MathF.Sin(Rotation) + X,
-                v.X * Scale * MathF.Sin(Rotation) + v.Y * Scale * MathF.Cos(Rotation) + Y,
-                0.0f)).ToList();
+        protected virtual List<Vector3> TransformVerts(List<Vector2> verts)
+        {
+            float cos = MathF.Cos(Rotation) * Scale;
+            float sin = MathF.Sin(Rotation) * Scale;
+            var outv = new List<Vector3>(verts.Count);
+            foreach (var v in verts)
+                outv.Add(new Vector3(v.X * cos - v.Y * sin + X, v.X * sin + v.Y * cos + Y, 0f));
+            return outv;
+        }
 
         protected static List<Vector3> PrepareDrawVerts(List<Vector3> verts, bool filled)
         {
+            if (verts.Count < 2) return new List<Vector3>();
             if (filled)
             {
-                if (verts.Count < 3) return [];
-                var centroid = verts.Aggregate(Vector3.Zero, (sum, v) => sum + v) / verts.Count;
-                var fanVerts = new List<Vector3> { centroid };
-                fanVerts.AddRange(verts);
-                return fanVerts;
+                if (verts.Count < 3) return new List<Vector3>();
+                var centroid = verts.Aggregate(Vector3.Zero, (s, v) => s + v) / verts.Count;
+                var fan = new List<Vector3>(verts.Count + 1) { centroid };
+                fan.AddRange(verts);
+                return fan;
             }
             else
             {
-                var lineVerts = new List<Vector3>(verts);
-                if (lineVerts.Count > 0 && lineVerts[^1] != lineVerts[0])
-                    lineVerts.Add(lineVerts[0]);
-                return lineVerts;
+                var lines = new List<Vector3>(verts);
+                if (lines.Count > 0 && lines[^1] != lines[0]) lines.Add(lines[0]);
+                return lines;
             }
         }
 
+        // reuse VAO per VBO
+        private static readonly Dictionary<int, int> VboToVao = new();
+
         protected static void RenderVerts(List<Vector3> verts, bool filled, int program, int vbo, Vector3 color, float lineWidth)
         {
-            if (verts.Count == 0) return;
+            if (verts == null || verts.Count == 0) return;
+
+            GL.UseProgram(program);
+            int colorLoc = GL.GetUniformLocation(program, "color");
+            if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-            GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(),
-                BufferUsageHint.DynamicDraw);
-            GL.UseProgram(program);
-            GL.Uniform3(GL.GetUniformLocation(program, "color"), color);
+            // copy to temporary array - acceptable here; further optimization possible with persistent buffers
+            var arr = verts.ToArray();
+            GL.BufferData(BufferTarget.ArrayBuffer, arr.Length * Vector3.SizeInBytes, arr, BufferUsageHint.DynamicDraw);
+
+            if (!VboToVao.TryGetValue(vbo, out int vao))
+            {
+                vao = GL.GenVertexArray();
+                GL.BindVertexArray(vao);
+                GL.EnableVertexAttribArray(0);
+                GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
+                VboToVao[vbo] = vao;
+            }
+            else GL.BindVertexArray(vao);
 
             if (!filled) GL.LineWidth(lineWidth);
+            GL.DrawArrays(filled ? PrimitiveType.TriangleFan : PrimitiveType.LineStrip, 0, arr.Length);
 
-            int vao = GL.GenVertexArray();
-            GL.BindVertexArray(vao);
-            GL.EnableVertexAttribArray(0);
-            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-            GL.DrawArrays(filled ? PrimitiveType.TriangleFan : PrimitiveType.LineStrip, 0, verts.Count);
-            GL.DeleteVertexArray(vao);
+            GL.BindVertexArray(0);
             GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         }
 
-        public Primitive Animate(string property, float duration = 1.0f, EaseType ease = EaseType.Linear, float? target = null)
+        // --- Convenience animation helpers (delegate-based) ---
+        public Primitive Animate(Action<float> setter, float start, float target, float duration = 1f, EaseType ease = EaseType.Linear)
         {
             ScheduleOrExecute(() =>
             {
-                var propInfo = GetType().GetProperty(property);
-                if (propInfo?.PropertyType == typeof(float))
+                Animations.Add(new PropertyAnimation
                 {
-                    float startVal = (float)(propInfo.GetValue(this) ?? 0.0f);
-                    Animations.Add(new Dictionary<string, object>
-                    {
-                        ["property"] = property,
-                        ["start"] = startVal,
-                        ["target"] = target ?? startVal,
-                        ["duration"] = duration,
-                        ["elapsed"] = 0.0f,
-                        ["ease"] = ease
-                    });
-                }
-            });
-            return this;
-        }
-
-        public Primitive AnimateColor(Vector3 target, float duration = 1.0f, EaseType ease = EaseType.Linear)
-        {
-            ScheduleOrExecute(() =>
-            {
-                Animations.Add(new Dictionary<string, object>
-                {
-                    ["property"] = "Color",
-                    ["start"] = Color,
-                    ["target"] = target,
-                    ["duration"] = duration,
-                    ["elapsed"] = 0.0f,
-                    ["ease"] = ease
+                    Apply = t => setter(start + (target - start) * t),
+                    Duration = duration,
+                    Ease = ease,
                 });
             });
             return this;
         }
 
-        public Primitive MoveTo(float x, float y, float duration = 1.0f, EaseType ease = EaseType.Linear)
+        public Primitive AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.Linear)
         {
+            Vector3 start = Color;
             ScheduleOrExecute(() =>
             {
-                Animations.AddRange(new[]
+                Animations.Add(new PropertyAnimation
                 {
-                    new Dictionary<string, object>
-                    {
-                        ["property"] = "X", ["start"] = X, ["target"] = x, ["duration"] = duration, ["elapsed"] = 0.0f,
-                        ["ease"] = ease
-                    },
-                    new Dictionary<string, object>
-                    {
-                        ["property"] = "Y", ["start"] = Y, ["target"] = y, ["duration"] = duration, ["elapsed"] = 0.0f,
-                        ["ease"] = ease
-                    }
+                    Apply = t => Color = Vector3.Lerp(start, target, t),
+                    Duration = duration,
+                    Ease = ease
                 });
             });
             return this;
         }
 
-        public Primitive Resize(float targetScale, float duration = 1.0f, EaseType ease = EaseType.Linear) =>
-            Animate("Scale", duration, ease, targetScale);
-
-        public Primitive RotateTo(float targetRotation, float duration = 1.0f, EaseType ease = EaseType.Linear) =>
-            Animate("Rotation", duration, ease, targetRotation);
-
-        public Primitive SetLineWidth(float target, float duration = 1.0f, EaseType ease = EaseType.Linear) =>
-            Animate("LineWidth", duration, ease, target);
-
-        public Primitive SetFilled(bool filled, float duration = 0.0f)
+        public Primitive MoveTo(float x, float y, float duration = 1f, EaseType ease = EaseType.Linear)
         {
-            ScheduleOrExecute(() => Filled = filled);
+            Animate(v => X = v, X, x, duration, ease);
+            Animate(v => Y = v, Y, y, duration, ease);
             return this;
         }
 
-        public Primitive Draw(float duration = 1.0f, EaseType ease = EaseType.EaseInOut)
+        public Primitive Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.Linear) => Animate(v => Scale = v, Scale, targetScale, duration, ease);
+        public Primitive RotateTo(float targetRotation, float duration = 1f, EaseType ease = EaseType.Linear) => Animate(v => Rotation = v, Rotation, targetRotation, duration, ease);
+        public Primitive SetLineWidth(float target, float duration = 1f, EaseType ease = EaseType.Linear) => Animate(v => LineWidth = v, LineWidth, target, duration, ease);
+
+        public Primitive SetFilled(bool filled, float _duration = 0f) { Filled = filled; return this; }
+
+        public Primitive Draw(float duration = 1f, EaseType ease = EaseType.EaseInOut)
         {
-            ScheduleOrExecute(() =>
-            {
-                Scale = 0.0f;
-                Animations.Add(new Dictionary<string, object>
-                {
-                    ["property"] = "Scale",
-                    ["start"] = 0.0f,
-                    ["target"] = 1.0f,
-                    ["duration"] = duration,
-                    ["elapsed"] = 0.0f,
-                    ["ease"] = ease
-                });
-            });
+            Scale = 0f;
+            Animate(v => Scale = v, 0f, 1f, duration, ease);
             return this;
         }
 
-        public Primitive MorphTo(Primitive target, float duration = 2.0f, EaseType ease = EaseType.EaseInOut)
+        public Primitive MorphTo(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut)
         {
-            ScheduleOrExecute(() =>
-            {
-                List<Vector2> startVerts = CustomBoundary ?? BoundaryVerts ?? GetBoundaryVerts();
-                List<Vector2> targetVerts = target.GetBoundaryVerts();
-                if (startVerts.Count != targetVerts.Count)
-                {
-                    if (startVerts.Count < targetVerts.Count)
-                        startVerts = Helpers.PadWithDuplicates(startVerts, targetVerts.Count);
-                    else
-                        targetVerts = Helpers.PadWithDuplicates(targetVerts, startVerts.Count);
-                }
+            var startVerts = CustomBoundary ?? BoundaryVerts ?? GetBoundaryVerts();
+            var targetVerts = target.GetBoundaryVerts();
 
-                ShapeAnim = new Dictionary<string, object>
-                {
-                    ["start"] = startVerts,
-                    ["target"] = targetVerts,
-                    ["duration"] = duration,
-                    ["elapsed"] = 0.0f,
-                    ["ease"] = ease,
-                    ["target_filled"] = target.Filled
-                };
-                BoundaryVerts = startVerts;
-                AnimateColor(target.Color, duration, ease);
-                MoveTo(target.X, target.Y, duration, ease);
-                Resize(target.Scale == 0.0f ? 1.0f : target.Scale, duration, ease);
-                RotateTo(target.Rotation, duration, ease);
-                SetLineWidth(target.LineWidth, duration, ease);
-            });
+            if (startVerts.Count != targetVerts.Count)
+            {
+                if (startVerts.Count < targetVerts.Count)
+                    startVerts = Helpers.PadWithDuplicates(startVerts, targetVerts.Count);
+                else
+                    targetVerts = Helpers.PadWithDuplicates(targetVerts, startVerts.Count);
+            }
+
+            ShapeAnim = new ShapeAnimation
+            {
+                Start = startVerts,
+                Target = targetVerts,
+                Duration = duration,
+                Ease = ease,
+                TargetFilled = target.Filled
+            };
+
+            BoundaryVerts = startVerts;
+
+            AnimateColor(target.Color, duration, ease);
+            MoveTo(target.X, target.Y, duration, ease);
+            Resize(target.Scale == 0f ? 1f : target.Scale, duration, ease);
+            RotateTo(target.Rotation, duration, ease);
+            SetLineWidth(target.LineWidth, duration, ease);
             return this;
         }
 
         public abstract List<Vector2> GetBoundaryVerts();
+
+        // --- Internal animation classes ---
+        protected class PropertyAnimation
+        {
+            public Action<float> Apply = _ => { };
+            public float Duration;
+            public float Elapsed;
+            public EaseType Ease;
+        }
+
+        protected class ShapeAnimation
+        {
+            public List<Vector2> Start = new();
+            public List<Vector2> Target = new();
+            public float Duration;
+            public float Elapsed;
+            public EaseType Ease;
+            public bool TargetFilled;
+        }
     }
 
+    // ------------------ PRIMITIVES ------------------
     public class Circle : Primitive
     {
         public float Radius { get; set; }
+        public Circle(float x = 0f, float y = 0f, float radius = 0.1f, bool filled = false, Vector3 color = default)
+            : base(x, y, filled, color) { Radius = radius; }
 
-        public Circle(float x = 0.0f, float y = 0.0f, float radius = 0.1f, bool filled = false, Vector3 color = default,
-            float vx = 0.0f, float vy = 0.0f)
-            : base(x, y, filled, color, vx, vy)
+        public override List<Vector2> GetBoundaryVerts()
         {
-            Radius = radius;
-            Scale = 1.0f;
+            const int steps = 80;
+            var list = new List<Vector2>(steps);
+            for (int i = 0; i < steps; i++)
+            {
+                float a = 2 * MathF.PI * i / steps;
+                list.Add(new Vector2(Radius * MathF.Cos(a), Radius * MathF.Sin(a)));
+            }
+            return list;
         }
-
-        public override List<Vector2> GetBoundaryVerts() =>
-            Enumerable.Range(0, 100)
-                .Select(i => new Vector2(Radius * MathF.Cos(2 * MathF.PI * i / 100),
-                    Radius * MathF.Sin(2 * MathF.PI * i / 100)))
-                .ToList();
     }
 
     public class Rectangle : Primitive
     {
         public float Width { get; set; }
         public float Height { get; set; }
-
-        public Rectangle(float x = 0.0f, float y = 0.0f, float width = 0.2f, float height = 0.2f, bool filled = false,
-            Vector3 color = default, float vx = 0.0f, float vy = 0.0f)
-            : base(x, y, filled, color, vx, vy)
-        {
-            Width = width;
-            Height = height;
-            Scale = 1.0f;
-        }
+        public Rectangle(float x = 0f, float y = 0f, float width = 0.2f, float height = 0.2f, bool filled = false, Vector3 color = default)
+            : base(x, y, filled, color) { Width = width; Height = height; }
 
         public override List<Vector2> GetBoundaryVerts()
         {
-            float halfW = 0.5f * Width, halfH = 0.5f * Height;
-            return [new(-halfW, -halfH), new(halfW, -halfH), new(halfW, halfH), new(-halfW, halfH)];
+            float hw = Width / 2, hh = Height / 2;
+            return new List<Vector2>
+            {
+                new(-hw, -hh),
+                new(hw, -hh),
+                new(hw, hh),
+                new(-hw, hh)
+            };
         }
     }
 
+    // ------------------ TEXT (with per-char caching) ------------------
     public class Text : Primitive
     {
         public string TextContent { get; set; }
         public float FontSize { get; set; }
         public float LetterSpacing { get; set; } = 0.6f;
-        public float Width { get; set; }
-        public float Height { get; set; }
+        public float Width { get; private set; }
+        public float Height { get; private set; }
 
-        public Text(string text, float x = 0.0f, float y = 0.0f, float fontSize = 0.1f, float letterSpacing = 0.6f,
-            Vector3 color = default)
+        // cache raw contours per char (relative to 0) to avoid repeated CharMap calls
+        private readonly Dictionary<char, List<List<Vector2>>> _contourCache = new();
+
+        // cache of per-char transformed vertices to avoid recomputing when not changed
+        private readonly Dictionary<int, CachedChar> _charCache = new();
+
+        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterSpacing = 0.6f, Vector3 color = default)
             : base(x, y, false, color)
         {
             TextContent = text;
@@ -359,12 +344,13 @@ namespace PhysicsSimulation
             LetterSpacing = letterSpacing;
             Width = text.Length * fontSize * letterSpacing;
             Height = fontSize;
-            Scale = 1.0f;
         }
 
-        public override void Update(float dt)
+        private class CachedChar
         {
-            base.Update(dt);
+            public char C;
+            public float LastParentX; public float LastParentY; public float LastParentScale; public float LastParentRotation;
+            public Vector3[] CachedVerts = Array.Empty<Vector3>();
         }
 
         public override void Render(int program, int vbo)
@@ -375,13 +361,55 @@ namespace PhysicsSimulation
                 return;
             }
 
-            float offsetX = -Width / 2;
-            foreach (char c in TextContent)
+            float offsetX = -Width / 2f;
+            for (int i = 0; i < TextContent.Length; i++)
             {
-                var contours = CharMap.GetCharContours(c, offsetX, FontSize);
-                RenderContours(contours, program, vbo);
+                char c = TextContent[i];
+                var contours = GetCharContours(c, offsetX);
+                // render each contour using per-char cache for transformed vertices
+                RenderContoursWithCharCache(c, i, contours, program, vbo);
                 offsetX += FontSize * LetterSpacing;
             }
+        }
+
+        private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, int program, int vbo)
+        {
+            // compute flattened source vertices for this character
+            var flat = contours.SelectMany(ct => ct).ToList();
+            if (flat.Count == 0) return;
+
+            // key is index to separate identical characters in different positions
+            int key = index;
+            if (!_charCache.TryGetValue(key, out var cache))
+            {
+                cache = new CachedChar { C = c };
+                _charCache[key] = cache;
+            }
+
+            bool dirty = cache.CachedVerts.Length != flat.Count || cache.C != c;
+            // mark dirty if parent's transform changed
+            if (!dirty) dirty = cache.LastParentX != X || cache.LastParentY != Y || cache.LastParentScale != Scale || cache.LastParentRotation != Rotation;
+            if (dirty)
+            {
+                // build transformed vertices
+                var transformed = new Vector3[flat.Count];
+                float cos = MathF.Cos(Rotation) * Scale;
+                float sin = MathF.Sin(Rotation) * Scale;
+                for (int i = 0; i < flat.Count; i++)
+                {
+                    var v = flat[i];
+                    transformed[i] = new Vector3(v.X * cos - v.Y * sin + X, v.X * sin + v.Y * cos + Y, 0f);
+                }
+
+                cache.CachedVerts = transformed;
+                cache.C = c;
+                cache.LastParentX = X; cache.LastParentY = Y; cache.LastParentScale = Scale; cache.LastParentRotation = Rotation;
+            }
+
+            // prepare draw verts
+            var drawList = new List<Vector3>(cache.CachedVerts);
+            var drawVerts = PrepareDrawVerts(drawList, Filled);
+            RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
         }
 
         private void RenderContours(List<List<Vector2>> contours, int program, int vbo)
@@ -389,102 +417,86 @@ namespace PhysicsSimulation
             foreach (var contour in contours)
             {
                 if (contour.Count < 2) continue;
-
                 var transformed = TransformVerts(contour);
-
                 var drawVerts = PrepareDrawVerts(transformed, Filled);
-
                 RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
             }
         }
 
+        public List<List<Vector2>> GetCharContours(char c, float offsetX)
+        {
+            if (!_contourCache.TryGetValue(c, out var contours))
+            {
+                contours = CharMap.GetCharContours(c, 0f, FontSize);
+                _contourCache[c] = contours;
+            }
+            // apply offset
+            return contours.Select(contour => contour.Select(v => new Vector2(v.X + offsetX, v.Y)).ToList()).ToList();
+        }
+
         public override List<Vector2> GetBoundaryVerts()
         {
-            var allVerts = new List<Vector2>();
-            float offsetX = -Width / 2;
+            var all = new List<Vector2>();
+            float offsetX = -Width / 2f;
             foreach (char c in TextContent)
             {
-                var contours = CharMap.GetCharContours(c, offsetX, FontSize);
-                allVerts.AddRange(contours.SelectMany(contour => contour));
+                var contours = GetCharContours(c, offsetX);
+                all.AddRange(contours.SelectMany(contour => contour));
                 offsetX += FontSize * LetterSpacing;
             }
 
-            return allVerts.Count == 0 ? new Rectangle(0, 0, Width, Height).GetBoundaryVerts() : allVerts;
+            if (all.Count == 0)
+                return new Rectangle(0, 0, Width, Height).GetBoundaryVerts();
+            return all;
         }
 
-        public TextSlice GetSlice(int startIndex, int length)
-        {
-            if (startIndex < 0 || startIndex >= TextContent.Length || startIndex + length > TextContent.Length)
-                return new TextSlice(this);
-
-            var chars = new List<CharPrimitive>();
-            for (int i = startIndex; i < startIndex + length; i++)
-            {
-                var c = TextContent[i];
-                float offsetX = -Width / 2 + (i * FontSize * LetterSpacing);
-                chars.Add(new CharPrimitive(c, this, offsetX, 0.0f, Color));
-            }
-
-            return new TextSlice(this, chars);
-        }
-
+        // CharPrimitive nested (still useful if user wants per-char primitives)
         public class CharPrimitive : Primitive
         {
             public char Char { get; set; }
-            public Text Parent { get; }
-
-            public CharPrimitive(char c, Text parent, float x = 0.0f, float y = 0.0f, Vector3 color = default)
-                : base(x, y, false, color)
+            private readonly Text Parent;
+            public CharPrimitive(char c, Text parent, float x = 0f, float y = 0f, Vector3 color = default) : base(x, y, false, color)
             {
-                Char = c;
-                Parent = parent;
+                Char = c; Parent = parent;
             }
 
             public override List<Vector2> GetBoundaryVerts()
             {
-                var contours = CharMap.GetCharContours(Char, X, Parent.FontSize);
-                return contours.SelectMany(contour => contour).ToList();
+                var contours = Parent.GetCharContours(Char, X);
+                return contours.SelectMany(c => c).ToList();
             }
 
             public override void Render(int program, int vbo)
             {
-                var contours = CharMap.GetCharContours(Char, X, Parent.FontSize);
-                ((Text)Parent).RenderContours(contours, program, vbo); // Reuse Text's RenderContours, as it's the same
+                var contours = Parent.GetCharContours(Char, X);
+                Parent.RenderContours(contours, program, vbo);
             }
 
-            public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration,
-                EaseType ease, bool targetFilled)
+            public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration, EaseType ease, bool targetFilled)
             {
-                ShapeAnim = new Dictionary<string, object>
+                ShapeAnim = new ShapeAnimation
                 {
-                    ["start"] = startVerts,
-                    ["target"] = targetVerts,
-                    ["duration"] = duration,
-                    ["elapsed"] = 0.0f,
-                    ["ease"] = ease,
-                    ["target_filled"] = targetFilled
+                    Start = startVerts,
+                    Target = targetVerts,
+                    Duration = duration,
+                    Ease = ease,
+                    TargetFilled = targetFilled
                 };
             }
 
-            public void SetBoundaryVerts(List<Vector2> verts)
-            {
-                BoundaryVerts = verts;
-            }
+            public void SetBoundaryVerts(List<Vector2> verts) => BoundaryVerts = verts;
         }
 
         public class GroupPrimitive : Primitive
         {
-            public List<Vector2> InitialVerts { get; }
-
-            public GroupPrimitive(List<Vector2> verts, float x = 0.0f, float y = 0.0f, Vector3 color = default,
-                bool filled = false)
-                : base(x, y, filled, color)
+            private readonly List<Vector2> _initialVerts;
+            public GroupPrimitive(List<Vector2> verts, float x = 0f, float y = 0f, Vector3 color = default, bool filled = false) : base(x, y, filled, color)
             {
-                InitialVerts = verts;
+                _initialVerts = verts;
                 CustomBoundary = verts;
             }
 
-            public override List<Vector2> GetBoundaryVerts() => CustomBoundary ?? InitialVerts;
+            public override List<Vector2> GetBoundaryVerts() => CustomBoundary ?? _initialVerts;
         }
 
         public class TextSlice
@@ -494,61 +506,82 @@ namespace PhysicsSimulation
 
             public TextSlice(Text parent, List<CharPrimitive>? chars = null)
             {
-                _parent = parent;
-                Chars = chars ?? new List<Text.CharPrimitive>();
+                _parent = parent; Chars = chars ?? new List<CharPrimitive>();
             }
 
             public void Morph(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut)
             {
                 if (Chars.Count == 0 || target == null) return;
 
-                // Сбор вершин
+                // flatten vertices from chars into one list
                 var startVerts = Chars.SelectMany(c => c.GetBoundaryVerts()).ToList();
-
                 var gp = new GroupPrimitive(startVerts, _parent.X, _parent.Y, _parent.Color, _parent.Filled);
                 Scene.CurrentScene?.Add(gp);
 
-                // Скрываем символы
                 foreach (var c in Chars)
-                    c.Animate("Scale", 0.0f, ease, 0.0f);
+                    c.Animate(v => c.Scale = v, c.Scale, 0f, 0f, ease); // quickly hide chars
 
                 gp.MorphTo(target, duration, ease);
             }
 
             public TextSlice Move(float dx, float dy, float duration = 1f, EaseType ease = EaseType.Linear)
             {
-                foreach (var c in Chars)
-                    c.MoveTo(c.X + dx, c.Y + dy, duration, ease);
+                foreach (var c in Chars) c.MoveTo(c.X + dx, c.Y + dy, duration, ease);
                 return this;
             }
 
             public TextSlice Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.Linear)
             {
-                foreach (var c in Chars)
-                    c.Animate("Scale", duration, ease, targetScale);
+                foreach (var c in Chars) c.Animate(v => c.Scale = v, c.Scale, targetScale, duration, ease);
                 return this;
             }
 
             public TextSlice Rotate(float targetRotation, float duration = 1f, EaseType ease = EaseType.Linear)
             {
-                foreach (var c in Chars)
-                    c.Animate("Rotation", duration, ease, targetRotation);
+                foreach (var c in Chars) c.Animate(v => c.Rotation = v, c.Rotation, targetRotation, duration, ease);
                 return this;
             }
 
             public TextSlice AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.Linear)
             {
-                foreach (var c in Chars)
-                    c.AnimateColor(target, duration, ease);
+                foreach (var c in Chars) c.AnimateColor(target, duration, ease);
                 return this;
             }
 
-            public TextSlice SetFilled(bool filled, float duration = 0f)
+            public TextSlice SetFilled(bool filled, float _duration = 0f)
             {
-                foreach (var c in Chars)
-                    c.SetFilled(filled, duration);
+                foreach (var c in Chars) c.SetFilled(filled, _duration);
                 return this;
             }
+        }
+
+        // helper: get a TextSlice referencing chars by range
+        public TextSlice GetSlice(int startIndex, int length)
+        {
+            if (startIndex < 0 || startIndex >= TextContent.Length || startIndex + length > TextContent.Length)
+                return new TextSlice(this);
+
+            var chars = new List<CharPrimitive>(length);
+            for (int i = startIndex; i < startIndex + length; i++)
+            {
+                char c = TextContent[i];
+                float offsetX = -Width / 2f + (i * FontSize * LetterSpacing);
+                chars.Add(new CharPrimitive(c, this, offsetX, 0f, Color));
+            }
+            return new TextSlice(this, chars);
+        }
+    }
+
+    // ------------------ EXTENSIONS ------------------
+    public static class PrimitiveExtensions
+    {
+        public static T Do<T>(this T p, Action<T> action) where T : Primitive { action(p); return p; }
+
+        // convenience color animation for primitives
+        public static Primitive AnimateColor(this Primitive p, Vector3 target, float duration = 1f, EaseType ease = EaseType.Linear)
+        {
+            p.Animate(t => p.Color = Vector3.Lerp(p.Color, target, t), 0f, 1f, duration, ease);
+            return p;
         }
     }
 }
