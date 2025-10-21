@@ -1,11 +1,12 @@
-﻿using OpenTK.Mathematics;
+﻿// Charmap.cs
+using OpenTK.Mathematics;
 using SkiaSharp;
 
 namespace PhysicsSimulation
 {
     public static class CharMap
     {
-        public static List<List<Vector2>> GetCharVerts(char c, float offsetX, float size)
+        public static List<List<Vector2>> GetCharContours(char c, float offsetX, float size)
         {
             var contours = new List<List<Vector2>>();
 
@@ -47,37 +48,18 @@ namespace PhysicsSimulation
                         break;
 
                     case SKPathVerb.Quad:
-                        var quadPoints = new[]
-                        {
-                            lastPoint,
-                            new(points[1].X + offsetX, -points[1].Y),
-                            new(points[2].X + offsetX, -points[2].Y)
-                        };
-                        currentContour?.Add(quadPoints[2]);
-                        lastPoint = quadPoints[2];
+                        lastPoint = new Vector2(points[2].X + offsetX, -points[2].Y);
+                        currentContour?.Add(lastPoint);
                         break;
 
                     case SKPathVerb.Conic:
-                        var conicPoints = new[]
-                        {
-                            lastPoint,
-                            new(points[1].X + offsetX, -points[1].Y),
-                            new(points[2].X + offsetX, -points[2].Y)
-                        };
-                        currentContour?.Add(conicPoints[2]);
-                        lastPoint = conicPoints[2];
+                        lastPoint = new Vector2(points[2].X + offsetX, -points[2].Y);
+                        currentContour?.Add(lastPoint);
                         break;
 
                     case SKPathVerb.Cubic:
-                        var cubicPoints = new[]
-                        {
-                            lastPoint,
-                            new(points[1].X + offsetX, -points[1].Y),
-                            new(points[2].X + offsetX, -points[2].Y),
-                            new(points[3].X + offsetX, -points[3].Y)
-                        };
-                        currentContour?.Add(cubicPoints[3]);
-                        lastPoint = cubicPoints[3];
+                        lastPoint = new Vector2(points[3].X + offsetX, -points[3].Y);
+                        currentContour?.Add(lastPoint);
                         break;
 
                     case SKPathVerb.Close:

@@ -1,6 +1,5 @@
-﻿using System;
+﻿// Program.cs
 using System.Diagnostics;
-using OpenTK.Windowing.Desktop;
 using OpenTK.Graphics.OpenGL4;
 
 namespace PhysicsSimulation
@@ -9,21 +8,16 @@ namespace PhysicsSimulation
     {
         static void Main(string[] args)
         {
-            // Print environment info for debugging
             Console.WriteLine($"Current Directory: {Environment.CurrentDirectory}");
             Console.WriteLine($"Runtime: {Environment.Version}");
 
-            // Determine scene name from args or default
             string sceneName = args.Length > 0 ? args[0] : "CustomScene";
 
-            // Initialize OpenTK window
             var window = Helpers.InitOpenTKWindow();
-            var ctx = Helpers.CreateGLContextAndProgram();
+            var (program, vbo) = Helpers.CreateGLContextAndProgram();
 
-            // Load scene using reflection
             Scene scene = LoadScene(sceneName);
 
-            // Main loop
             var stopwatch = Stopwatch.StartNew();
             double lastTime = stopwatch.Elapsed.TotalSeconds;
             window.RenderFrame += (_) =>
@@ -36,7 +30,7 @@ namespace PhysicsSimulation
                 GL.Clear(ClearBufferMask.ColorBufferBit);
 
                 scene.Update(dt);
-                scene.Render(ctx.Item1, ctx.Item2);
+                scene.Render(program, vbo);
 
                 window.SwapBuffers();
             };

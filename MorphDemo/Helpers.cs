@@ -1,14 +1,36 @@
-﻿using System;
+﻿// Helpers.cs
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.Common;
-using System.Collections.Generic;
-
 namespace PhysicsSimulation
 {
     public static class Helpers
     {
+        // --- PadWithDuplicates для вершин ---
+        public static List<Vector2> PadWithDuplicates(List<Vector2> verts, int targetLen)
+        {
+            if (verts.Count == 0)
+                return Enumerable.Repeat(Vector2.Zero, targetLen).ToList();
+
+            if (verts.Count >= targetLen)
+            {
+                float step = (float)verts.Count / targetLen;
+                return Enumerable.Range(0, targetLen).Select(i => verts[(int)(i * step)]).ToList();
+            }
+
+            var newVerts = new List<Vector2>();
+            int q = targetLen / verts.Count;
+            int r = targetLen % verts.Count;
+            for (int i = 0; i < verts.Count; i++)
+            {
+                int repeats = q + (i < r ? 1 : 0);
+                newVerts.AddRange(Enumerable.Repeat(verts[i], repeats));
+            }
+            return newVerts;
+        }
+
+        // --- OpenTK Helpers ---
         public static GameWindow InitOpenTKWindow(string title = "Physics Simulation Framework")
         {
             var nativeSettings = new NativeWindowSettings
@@ -24,74 +46,76 @@ namespace PhysicsSimulation
             return window;
         }
 
-        public static (int, int) CreateGLContextAndProgram()
+        public static (int Program, int Vbo) CreateGLContextAndProgram()
         {
             GL.Enable(EnableCap.Blend);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
-            int vertexShader = GL.CreateShader(ShaderType.VertexShader);
-            GL.ShaderSource(vertexShader, @"
+            int vertexShader = CompileShader(ShaderType.VertexShader, @"
                 #version 330 core
                 in vec3 in_vert;
-                void main() {
-                    gl_Position = vec4(in_vert, 1.0);
-                }
+                void main() { gl_Position = vec4(in_vert, 1.0); }
             ");
-            GL.CompileShader(vertexShader);
-            GL.GetShader(vertexShader, ShaderParameter.CompileStatus, out int success);
-            if (success == 0)
-                throw new Exception("Vertex shader compilation failed: " + GL.GetShaderInfoLog(vertexShader));
 
-            int fragmentShader = GL.CreateShader(ShaderType.FragmentShader);
-            GL.ShaderSource(fragmentShader, @"
+            int fragmentShader = CompileShader(ShaderType.FragmentShader, @"
                 #version 330 core
                 uniform vec3 color;
                 out vec4 f_color;
-                void main() {
-                    f_color = vec4(color, 1.0);
-                }
+                void main() { f_color = vec4(color, 1.0); }
             ");
-            GL.CompileShader(fragmentShader);
-            GL.GetShader(fragmentShader, ShaderParameter.CompileStatus, out success);
-            if (success == 0)
-                throw new Exception("Fragment shader compilation failed: " + GL.GetShaderInfoLog(fragmentShader));
 
             int program = GL.CreateProgram();
             GL.AttachShader(program, vertexShader);
             GL.AttachShader(program, fragmentShader);
             GL.LinkProgram(program);
-            GL.GetProgram(program, GetProgramParameterName.LinkStatus, out success);
-            if (success == 0)
-                throw new Exception("Program linking failed: " + GL.GetProgramInfoLog(program));
+            CheckLinkStatus(program);
 
             GL.DeleteShader(vertexShader);
             GL.DeleteShader(fragmentShader);
 
             int vbo = GL.GenBuffer();
-
             return (program, vbo);
         }
 
-        public static List<Vector2> PadWithDuplicates(List<Vector2> verts, int targetLen)
+        private static int CompileShader(ShaderType type, string source)
         {
-            if (verts.Count == 0)
-                return new List<Vector2>(new Vector2[targetLen]);
+            int shader = GL.CreateShader(type);
+            GL.ShaderSource(shader, source);
+            GL.CompileShader(shader);
+            GL.GetShader(shader, ShaderParameter.CompileStatus, out int success);
+            if (success == 0)
+                throw new Exception($"{type} compilation failed: " + GL.GetShaderInfoLog(shader));
+            return shader;
+        }
 
-            if (verts.Count >= targetLen)
-            {
-                var step = verts.Count / (float)targetLen;
-                return Enumerable.Range(0, targetLen).Select(i => verts[(int)(i * step)]).ToList();
-            }
+        private static void CheckLinkStatus(int program)
+        {
+            GL.GetProgram(program, GetProgramParameterName.LinkStatus, out int success);
+            if (success == 0)
+                throw new Exception("Program linking failed: " + GL.GetProgramInfoLog(program));
+        }
 
-            var newVerts = new List<Vector2>();
-            int q = targetLen / verts.Count;
-            int r = targetLen % verts.Count;
-            for (int i = 0; i < verts.Count; i++)
-            {
-                int repeats = q + (i < r ? 1 : 0);
-                newVerts.AddRange(Enumerable.Repeat(verts[i], repeats));
-            }
-            return newVerts;
+        public static void RenderVertices(int program, int vbo, List<Vector3> verts, Vector3 color, PrimitiveType mode, float lineWidth = 1.0f)
+        {
+            if (verts.Count == 0) return;
+
+            GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+            GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(), BufferUsageHint.DynamicDraw);
+
+            GL.UseProgram(program);
+            GL.Uniform3(GL.GetUniformLocation(program, "color"), color);
+
+            if (mode == PrimitiveType.LineStrip || mode == PrimitiveType.Lines)
+                GL.LineWidth(lineWidth);
+
+            int vao = GL.GenVertexArray();
+            GL.BindVertexArray(vao);
+            GL.EnableVertexAttribArray(0);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
+            GL.DrawArrays(mode, 0, verts.Count);
+            GL.DeleteVertexArray(vao);
+
+            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         }
     }
 }

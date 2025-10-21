@@ -1,4 +1,5 @@
-﻿namespace PhysicsSimulation
+﻿// Scene.cs
+namespace PhysicsSimulation
 {
     public abstract class SceneObject
     {
@@ -10,8 +11,8 @@
     {
         public static Scene? CurrentScene { get; set; }
 
-        public List<SceneObject> Objects { get; } = [];
-        private readonly List<(float time, Action action)> _actions = [];
+        public List<SceneObject> Objects { get; } = new List<SceneObject>();
+        private readonly List<(float time, Action action)> _actions = new List<(float, Action)>();
         public bool Recording { get; private set; } = true;
         private float _timelineOffset;
         public float CurrentTime { get; set; }
@@ -54,14 +55,18 @@
 
         public Scene Schedule(Action action)
         {
-            (Recording ? () => _actions.Add((_timelineOffset, action)) : action)();
+            if (Recording)
+                _actions.Add((_timelineOffset, action));
+            else
+                action();
             return this;
         }
 
         public virtual void Update(float dt)
         {
             CurrentTime += dt;
-            foreach (var action in _actions.Where(a => a.time <= CurrentTime).ToArray())
+            var actionsToExecute = _actions.Where(a => a.time <= CurrentTime).ToArray();
+            foreach (var action in actionsToExecute)
             {
                 try
                 {

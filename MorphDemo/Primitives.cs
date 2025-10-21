@@ -1,17 +1,24 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using OpenTK.Graphics.OpenGL4;
+﻿using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 
 namespace PhysicsSimulation
 {
+    public enum EaseType
+    {
+        Linear,
+        EaseInOut,
+        EaseIn,
+        EaseOut
+    }
+
     public abstract class Primitive : SceneObject
     {
-        public static readonly Dictionary<string, Func<float, float>> EaseFunctions = new()
+        public static readonly Dictionary<EaseType, Func<float, float>> EaseFunctions = new()
         {
-            ["linear"] = t => t,
-            ["ease_in_out"] = t => t * t * (3 - 2 * t)
+            [EaseType.Linear] = t => t,
+            [EaseType.EaseInOut] = t => t * t * (3 - 2 * t),
+            [EaseType.EaseIn] = t => t * t,
+            [EaseType.EaseOut] = t => 1 - (1 - t) * (1 - t)
         };
 
         public float X { get; set; }
@@ -51,12 +58,20 @@ namespace PhysicsSimulation
             (Vx, Vy) = (Math.Abs(X) > 1.0f ? -Vx : Vx, Math.Abs(Y) > 1.0f ? -Vy : Vy);
 
             // Property animations
+            ProcessPropertyAnimations(dt);
+
+            // Shape morph animation
+            ProcessShapeAnimation(dt);
+        }
+
+        private void ProcessPropertyAnimations(float dt)
+        {
             foreach (var anim in Animations.ToArray())
             {
                 float elapsed = (float)anim["elapsed"] + dt;
                 anim["elapsed"] = elapsed;
                 float tRaw = Math.Min(1.0f, elapsed / Math.Max(1e-9f, (float)anim["duration"]));
-                float t = EaseFunctions.GetValueOrDefault((string)anim["ease"], t => t)(tRaw);
+                float t = EaseFunctions.GetValueOrDefault((EaseType)anim["ease"], tt => tt)(tRaw);
                 string property = (string)anim["property"];
 
                 switch (property.ToUpperInvariant())
@@ -78,13 +93,15 @@ namespace PhysicsSimulation
                     Console.WriteLine($"Completed animation for {GetType().Name}: property={property}");
                 }
             }
+        }
 
-            // Shape morph animation
+        private void ProcessShapeAnimation(float dt)
+        {
             if (ShapeAnim == null) return;
             float shapeElapsed = (float)ShapeAnim["elapsed"] + dt;
             ShapeAnim["elapsed"] = shapeElapsed;
             float shapeTRaw = Math.Min(1.0f, shapeElapsed / Math.Max(1e-9f, (float)ShapeAnim["duration"]));
-            float shapeT = EaseFunctions.GetValueOrDefault((string)ShapeAnim["ease"], t => t)(shapeTRaw);
+            float shapeT = EaseFunctions.GetValueOrDefault((EaseType)ShapeAnim["ease"], t => t)(shapeTRaw);
             var startList = (List<Vector2>)ShapeAnim["start"];
             var targetList = (List<Vector2>)ShapeAnim["target"];
             BoundaryVerts = startList.Zip(targetList, (s, t) => Vector2.Lerp(s, t, shapeT)).ToList();
@@ -103,34 +120,60 @@ namespace PhysicsSimulation
             var boundary = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
             if (boundary == null || boundary.Count == 0) return;
 
-            var verts = boundary.Select(v => new Vector3(
+            var transformed = TransformVerts(boundary);
+
+            var drawVerts = PrepareDrawVerts(transformed, Filled);
+
+            RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+        }
+
+        protected List<Vector3> TransformVerts(List<Vector2> verts) =>
+            verts.Select(v => new Vector3(
                 v.X * Scale * MathF.Cos(Rotation) - v.Y * Scale * MathF.Sin(Rotation) + X,
                 v.X * Scale * MathF.Sin(Rotation) + v.Y * Scale * MathF.Cos(Rotation) + Y,
                 0.0f)).ToList();
 
-            if (Filled)
-                verts.Insert(0, new Vector3(X, Y, 0.0f));
-            else if (verts.Count > 0)
-                verts.Add(verts[0]);
+        protected static List<Vector3> PrepareDrawVerts(List<Vector3> verts, bool filled)
+        {
+            if (filled)
+            {
+                if (verts.Count < 3) return [];
+                var centroid = verts.Aggregate(Vector3.Zero, (sum, v) => sum + v) / verts.Count;
+                var fanVerts = new List<Vector3> { centroid };
+                fanVerts.AddRange(verts);
+                return fanVerts;
+            }
+            else
+            {
+                var lineVerts = new List<Vector3>(verts);
+                if (lineVerts.Count > 0 && lineVerts[^1] != lineVerts[0])
+                    lineVerts.Add(lineVerts[0]);
+                return lineVerts;
+            }
+        }
+
+        protected static void RenderVerts(List<Vector3> verts, bool filled, int program, int vbo, Vector3 color, float lineWidth)
+        {
+            if (verts.Count == 0) return;
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
             GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(),
                 BufferUsageHint.DynamicDraw);
             GL.UseProgram(program);
-            GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
+            GL.Uniform3(GL.GetUniformLocation(program, "color"), color);
 
-            if (!Filled) GL.LineWidth(LineWidth);
+            if (!filled) GL.LineWidth(lineWidth);
 
             int vao = GL.GenVertexArray();
             GL.BindVertexArray(vao);
             GL.EnableVertexAttribArray(0);
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-            GL.DrawArrays(Filled ? PrimitiveType.TriangleFan : PrimitiveType.LineStrip, 0, verts.Count);
+            GL.DrawArrays(filled ? PrimitiveType.TriangleFan : PrimitiveType.LineStrip, 0, verts.Count);
             GL.DeleteVertexArray(vao);
             GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         }
 
-        public Primitive Animate(string property, float duration = 1.0f, string ease = "linear", float? target = null)
+        public Primitive Animate(string property, float duration = 1.0f, EaseType ease = EaseType.Linear, float? target = null)
         {
             ScheduleOrExecute(() =>
             {
@@ -152,7 +195,7 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive AnimateColor(Vector3 target, float duration = 1.0f, string ease = "linear")
+        public Primitive AnimateColor(Vector3 target, float duration = 1.0f, EaseType ease = EaseType.Linear)
         {
             ScheduleOrExecute(() =>
             {
@@ -169,7 +212,7 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive MoveTo(float x, float y, float duration = 1.0f, string ease = "linear")
+        public Primitive MoveTo(float x, float y, float duration = 1.0f, EaseType ease = EaseType.Linear)
         {
             ScheduleOrExecute(() =>
             {
@@ -190,13 +233,13 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive Resize(float targetScale, float duration = 1.0f, string ease = "linear") =>
+        public Primitive Resize(float targetScale, float duration = 1.0f, EaseType ease = EaseType.Linear) =>
             Animate("Scale", duration, ease, targetScale);
 
-        public Primitive RotateTo(float targetRotation, float duration = 1.0f, string ease = "linear") =>
+        public Primitive RotateTo(float targetRotation, float duration = 1.0f, EaseType ease = EaseType.Linear) =>
             Animate("Rotation", duration, ease, targetRotation);
 
-        public Primitive SetLineWidth(float target, float duration = 1.0f, string ease = "linear") =>
+        public Primitive SetLineWidth(float target, float duration = 1.0f, EaseType ease = EaseType.Linear) =>
             Animate("LineWidth", duration, ease, target);
 
         public Primitive SetFilled(bool filled, float duration = 0.0f)
@@ -205,7 +248,7 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive Draw(float duration = 1.0f, string ease = "ease_in_out")
+        public Primitive Draw(float duration = 1.0f, EaseType ease = EaseType.EaseInOut)
         {
             ScheduleOrExecute(() =>
             {
@@ -223,7 +266,7 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive MorphTo(Primitive target, float duration = 2.0f, string ease = "ease_in_out")
+        public Primitive MorphTo(Primitive target, float duration = 2.0f, EaseType ease = EaseType.EaseInOut)
         {
             ScheduleOrExecute(() =>
             {
@@ -231,12 +274,10 @@ namespace PhysicsSimulation
                 List<Vector2> targetVerts = target.GetBoundaryVerts();
                 if (startVerts.Count != targetVerts.Count)
                 {
-                    startVerts = startVerts.Count < targetVerts.Count
-                        ? Helpers.PadWithDuplicates(startVerts, targetVerts.Count)
-                        : startVerts;
-                    targetVerts = startVerts.Count > targetVerts.Count
-                        ? Helpers.PadWithDuplicates(targetVerts, startVerts.Count)
-                        : targetVerts;
+                    if (startVerts.Count < targetVerts.Count)
+                        startVerts = Helpers.PadWithDuplicates(startVerts, targetVerts.Count);
+                    else
+                        targetVerts = Helpers.PadWithDuplicates(targetVerts, startVerts.Count);
                 }
 
                 ShapeAnim = new Dictionary<string, object>
@@ -301,9 +342,6 @@ namespace PhysicsSimulation
         }
     }
 
-    // Замените ваш текущий класс Text этим кодом.
-// Требует: using System; using System.Collections.Generic; using System.Linq; using OpenTK.Graphics.OpenGL4; using OpenTK.Mathematics;
-
     public class Text : Primitive
     {
         public string TextContent { get; set; }
@@ -340,60 +378,24 @@ namespace PhysicsSimulation
             float offsetX = -Width / 2;
             foreach (char c in TextContent)
             {
-                var contours = CharMap.GetCharVerts(c, offsetX, FontSize);
-                foreach (var contour in contours)
-                {
-                    if (contour.Count < 2) continue;
-
-                    var scaledVerts = contour.Select(v => new Vector3(
-                        v.X * Scale * MathF.Cos(Rotation) - v.Y * Scale * MathF.Sin(Rotation) + X,
-                        v.X * Scale * MathF.Sin(Rotation) + v.Y * Scale * MathF.Cos(Rotation) + Y,
-                        0.0f)).ToList();
-
-                    if (Filled && scaledVerts.Count > 2)
-                    {
-                        var centroid = scaledVerts.Aggregate(Vector3.Zero, (sum, v) => sum + v) / scaledVerts.Count;
-                        var fanVerts = new List<Vector3> { centroid };
-                        fanVerts.AddRange(scaledVerts);
-                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-                        GL.BufferData(BufferTarget.ArrayBuffer, fanVerts.Count * Vector3.SizeInBytes,
-                            fanVerts.ToArray(), BufferUsageHint.DynamicDraw);
-                        GL.UseProgram(program);
-                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
-
-                        int vao = GL.GenVertexArray();
-                        GL.BindVertexArray(vao);
-                        GL.EnableVertexAttribArray(0);
-                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-                        GL.DrawArrays(PrimitiveType.TriangleFan, 0, fanVerts.Count);
-                        GL.DeleteVertexArray(vao);
-                    }
-                    else if (!Filled && scaledVerts.Count > 1)
-                    {
-                        var renderVerts = new List<Vector3>(scaledVerts);
-                        if (renderVerts.Count > 1 && renderVerts[renderVerts.Count - 1] != renderVerts[0])
-                            renderVerts.Add(renderVerts[0]);
-
-                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-                        GL.BufferData(BufferTarget.ArrayBuffer, renderVerts.Count * Vector3.SizeInBytes,
-                            renderVerts.ToArray(), BufferUsageHint.DynamicDraw);
-                        GL.UseProgram(program);
-                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
-                        GL.LineWidth(LineWidth);
-
-                        int vao = GL.GenVertexArray();
-                        GL.BindVertexArray(vao);
-                        GL.EnableVertexAttribArray(0);
-                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-                        GL.DrawArrays(PrimitiveType.LineStrip, 0, renderVerts.Count);
-                        GL.DeleteVertexArray(vao);
-                    }
-                }
-
+                var contours = CharMap.GetCharContours(c, offsetX, FontSize);
+                RenderContours(contours, program, vbo);
                 offsetX += FontSize * LetterSpacing;
             }
+        }
 
-            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+        private void RenderContours(List<List<Vector2>> contours, int program, int vbo)
+        {
+            foreach (var contour in contours)
+            {
+                if (contour.Count < 2) continue;
+
+                var transformed = TransformVerts(contour);
+
+                var drawVerts = PrepareDrawVerts(transformed, Filled);
+
+                RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+            }
         }
 
         public override List<Vector2> GetBoundaryVerts()
@@ -402,7 +404,7 @@ namespace PhysicsSimulation
             float offsetX = -Width / 2;
             foreach (char c in TextContent)
             {
-                var contours = CharMap.GetCharVerts(c, offsetX, FontSize);
+                var contours = CharMap.GetCharContours(c, offsetX, FontSize);
                 allVerts.AddRange(contours.SelectMany(contour => contour));
                 offsetX += FontSize * LetterSpacing;
             }
@@ -440,67 +442,18 @@ namespace PhysicsSimulation
 
             public override List<Vector2> GetBoundaryVerts()
             {
-                var contours = CharMap.GetCharVerts(Char, X, Parent.FontSize);
+                var contours = CharMap.GetCharContours(Char, X, Parent.FontSize);
                 return contours.SelectMany(contour => contour).ToList();
             }
 
             public override void Render(int program, int vbo)
             {
-                var contours = CharMap.GetCharVerts(Char, X, Parent.FontSize);
-                foreach (var contour in contours)
-                {
-                    if (contour.Count < 2) continue;
-
-                    var scaledVerts = contour.Select(v => new Vector3(
-                        v.X * Scale * MathF.Cos(Rotation) - v.Y * Scale * MathF.Sin(Rotation) + X,
-                        v.X * Scale * MathF.Sin(Rotation) + v.Y * Scale * MathF.Cos(Rotation) + Y,
-                        0.0f)).ToList();
-
-                    if (Filled && scaledVerts.Count > 2)
-                    {
-                        var centroid = scaledVerts.Aggregate(Vector3.Zero, (sum, v) => sum + v) / scaledVerts.Count;
-                        var fanVerts = new List<Vector3> { centroid };
-                        fanVerts.AddRange(scaledVerts);
-                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-                        GL.BufferData(BufferTarget.ArrayBuffer, fanVerts.Count * Vector3.SizeInBytes,
-                            fanVerts.ToArray(), BufferUsageHint.DynamicDraw);
-                        GL.UseProgram(program);
-                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
-
-                        int vao = GL.GenVertexArray();
-                        GL.BindVertexArray(vao);
-                        GL.EnableVertexAttribArray(0);
-                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-                        GL.DrawArrays(PrimitiveType.TriangleFan, 0, fanVerts.Count);
-                        GL.DeleteVertexArray(vao);
-                    }
-                    else if (!Filled && scaledVerts.Count > 1)
-                    {
-                        var renderVerts = new List<Vector3>(scaledVerts);
-                        if (renderVerts.Count > 1 && renderVerts[renderVerts.Count - 1] != renderVerts[0])
-                            renderVerts.Add(renderVerts[0]);
-
-                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-                        GL.BufferData(BufferTarget.ArrayBuffer, renderVerts.Count * Vector3.SizeInBytes,
-                            renderVerts.ToArray(), BufferUsageHint.DynamicDraw);
-                        GL.UseProgram(program);
-                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
-                        GL.LineWidth(LineWidth);
-
-                        int vao = GL.GenVertexArray();
-                        GL.BindVertexArray(vao);
-                        GL.EnableVertexAttribArray(0);
-                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-                        GL.DrawArrays(PrimitiveType.LineStrip, 0, renderVerts.Count);
-                        GL.DeleteVertexArray(vao);
-                    }
-                }
-
-                GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+                var contours = CharMap.GetCharContours(Char, X, Parent.FontSize);
+                ((Text)Parent).RenderContours(contours, program, vbo); // Reuse Text's RenderContours, as it's the same
             }
 
             public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration,
-                string ease, bool targetFilled)
+                EaseType ease, bool targetFilled)
             {
                 ShapeAnim = new Dictionary<string, object>
                 {
@@ -545,7 +498,7 @@ namespace PhysicsSimulation
                 Chars = chars ?? new List<Text.CharPrimitive>();
             }
 
-            public void Morph(Primitive target, float duration = 2f, string ease = "ease_in_out")
+            public void Morph(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut)
             {
                 if (Chars.Count == 0 || target == null) return;
 
@@ -562,28 +515,28 @@ namespace PhysicsSimulation
                 gp.MorphTo(target, duration, ease);
             }
 
-            public TextSlice Move(float dx, float dy, float duration = 1f, string ease = "linear")
+            public TextSlice Move(float dx, float dy, float duration = 1f, EaseType ease = EaseType.Linear)
             {
                 foreach (var c in Chars)
                     c.MoveTo(c.X + dx, c.Y + dy, duration, ease);
                 return this;
             }
 
-            public TextSlice Resize(float targetScale, float duration = 1f, string ease = "linear")
+            public TextSlice Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.Linear)
             {
                 foreach (var c in Chars)
                     c.Animate("Scale", duration, ease, targetScale);
                 return this;
             }
 
-            public TextSlice Rotate(float targetRotation, float duration = 1f, string ease = "linear")
+            public TextSlice Rotate(float targetRotation, float duration = 1f, EaseType ease = EaseType.Linear)
             {
                 foreach (var c in Chars)
                     c.Animate("Rotation", duration, ease, targetRotation);
                 return this;
             }
 
-            public TextSlice AnimateColor(Vector3 target, float duration = 1f, string ease = "linear")
+            public TextSlice AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.Linear)
             {
                 foreach (var c in Chars)
                     c.AnimateColor(target, duration, ease);
