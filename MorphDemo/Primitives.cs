@@ -324,6 +324,11 @@ namespace PhysicsSimulation
             Scale = 1.0f;
         }
 
+        public override void Update(float dt)
+        {
+            base.Update(dt);
+        }
+
         public override void Render(int program, int vbo)
         {
             if (CustomBoundary != null || ShapeAnim != null)
@@ -423,7 +428,7 @@ namespace PhysicsSimulation
 
         public class CharPrimitive : Primitive
         {
-            public char Char { get; set; } // Сделали изменяемым
+            public char Char { get; set; }
             public Text Parent { get; }
 
             public CharPrimitive(char c, Text parent, float x = 0.0f, float y = 0.0f, Vector3 color = default)
@@ -494,7 +499,6 @@ namespace PhysicsSimulation
                 GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
             }
 
-            // Публичные методы для управления защищёнными полями
             public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration,
                 string ease, bool targetFilled)
             {
@@ -545,73 +549,17 @@ namespace PhysicsSimulation
             {
                 if (Chars.Count == 0 || target == null) return;
 
-                if (target is Text targetText)
-                {
-                    // Морфинг по символам, если target - Text
-                    var targetChars = targetText.TextContent.ToCharArray();
-                    int maxLen = Math.Max(Chars.Count, targetChars.Length);
+                // Сбор вершин
+                var startVerts = Chars.SelectMany(c => c.GetBoundaryVerts()).ToList();
 
-                    // Паддинг если длины разные
-                    while (Chars.Count < maxLen)
-                    {
-                        var lastChar = Chars.LastOrDefault();
-                        float newX = lastChar != null
-                            ? lastChar.X + _parent.FontSize * _parent.LetterSpacing
-                            : _parent.X;
-                        Chars.Add(new CharPrimitive(' ', _parent, newX, 0.0f, _parent.Color) { Scale = 0.0f });
-                    }
+                var gp = new GroupPrimitive(startVerts, _parent.X, _parent.Y, _parent.Color, _parent.Filled);
+                Scene.CurrentScene?.Add(gp);
 
-                    for (int i = 0; i < maxLen; i++)
-                    {
-                        var sourceChar = Chars[i];
-                        var targetChar = i < targetChars.Length ? targetChars[i] : ' '; // Паддинг пустыми символами
+                // Скрываем символы
+                foreach (var c in Chars)
+                    c.Animate("Scale", 0.0f, ease, 0.0f);
 
-                        // Рассчитываем целевую позицию на основе spacing targetText
-                        float targetOffsetX =
-                            -targetText.Width / 2 + (i * targetText.FontSize * targetText.LetterSpacing);
-
-                        // Анимируем позицию sourceChar к целевой
-                        sourceChar.MoveTo(targetOffsetX, sourceChar.Y, duration, ease);
-
-                        // Анимируем цвет, если нужно
-                        sourceChar.AnimateColor(targetText.Color, duration, ease);
-
-                        // Морфим вершины напрямую
-                        var startVerts = sourceChar.GetBoundaryVerts();
-                        var targetVerts = CharMap.GetCharVerts(targetChar, targetOffsetX, targetText.FontSize)
-                            .SelectMany(contour => contour).ToList();
-
-                        if (startVerts.Count != targetVerts.Count)
-                        {
-                            startVerts = startVerts.Count < targetVerts.Count
-                                ? Helpers.PadWithDuplicates(startVerts, targetVerts.Count)
-                                : startVerts;
-                            targetVerts = startVerts.Count > targetVerts.Count
-                                ? Helpers.PadWithDuplicates(targetVerts, startVerts.Count)
-                                : targetVerts;
-                        }
-
-                        // Используем публичные методы для установки анимации
-                        sourceChar.SetShapeAnimation(startVerts, targetVerts, duration, ease, targetText.Filled);
-                        sourceChar.SetBoundaryVerts(startVerts);
-
-                        // Обновляем символ после морфа
-                        _parent.ScheduleOrExecute(() => sourceChar.Char = targetChar);
-                    }
-                }
-                else
-                {
-                    // Оригинальная логика для морфинга в общий Primitive
-                    var startVerts = Chars.SelectMany(c => c.GetBoundaryVerts()).ToList();
-
-                    var gp = new GroupPrimitive(startVerts, _parent.X, _parent.Y, _parent.Color, _parent.Filled);
-                    Scene.CurrentScene?.Add(gp);
-
-                    foreach (var c in Chars)
-                        c.Animate("Scale", 0.0f, ease, 0.0f);
-
-                    gp.MorphTo(target, duration, ease);
-                }
+                gp.MorphTo(target, duration, ease);
             }
 
             public TextSlice Move(float dx, float dy, float duration = 1f, string ease = "linear")
