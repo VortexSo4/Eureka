@@ -1,45 +1,97 @@
-﻿using SkiaSharp;
-using OpenTK.Mathematics;
-using System;
-using System.Collections.Generic;
+﻿using OpenTK.Mathematics;
+using SkiaSharp;
 
-public static class CharMap
+namespace PhysicsSimulation
 {
-    public static List<Vector2> GetCharVerts(char c, float offsetX, float size)
+    public static class CharMap
     {
-        var verts = new List<Vector2>();
-
-        // Создаём шрифт
-        using var typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Normal);
-        using var font = new SKFont(typeface, size);
-
-        // Получаем глиф
-        ushort[] glyphs = new ushort[1];
-        font.GetGlyphs(new char[] { c }, glyphs); // заполняем массив
-
-        if (glyphs[0] == 0)
+        public static List<List<Vector2>> GetCharVerts(char c, float offsetX, float size)
         {
-            Console.WriteLine($"Символ '{c}' не найден.");
-            return verts;
-        }
+            var contours = new List<List<Vector2>>();
 
-        var path = font.GetGlyphPath(glyphs[0]);
-        if (path == null)
-            return verts;
+            using var typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Normal);
+            using var font = new SKFont(typeface, size);
 
-        // Преобразуем SKPath в точки
-        var iter = path.CreateRawIterator();
-        SKPoint[] points = new SKPoint[4];
-        SKPathVerb verb;
-        while ((verb = iter.Next(points)) != SKPathVerb.Done)
-        {
-            for (int i = 0; i < 4; i++)
+            ushort[] glyphs = new ushort[1];
+            font.GetGlyphs(new[] { c }, glyphs);
+
+            if (glyphs[0] == 0)
+                return contours;
+
+            var path = font.GetGlyphPath(glyphs[0]);
+            if (path == null)
+                return contours;
+
+            var iter = path.CreateRawIterator();
+            SKPoint[] points = new SKPoint[4];
+            SKPathVerb verb;
+
+            List<Vector2>? currentContour = null;
+            Vector2 lastPoint = Vector2.Zero;
+
+            while ((verb = iter.Next(points)) != SKPathVerb.Done)
             {
-                if (points[i] != SKPoint.Empty)
-                    verts.Add(new Vector2(points[i].X + offsetX, -points[i].Y));
-            }
-        }
+                switch (verb)
+                {
+                    case SKPathVerb.Move:
+                        if (currentContour != null && currentContour.Count > 0)
+                            contours.Add(currentContour);
+                        currentContour = new List<Vector2>();
+                        lastPoint = new Vector2(points[0].X + offsetX, -points[0].Y);
+                        currentContour.Add(lastPoint);
+                        break;
 
-        return verts;
+                    case SKPathVerb.Line:
+                        lastPoint = new Vector2(points[1].X + offsetX, -points[1].Y);
+                        currentContour?.Add(lastPoint);
+                        break;
+
+                    case SKPathVerb.Quad:
+                        var quadPoints = new[]
+                        {
+                            lastPoint,
+                            new(points[1].X + offsetX, -points[1].Y),
+                            new(points[2].X + offsetX, -points[2].Y)
+                        };
+                        currentContour?.Add(quadPoints[2]);
+                        lastPoint = quadPoints[2];
+                        break;
+
+                    case SKPathVerb.Conic:
+                        var conicPoints = new[]
+                        {
+                            lastPoint,
+                            new(points[1].X + offsetX, -points[1].Y),
+                            new(points[2].X + offsetX, -points[2].Y)
+                        };
+                        currentContour?.Add(conicPoints[2]);
+                        lastPoint = conicPoints[2];
+                        break;
+
+                    case SKPathVerb.Cubic:
+                        var cubicPoints = new[]
+                        {
+                            lastPoint,
+                            new(points[1].X + offsetX, -points[1].Y),
+                            new(points[2].X + offsetX, -points[2].Y),
+                            new(points[3].X + offsetX, -points[3].Y)
+                        };
+                        currentContour?.Add(cubicPoints[3]);
+                        lastPoint = cubicPoints[3];
+                        break;
+
+                    case SKPathVerb.Close:
+                        if (currentContour != null && currentContour.Count > 2)
+                            contours.Add(currentContour);
+                        currentContour = null;
+                        break;
+                }
+            }
+
+            if (currentContour != null && currentContour.Count > 2)
+                contours.Add(currentContour);
+
+            return contours;
+        }
     }
 }

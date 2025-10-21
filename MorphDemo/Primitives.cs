@@ -29,7 +29,8 @@ namespace PhysicsSimulation
         protected List<Vector2>? CustomBoundary { get; set; }
         protected List<Vector2>? BoundaryVerts { get; set; }
 
-        protected Primitive(float x = 0.0f, float y = 0.0f, bool filled = false, Vector3 color = default, float vx = 0.0f, float vy = 0.0f)
+        protected Primitive(float x = 0.0f, float y = 0.0f, bool filled = false, Vector3 color = default,
+            float vx = 0.0f, float vy = 0.0f)
         {
             X = x;
             Y = y;
@@ -66,7 +67,8 @@ namespace PhysicsSimulation
                     default:
                         var propInfo = GetType().GetProperty(property);
                         if (propInfo?.PropertyType == typeof(float))
-                            propInfo.SetValue(this, (float)anim["start"] + ((float)anim["target"] - (float)anim["start"]) * t);
+                            propInfo.SetValue(this,
+                                (float)anim["start"] + ((float)anim["target"] - (float)anim["start"]) * t);
                         break;
                 }
 
@@ -112,7 +114,8 @@ namespace PhysicsSimulation
                 verts.Add(verts[0]);
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-            GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(), BufferUsageHint.DynamicDraw);
+            GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(),
+                BufferUsageHint.DynamicDraw);
             GL.UseProgram(program);
             GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
 
@@ -172,8 +175,16 @@ namespace PhysicsSimulation
             {
                 Animations.AddRange(new[]
                 {
-                    new Dictionary<string, object> { ["property"] = "X", ["start"] = X, ["target"] = x, ["duration"] = duration, ["elapsed"] = 0.0f, ["ease"] = ease },
-                    new Dictionary<string, object> { ["property"] = "Y", ["start"] = Y, ["target"] = y, ["duration"] = duration, ["elapsed"] = 0.0f, ["ease"] = ease }
+                    new Dictionary<string, object>
+                    {
+                        ["property"] = "X", ["start"] = X, ["target"] = x, ["duration"] = duration, ["elapsed"] = 0.0f,
+                        ["ease"] = ease
+                    },
+                    new Dictionary<string, object>
+                    {
+                        ["property"] = "Y", ["start"] = Y, ["target"] = y, ["duration"] = duration, ["elapsed"] = 0.0f,
+                        ["ease"] = ease
+                    }
                 });
             });
             return this;
@@ -220,9 +231,14 @@ namespace PhysicsSimulation
                 List<Vector2> targetVerts = target.GetBoundaryVerts();
                 if (startVerts.Count != targetVerts.Count)
                 {
-                    startVerts = startVerts.Count < targetVerts.Count ? Helpers.PadWithDuplicates(startVerts, targetVerts.Count) : startVerts;
-                    targetVerts = startVerts.Count > targetVerts.Count ? Helpers.PadWithDuplicates(targetVerts, startVerts.Count) : targetVerts;
+                    startVerts = startVerts.Count < targetVerts.Count
+                        ? Helpers.PadWithDuplicates(startVerts, targetVerts.Count)
+                        : startVerts;
+                    targetVerts = startVerts.Count > targetVerts.Count
+                        ? Helpers.PadWithDuplicates(targetVerts, startVerts.Count)
+                        : targetVerts;
                 }
+
                 ShapeAnim = new Dictionary<string, object>
                 {
                     ["start"] = startVerts,
@@ -249,7 +265,8 @@ namespace PhysicsSimulation
     {
         public float Radius { get; set; }
 
-        public Circle(float x = 0.0f, float y = 0.0f, float radius = 0.1f, bool filled = false, Vector3 color = default, float vx = 0.0f, float vy = 0.0f)
+        public Circle(float x = 0.0f, float y = 0.0f, float radius = 0.1f, bool filled = false, Vector3 color = default,
+            float vx = 0.0f, float vy = 0.0f)
             : base(x, y, filled, color, vx, vy)
         {
             Radius = radius;
@@ -258,7 +275,8 @@ namespace PhysicsSimulation
 
         public override List<Vector2> GetBoundaryVerts() =>
             Enumerable.Range(0, 100)
-                .Select(i => new Vector2(Radius * MathF.Cos(2 * MathF.PI * i / 100), Radius * MathF.Sin(2 * MathF.PI * i / 100)))
+                .Select(i => new Vector2(Radius * MathF.Cos(2 * MathF.PI * i / 100),
+                    Radius * MathF.Sin(2 * MathF.PI * i / 100)))
                 .ToList();
     }
 
@@ -267,7 +285,8 @@ namespace PhysicsSimulation
         public float Width { get; set; }
         public float Height { get; set; }
 
-        public Rectangle(float x = 0.0f, float y = 0.0f, float width = 0.2f, float height = 0.2f, bool filled = false, Vector3 color = default, float vx = 0.0f, float vy = 0.0f)
+        public Rectangle(float x = 0.0f, float y = 0.0f, float width = 0.2f, float height = 0.2f, bool filled = false,
+            Vector3 color = default, float vx = 0.0f, float vy = 0.0f)
             : base(x, y, filled, color, vx, vy)
         {
             Width = width;
@@ -287,281 +306,314 @@ namespace PhysicsSimulation
 
     public class Text : Primitive
     {
-        public string TextContent { get; private set; }
+        public string TextContent { get; set; }
         public float FontSize { get; set; }
+        public float LetterSpacing { get; set; } = 0.6f;
+        public float Width { get; set; }
+        public float Height { get; set; }
 
-        // Внутреннее представление символов
-        private List<CharPrimitive> CharObjects { get; } = new();
-
-        public Text(string text, float x = 0.0f, float y = 0.0f, float fontSize = 0.1f, Vector3 color = default,
-            bool filled = false)
-            : base(x, y, filled, color)
+        public Text(string text, float x = 0.0f, float y = 0.0f, float fontSize = 0.1f, float letterSpacing = 0.6f,
+            Vector3 color = default)
+            : base(x, y, false, color)
         {
-            TextContent = text ?? string.Empty;
+            TextContent = text;
             FontSize = fontSize;
+            LetterSpacing = letterSpacing;
+            Width = text.Length * fontSize * letterSpacing;
+            Height = fontSize;
             Scale = 1.0f;
-            RebuildChars();
         }
 
-        // Перестроить CharObjects (вызывать при изменении текста, размера шрифта и т.д.)
-        private void RebuildChars()
-        {
-            CharObjects.Clear();
-            float offsetX = -TextContent.Length * FontSize * 0.3f; // центрирование (как раньше)
-            foreach (char c in TextContent)
-            {
-                // CharPrimitive хранит локальные вершины символа без учёта offsetX
-                var cp = new CharPrimitive(c, offsetX, FontSize, Color, Filled);
-                CharObjects.Add(cp);
-                offsetX += FontSize * 0.6f;
-            }
-        }
-
-        // Получить срез текста (как объект для морфинга)
-        public TextSlice GetSlice(int start, int length)
-        {
-            start = Math.Max(0, start);
-            length = Math.Max(0, Math.Min(length, CharObjects.Count - start));
-            var sliceChars = CharObjects.GetRange(start, length);
-            return new TextSlice(this, sliceChars);
-        }
-
-        // Установить новый текст (перестроит символы)
-        public void SetText(string newText)
-        {
-            TextContent = newText ?? string.Empty;
-            RebuildChars();
-        }
-
-        // Массовые операции над текстом (распространяются на все символы, но не ломают индивидуальные анимации символов)
-        public Text SetFilledForAll(bool filled, float animDuration = 0.0f, string ease = "linear")
-        {
-            ScheduleOrExecute(() =>
-            {
-                foreach (var c in CharObjects)
-                    c.SetFilled(filled, animDuration > 0 ? animDuration : 0);
-                // также обновим текущий флаг
-                Filled = filled;
-            });
-            return this;
-        }
-
-        public Text ResizeAll(float targetScale, float duration = 1.0f, string ease = "linear")
-        {
-            ScheduleOrExecute(() =>
-            {
-                foreach (var c in CharObjects)
-                    c.Animate("Scale", duration, ease, targetScale);
-                // и текст в целом (логическое значение)
-                Scale = targetScale;
-            });
-            return this;
-        }
-
-        public Text RotateAll(float targetRotation, float duration = 1.0f, string ease = "linear")
-        {
-            ScheduleOrExecute(() =>
-            {
-                foreach (var c in CharObjects)
-                    c.Animate("Rotation", duration, ease, targetRotation);
-                Rotation = targetRotation;
-            });
-            return this;
-        }
-
-        public Text AnimateColorAll(Vector3 target, float duration = 1.0f, string ease = "linear")
-        {
-            ScheduleOrExecute(() =>
-            {
-                foreach (var c in CharObjects)
-                    c.AnimateColor(target, duration, ease);
-                Color = target;
-            });
-            return this;
-        }
-
-        // --- Рендер: теперь каждый символ рендерится как отдельный набор вершин ---
-        // При рендеринге мы передаём трансформации родителя (Text) в CharPrimitive, чтобы символы визуально двигались/масштабировались вместе с текстом
         public override void Render(int program, int vbo)
         {
-            // Если текст морфится как одно целое (CustomBoundary/ShapeAnim задан на тексте) — отрисуем как раньше (целым примитивом)
             if (CustomBoundary != null || ShapeAnim != null)
             {
                 base.Render(program, vbo);
                 return;
             }
 
-            // Рендерим каждый символ отдельно; у символов есть свои локальные вершины и offsetX
-            foreach (var c in CharObjects)
+            float offsetX = -Width / 2;
+            foreach (char c in TextContent)
             {
-                var verts = c.GetTransformedVertsRelativeToParent(X, Y, Scale, Rotation);
-                if (verts == null || verts.Count == 0) continue;
+                var contours = CharMap.GetCharVerts(c, offsetX, FontSize);
+                foreach (var contour in contours)
+                {
+                    if (contour.Count < 2) continue;
 
-                // Для заполненных символов будем использовать TRIANGLE_FAN, иначе — LINE_STRIP
-                var drawVerts = new List<Vector3>(verts);
-                if (!c.Filled && drawVerts.Count > 1)
-                    drawVerts.Add(drawVerts[0]);
-                if (c.Filled)
-                    drawVerts.Insert(0,
-                        new Vector3(X + 0f, Y + 0f, 0f)); // центр — текстовый центр (можно модифицировать)
+                    var scaledVerts = contour.Select(v => new Vector3(
+                        v.X * Scale * MathF.Cos(Rotation) - v.Y * Scale * MathF.Sin(Rotation) + X,
+                        v.X * Scale * MathF.Sin(Rotation) + v.Y * Scale * MathF.Cos(Rotation) + Y,
+                        0.0f)).ToList();
 
-                GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-                GL.BufferData(BufferTarget.ArrayBuffer, drawVerts.Count * Vector3.SizeInBytes, drawVerts.ToArray(),
-                    BufferUsageHint.DynamicDraw);
-                GL.UseProgram(program);
+                    if (Filled && scaledVerts.Count > 2)
+                    {
+                        var centroid = scaledVerts.Aggregate(Vector3.Zero, (sum, v) => sum + v) / scaledVerts.Count;
+                        var fanVerts = new List<Vector3> { centroid };
+                        fanVerts.AddRange(scaledVerts);
+                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+                        GL.BufferData(BufferTarget.ArrayBuffer, fanVerts.Count * Vector3.SizeInBytes,
+                            fanVerts.ToArray(), BufferUsageHint.DynamicDraw);
+                        GL.UseProgram(program);
+                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
 
-                // each char has its own color — если цвет не задан отдельно, CharPrimitive устанавливается цветом текста при создании
-                GL.Uniform3(GL.GetUniformLocation(program, "color"), c.Color);
+                        int vao = GL.GenVertexArray();
+                        GL.BindVertexArray(vao);
+                        GL.EnableVertexAttribArray(0);
+                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
+                        GL.DrawArrays(PrimitiveType.TriangleFan, 0, fanVerts.Count);
+                        GL.DeleteVertexArray(vao);
+                    }
+                    else if (!Filled && scaledVerts.Count > 1)
+                    {
+                        var renderVerts = new List<Vector3>(scaledVerts);
+                        if (renderVerts.Count > 1 && renderVerts[renderVerts.Count - 1] != renderVerts[0])
+                            renderVerts.Add(renderVerts[0]);
 
-                if (!c.Filled) GL.LineWidth(c.LineWidth);
+                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+                        GL.BufferData(BufferTarget.ArrayBuffer, renderVerts.Count * Vector3.SizeInBytes,
+                            renderVerts.ToArray(), BufferUsageHint.DynamicDraw);
+                        GL.UseProgram(program);
+                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
+                        GL.LineWidth(LineWidth);
 
-                int vao = GL.GenVertexArray();
-                GL.BindVertexArray(vao);
-                GL.EnableVertexAttribArray(0);
-                GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-                GL.DrawArrays(c.Filled ? PrimitiveType.TriangleFan : PrimitiveType.LineStrip, 0, drawVerts.Count);
-                GL.DeleteVertexArray(vao);
+                        int vao = GL.GenVertexArray();
+                        GL.BindVertexArray(vao);
+                        GL.EnableVertexAttribArray(0);
+                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
+                        GL.DrawArrays(PrimitiveType.LineStrip, 0, renderVerts.Count);
+                        GL.DeleteVertexArray(vao);
+                    }
+                }
+
+                offsetX += FontSize * LetterSpacing;
             }
+
+            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         }
 
         public override List<Vector2> GetBoundaryVerts()
         {
-            // Собираем все границы символов в одну плоскую последовательность (в локальных координатах текста)
-            if (CharObjects.Count == 0)
-                return new Rectangle(0, 0, TextContent.Length * FontSize * 0.6f, FontSize).GetBoundaryVerts();
+            var allVerts = new List<Vector2>();
+            float offsetX = -Width / 2;
+            foreach (char c in TextContent)
+            {
+                var contours = CharMap.GetCharVerts(c, offsetX, FontSize);
+                allVerts.AddRange(contours.SelectMany(contour => contour));
+                offsetX += FontSize * LetterSpacing;
+            }
 
-            return CharObjects.SelectMany(c => c.GetBoundaryVerts()).ToList();
+            return allVerts.Count == 0 ? new Rectangle(0, 0, Width, Height).GetBoundaryVerts() : allVerts;
         }
 
-        // ----------------------- Внутренние вспомогательные классы -----------------------
+        public TextSlice GetSlice(int startIndex, int length)
+        {
+            if (startIndex < 0 || startIndex >= TextContent.Length || startIndex + length > TextContent.Length)
+                return new TextSlice(this);
 
-        // Вложенный примитив для символа: хранит локальные вершины, offset и умеет возвращать трансформированные вершины
+            var chars = new List<CharPrimitive>();
+            for (int i = startIndex; i < startIndex + length; i++)
+            {
+                var c = TextContent[i];
+                float offsetX = -Width / 2 + (i * FontSize * LetterSpacing);
+                chars.Add(new CharPrimitive(c, this, offsetX, 0.0f, Color));
+            }
+
+            return new TextSlice(this, chars);
+        }
+
         public class CharPrimitive : Primitive
         {
-            public char Character { get; }
-            public List<Vector2> LocalVerts { get; } // вершины символа в своей локальной системе (центрованной)
-            public float OffsetX { get; } // смещение относительно центра текста (в локальных координатах текста)
+            public char Char { get; set; } // Сделали изменяемым
+            public Text Parent { get; }
 
-            public CharPrimitive(char c, float offsetX, float fontSize, Vector3 color, bool filled)
-                : base(0f, 0f, filled, color)
+            public CharPrimitive(char c, Text parent, float x = 0.0f, float y = 0.0f, Vector3 color = default)
+                : base(x, y, false, color)
             {
-                Character = c;
-                OffsetX = offsetX;
-                // CharMap возвращает List<Vector2> вершин символа в локальных координатах (без offset)
-                LocalVerts = CharMap.GetCharVerts(c, 0f, fontSize).Select(v => new Vector2(v.X, v.Y)).ToList();
-                Scale = 1.0f;
+                Char = c;
+                Parent = parent;
             }
 
-            // Возвращает вершины в мировых координатах, учитывая трансформацию родителя (текст)
-            public List<Vector3> GetTransformedVertsRelativeToParent(float parentX, float parentY, float parentScale,
-                float parentRotation)
-            {
-                // Сначала применяем локальный offset (в системе текста), затем объединяем с transform родителя
-                var result = new List<Vector3>(LocalVerts.Count);
-                float cos = MathF.Cos(parentRotation);
-                float sin = MathF.Sin(parentRotation);
-
-                float globalOffsetX = OffsetX * parentScale; // offset учитывает масштаб родителя
-
-                foreach (var lv in LocalVerts)
-                {
-                    // сначала масштабируем локальные координаты символа (char-local) с учётом родительского масштаба и char.Scale
-                    float sx = (lv.X * (parentScale * Scale));
-                    float sy = (lv.Y * (parentScale * Scale));
-
-                    // вращение относительно центра текста
-                    float rx = sx * cos - sy * sin;
-                    float ry = sx * sin + sy * cos;
-
-                    // переводим в мировые координаты: родительская позиция + глобальный offsetX
-                    result.Add(new Vector3(parentX + globalOffsetX + rx, parentY + ry, 0.0f));
-                }
-
-                return result;
-            }
-
-            // Возвращает локальные вершины символа в координатах текста (используется при подборе начальных вершин для среза)
             public override List<Vector2> GetBoundaryVerts()
             {
-                // Локальные координаты символа + смещение offsetX (в системе текста)
-                return LocalVerts.Select(v => new Vector2(v.X + OffsetX, v.Y)).ToList();
+                var contours = CharMap.GetCharVerts(Char, X, Parent.FontSize);
+                return contours.SelectMany(contour => contour).ToList();
             }
 
-            // Прямой рендер символа не используется — рендер осуществляется через Text.Render (чтобы корректно комбинировать parent transform).
-            // Но для тестов можно реализовать Render, вызываемый автономно:
             public override void Render(int program, int vbo)
             {
-                // Если нужно отрисовать символ автономно — используем его локальную позицию
-                var verts = LocalVerts.Select(v => new Vector3(v.X + OffsetX + X, v.Y + Y, 0f)).ToList();
-                if (!Filled && verts.Count > 0) verts.Add(verts[0]);
-                if (Filled) verts.Insert(0, new Vector3(X + OffsetX, Y, 0f));
+                var contours = CharMap.GetCharVerts(Char, X, Parent.FontSize);
+                foreach (var contour in contours)
+                {
+                    if (contour.Count < 2) continue;
 
-                GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-                GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(),
-                    BufferUsageHint.DynamicDraw);
-                GL.UseProgram(program);
-                GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
-                if (!Filled) GL.LineWidth(LineWidth);
+                    var scaledVerts = contour.Select(v => new Vector3(
+                        v.X * Scale * MathF.Cos(Rotation) - v.Y * Scale * MathF.Sin(Rotation) + X,
+                        v.X * Scale * MathF.Sin(Rotation) + v.Y * Scale * MathF.Cos(Rotation) + Y,
+                        0.0f)).ToList();
 
-                int vao = GL.GenVertexArray();
-                GL.BindVertexArray(vao);
-                GL.EnableVertexAttribArray(0);
-                GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
-                GL.DrawArrays(Filled ? PrimitiveType.TriangleFan : PrimitiveType.LineStrip, 0, verts.Count);
-                GL.DeleteVertexArray(vao);
+                    if (Filled && scaledVerts.Count > 2)
+                    {
+                        var centroid = scaledVerts.Aggregate(Vector3.Zero, (sum, v) => sum + v) / scaledVerts.Count;
+                        var fanVerts = new List<Vector3> { centroid };
+                        fanVerts.AddRange(scaledVerts);
+                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+                        GL.BufferData(BufferTarget.ArrayBuffer, fanVerts.Count * Vector3.SizeInBytes,
+                            fanVerts.ToArray(), BufferUsageHint.DynamicDraw);
+                        GL.UseProgram(program);
+                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
+
+                        int vao = GL.GenVertexArray();
+                        GL.BindVertexArray(vao);
+                        GL.EnableVertexAttribArray(0);
+                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
+                        GL.DrawArrays(PrimitiveType.TriangleFan, 0, fanVerts.Count);
+                        GL.DeleteVertexArray(vao);
+                    }
+                    else if (!Filled && scaledVerts.Count > 1)
+                    {
+                        var renderVerts = new List<Vector3>(scaledVerts);
+                        if (renderVerts.Count > 1 && renderVerts[renderVerts.Count - 1] != renderVerts[0])
+                            renderVerts.Add(renderVerts[0]);
+
+                        GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+                        GL.BufferData(BufferTarget.ArrayBuffer, renderVerts.Count * Vector3.SizeInBytes,
+                            renderVerts.ToArray(), BufferUsageHint.DynamicDraw);
+                        GL.UseProgram(program);
+                        GL.Uniform3(GL.GetUniformLocation(program, "color"), Color);
+                        GL.LineWidth(LineWidth);
+
+                        int vao = GL.GenVertexArray();
+                        GL.BindVertexArray(vao);
+                        GL.EnableVertexAttribArray(0);
+                        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
+                        GL.DrawArrays(PrimitiveType.LineStrip, 0, renderVerts.Count);
+                        GL.DeleteVertexArray(vao);
+                    }
+                }
+
+                GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+            }
+
+            // Публичные методы для управления защищёнными полями
+            public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration,
+                string ease, bool targetFilled)
+            {
+                ShapeAnim = new Dictionary<string, object>
+                {
+                    ["start"] = startVerts,
+                    ["target"] = targetVerts,
+                    ["duration"] = duration,
+                    ["elapsed"] = 0.0f,
+                    ["ease"] = ease,
+                    ["target_filled"] = targetFilled
+                };
+            }
+
+            public void SetBoundaryVerts(List<Vector2> verts)
+            {
+                BoundaryVerts = verts;
             }
         }
 
-        // Временный групповой примитив: создаётся на основе произвольного набора вершин и умеет морфиться
-        // Используется TextSlice.Morph чтобы морфить только часть текста.
-        private class GroupPrimitive : Primitive
+        public class GroupPrimitive : Primitive
         {
-            public GroupPrimitive(IEnumerable<Vector2> verts, float x, float y, Vector3 color, bool filled)
+            public List<Vector2> InitialVerts { get; }
+
+            public GroupPrimitive(List<Vector2> verts, float x = 0.0f, float y = 0.0f, Vector3 color = default,
+                bool filled = false)
                 : base(x, y, filled, color)
             {
-                CustomBoundary = verts.ToList();
-                Scale = 1.0f;
+                InitialVerts = verts;
+                CustomBoundary = verts;
             }
 
-            public override List<Vector2> GetBoundaryVerts()
-            {
-                return CustomBoundary ?? new List<Vector2>();
-            }
-
-            // Когда группа отрисовывается, базовый Primitive.Render всё сделает
+            public override List<Vector2> GetBoundaryVerts() => CustomBoundary ?? InitialVerts;
         }
 
-        // --- Срез текста: представляет выбранные CharPrimitive, умеет морфиться в произвольный Primitive ---
         public class TextSlice
         {
             private readonly Text _parent;
-            public List<Text.CharPrimitive> Chars { get; }
+            public List<CharPrimitive> Chars { get; private set; }
 
-            public TextSlice(Text parent, List<Text.CharPrimitive> chars)
+            public TextSlice(Text parent, List<CharPrimitive>? chars = null)
             {
                 _parent = parent;
                 Chars = chars ?? new List<Text.CharPrimitive>();
             }
 
-            // Морфим выбранные символы в целевой Primitive
             public void Morph(Primitive target, float duration = 2f, string ease = "ease_in_out")
             {
                 if (Chars.Count == 0 || target == null) return;
 
-                // Сбор вершин
-                var startVerts = Chars.SelectMany(c => c.GetBoundaryVerts()).ToList();
+                if (target is Text targetText)
+                {
+                    // Морфинг по символам, если target - Text
+                    var targetChars = targetText.TextContent.ToCharArray();
+                    int maxLen = Math.Max(Chars.Count, targetChars.Length);
 
-                var gp = new Text.GroupPrimitive(startVerts, _parent.X, _parent.Y, _parent.Color, _parent.Filled);
-                Scene.CurrentScene?.Add(gp);
+                    // Паддинг если длины разные
+                    while (Chars.Count < maxLen)
+                    {
+                        var lastChar = Chars.LastOrDefault();
+                        float newX = lastChar != null
+                            ? lastChar.X + _parent.FontSize * _parent.LetterSpacing
+                            : _parent.X;
+                        Chars.Add(new CharPrimitive(' ', _parent, newX, 0.0f, _parent.Color) { Scale = 0.0f });
+                    }
 
-                // Скрываем символы
-                foreach (var c in Chars)
-                    c.Animate("Scale", 0.0f, ease, 0.0f);
+                    for (int i = 0; i < maxLen; i++)
+                    {
+                        var sourceChar = Chars[i];
+                        var targetChar = i < targetChars.Length ? targetChars[i] : ' '; // Паддинг пустыми символами
 
-                gp.MorphTo(target, duration, ease);
+                        // Рассчитываем целевую позицию на основе spacing targetText
+                        float targetOffsetX =
+                            -targetText.Width / 2 + (i * targetText.FontSize * targetText.LetterSpacing);
+
+                        // Анимируем позицию sourceChar к целевой
+                        sourceChar.MoveTo(targetOffsetX, sourceChar.Y, duration, ease);
+
+                        // Анимируем цвет, если нужно
+                        sourceChar.AnimateColor(targetText.Color, duration, ease);
+
+                        // Морфим вершины напрямую
+                        var startVerts = sourceChar.GetBoundaryVerts();
+                        var targetVerts = CharMap.GetCharVerts(targetChar, targetOffsetX, targetText.FontSize)
+                            .SelectMany(contour => contour).ToList();
+
+                        if (startVerts.Count != targetVerts.Count)
+                        {
+                            startVerts = startVerts.Count < targetVerts.Count
+                                ? Helpers.PadWithDuplicates(startVerts, targetVerts.Count)
+                                : startVerts;
+                            targetVerts = startVerts.Count > targetVerts.Count
+                                ? Helpers.PadWithDuplicates(targetVerts, startVerts.Count)
+                                : targetVerts;
+                        }
+
+                        // Используем публичные методы для установки анимации
+                        sourceChar.SetShapeAnimation(startVerts, targetVerts, duration, ease, targetText.Filled);
+                        sourceChar.SetBoundaryVerts(startVerts);
+
+                        // Обновляем символ после морфа
+                        _parent.ScheduleOrExecute(() => sourceChar.Char = targetChar);
+                    }
+                }
+                else
+                {
+                    // Оригинальная логика для морфинга в общий Primitive
+                    var startVerts = Chars.SelectMany(c => c.GetBoundaryVerts()).ToList();
+
+                    var gp = new GroupPrimitive(startVerts, _parent.X, _parent.Y, _parent.Color, _parent.Filled);
+                    Scene.CurrentScene?.Add(gp);
+
+                    foreach (var c in Chars)
+                        c.Animate("Scale", 0.0f, ease, 0.0f);
+
+                    gp.MorphTo(target, duration, ease);
+                }
             }
 
-            // --- Новые функции для анимаций напрямую на срезе ---
             public TextSlice Move(float dx, float dy, float duration = 1f, string ease = "linear")
             {
                 foreach (var c in Chars)

@@ -12,7 +12,7 @@ public class CustomScene : Scene
         var t2 = new Text("mgh", x: -0.2f, y: -0.4f, fontSize: 0.1f, color: new Vector3(0.5f, 0.5f, 1.0f));
         var t3 = new Text("(mV^2)/2", x: 0.2f, y: -0.4f, fontSize: 0.1f, color: new Vector3(0.5f, 0.5f, 1.0f));
 
-        Add(t1.Draw(duration: 1.0f));
+        Add(t1.Draw(duration: 1.0f), t3.Draw());
         Wait(4.0f);
         t1.GetSlice(0, 2).AnimateColor(new Vector3(1.0f, 0.3f, 0.3f));
         t1.GetSlice(0, 2).Move(0.1f, 0.2f);
