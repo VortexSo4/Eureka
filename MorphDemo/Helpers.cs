@@ -37,14 +37,26 @@ namespace PhysicsSimulation
         {
             var nativeSettings = new NativeWindowSettings
             {
-                Size = new OpenTK.Mathematics.Vector2i(1920, 1080),
+                Size = new Vector2i(1920, 1080),
                 Title = title,
                 Profile = ContextProfile.Core,
                 API = ContextAPI.OpenGL,
-                APIVersion = new Version(3, 3)
+                APIVersion = new Version(3, 3),
+                NumberOfSamples = 4
             };
+
             var window = new GameWindow(GameWindowSettings.Default, nativeSettings);
             window.VSync = VSyncMode.On;
+
+            // Включаем мультисэмплинг в OpenGL
+            GL.Enable(EnableCap.Multisample);
+
+            // Остальной антиалиазинг для линий и точек
+            GL.Enable(EnableCap.LineSmooth);   // сглаживание линий
+            GL.Enable(EnableCap.PolygonSmooth); // сглаживание полигонов (можно оставить, но иногда вызывает артефакты)
+            GL.Hint(HintTarget.LineSmoothHint, HintMode.Nicest);
+            GL.Hint(HintTarget.PolygonSmoothHint, HintMode.Nicest);
+
             return window;
         }
 
