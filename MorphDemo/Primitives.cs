@@ -105,12 +105,16 @@ namespace PhysicsSimulation
 
             if (tRaw >= 1f)
             {
-                // на финале — сохранить целевую локальную границу, чтобы дальнейший рендер был корректен
                 CustomBoundary = ShapeAnim.FinalTargetBoundary ?? ShapeAnim.Target;
                 Filled = ShapeAnim.TargetFilled;
-                // если был флаг скрытия target — восстановим его (см. MorphTo ниже)
+                // если был флаг скрытия target — восстановим его
                 if (ShapeAnim.RestoreTargetOnFinish && ShapeAnim.TargetToRestore != null)
-                    ShapeAnim.TargetToRestore.SetFilled(true);
+                {
+                    var tgt = ShapeAnim.TargetToRestore;
+                    tgt.CustomBoundary = ShapeAnim.OriginalTargetCustomBoundary;
+                    tgt.Filled = ShapeAnim.TargetFilled;
+                }
+
                 ShapeAnim = null;
             }
         }
@@ -270,54 +274,73 @@ namespace PhysicsSimulation
         public Primitive MorphTo(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut,
             bool hideTargetDuringMorph = false)
         {
-            var startVerts = CustomBoundary ?? BoundaryVerts ?? GetBoundaryVerts();
-            var targetVerts = target.GetBoundaryVerts();
-
-            // Получаем bounding centers (внутренняя утилита)
-            var startBounds = GetBounds(startVerts);
-            var targetBounds = GetBounds(targetVerts);
-
-            // Нормализуем в локальные координаты (убираем центры) — теперь это локальные формы
-            var normalizedStart = NormalizeVerts(startVerts, startBounds);
-            var normalizedTarget = NormalizeVerts(targetVerts, targetBounds);
-
-            // Подгоним длину списков как раньше
-            if (normalizedStart.Count != normalizedTarget.Count)
+            // Помещаем всю логику внутрь ScheduleOrExecute, чтобы при Recording=true
+            // создание ShapeAnim и регистрация property-анимаций происходили синхронно
+            // в момент срабатывания по timeline.
+            ScheduleOrExecute(() =>
             {
-                if (normalizedStart.Count < normalizedTarget.Count)
-                    normalizedStart = Helpers.PadWithDuplicates(normalizedStart, normalizedTarget.Count);
-                else
-                    normalizedTarget = Helpers.PadWithDuplicates(normalizedTarget, normalizedStart.Count);
-            }
+                // --- helper deep copy ---
+                List<Vector2> DeepCopy(List<Vector2>? src) =>
+                    src?.Select(v => new Vector2(v.X, v.Y)).ToList() ?? new List<Vector2>();
 
-            // Опционально: скрыть target на время морфа (чтобы не было дублирования рендера)
-            if (hideTargetDuringMorph)
-            {
-                target.SetFilled(false);
-            }
+                // pluck verts (deep copy чтобы избежать алиасинга на кеш CharMap и т.д.)
+                var startVerts = DeepCopy(CustomBoundary ?? BoundaryVerts ?? GetBoundaryVerts());
+                var targetVerts = DeepCopy(target.GetBoundaryVerts());
 
-            ShapeAnim = new ShapeAnimation
-            {
-                Start = normalizedStart,
-                Target = normalizedTarget,
-                Duration = duration,
-                Ease = ease,
-                TargetFilled = target.Filled,
-                FinalTargetBoundary = normalizedTarget, // локальная целевая граница — сохраняем как финал
-                // параметры для восстановления видимости target (если использовали hideTargetDuringMorph)
-                RestoreTargetOnFinish = hideTargetDuringMorph,
-                TargetToRestore = hideTargetDuringMorph ? target : null
-            };
+                // Получаем bounding centers (внутренняя утилита)
+                var startBounds = GetBounds(startVerts);
+                var targetBounds = GetBounds(targetVerts);
 
-            // BoundaryVerts держим в локальных координатах — TransformVerts прибавит X/Y
-            BoundaryVerts = normalizedStart;
+                // Нормализуем в локальные координаты (убираем центры) — теперь это локальные формы
+                var normalizedStart = NormalizeVerts(startVerts, startBounds);
+                var normalizedTarget = NormalizeVerts(targetVerts, targetBounds);
 
-            // Анимируем трансформ/цветы исходного объекта к параметрам target (одновременно)
-            AnimateColor(target.Color, duration, ease);
-            MoveTo(target.X, target.Y, duration, ease);
-            Resize(target.Scale == 0f ? 1f : target.Scale, duration, ease);
-            RotateTo(target.Rotation, duration, ease);
-            SetLineWidth(target.LineWidth, duration, ease);
+                // Подгоним длину списков как раньше
+                if (normalizedStart.Count != normalizedTarget.Count)
+                {
+                    if (normalizedStart.Count < normalizedTarget.Count)
+                        normalizedStart = Helpers.PadWithDuplicates(normalizedStart, normalizedTarget.Count);
+                    else
+                        normalizedTarget = Helpers.PadWithDuplicates(normalizedTarget, normalizedStart.Count);
+                }
+
+                // Опционально: скрыть target на время морфа (чтобы не было дублирования рендера)
+                List<Vector2>? origTargetCustom = null;
+                if (hideTargetDuringMorph)
+                {
+                    origTargetCustom = target.CustomBoundary;
+                    target.CustomBoundary = new List<Vector2>(); // временно пусто — target не будет рендериться
+                    target.Animations.Clear(); // приостанавливаем/убираем его property-анимации на время морфа
+                    target.Filled = false;
+                }
+
+                // Сохраняем локальную целевую границу (deep copy)
+                var finalLocalTarget = DeepCopy(normalizedTarget);
+
+                ShapeAnim = new ShapeAnimation
+                {
+                    Start = normalizedStart,
+                    Target = normalizedTarget,
+                    Duration = duration,
+                    Ease = ease,
+                    TargetFilled = target.Filled,
+                    FinalTargetBoundary = finalLocalTarget,
+                    RestoreTargetOnFinish = hideTargetDuringMorph,
+                    TargetToRestore = hideTargetDuringMorph ? target : null,
+                    // если скрывали — сохраним оригинал для восстановления
+                    OriginalTargetCustomBoundary = origTargetCustom
+                };
+
+                // BoundaryVerts держим в локальных координатах — TransformVerts прибавит X/Y/Scale/Rotation
+                BoundaryVerts = normalizedStart;
+
+                // Анимируем трансформ/цветы исходного объекта к параметрам target (одновременно)
+                AnimateColor(target.Color, duration, ease);
+                MoveTo(target.X, target.Y, duration, ease);
+                Resize(target.Scale == 0f ? 1f : target.Scale, duration, ease);
+                RotateTo(target.Rotation, duration, ease);
+                SetLineWidth(target.LineWidth, duration, ease);
+            });
 
             return this;
         }
@@ -401,6 +424,7 @@ namespace PhysicsSimulation
             public List<Vector2>? FinalTargetBoundary;
             public bool RestoreTargetOnFinish;
             public Primitive? TargetToRestore;
+            public List<Vector2>? OriginalTargetCustomBoundary;
         }
     }
 
