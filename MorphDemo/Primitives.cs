@@ -110,9 +110,35 @@ namespace PhysicsSimulation
             var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
             if (source == null || source.Count == 0) return;
 
-            var transformed = TransformVerts(source);
-            var draw = PrepareDrawVerts(transformed, Filled);
-            RenderVerts(draw, Filled, program, vbo, Color, LineWidth);
+            // Разбиваем source на сегменты по разделителю (NaN, NaN).
+            var segments = new List<List<Vector2>>();
+            var current = new List<Vector2>();
+            foreach (var p in source)
+            {
+                if (float.IsNaN(p.X) || float.IsNaN(p.Y))
+                {
+                    if (current.Count > 0)
+                    {
+                        segments.Add(current);
+                        current = new List<Vector2>();
+                    }
+                    // пропускаем разделитель
+                }
+                else
+                {
+                    current.Add(p);
+                }
+            }
+            if (current.Count > 0) segments.Add(current);
+
+            // Рендерим каждый сегмент отдельно (это убирает "мосты" между сегментами)
+            foreach (var seg in segments)
+            {
+                if (seg == null || seg.Count == 0) continue;
+                var transformed = TransformVerts(seg);
+                var draw = PrepareDrawVerts(transformed, Filled);
+                RenderVerts(draw, Filled, program, vbo, Color, LineWidth);
+            }
         }
 
         protected virtual List<Vector3> TransformVerts(List<Vector2> verts)
@@ -462,16 +488,22 @@ namespace PhysicsSimulation
         public override List<Vector2> GetBoundaryVerts()
         {
             var all = new List<Vector2>();
-            float offsetX = -Width / 2f;
+
+            float cursorX = 0;
             foreach (char c in TextContent)
             {
-                var contours = GetCharContours(c, offsetX);
-                all.AddRange(contours.SelectMany(contour => contour));
-                offsetX += FontSize * LetterSpacing;
+                var charContours = CharMap.GetCharContours(c, cursorX, FontSize);
+
+                foreach (var contour in charContours)
+                {
+                    all.AddRange(contour);
+                    // разделитель между контурами (чтобы не было мостов между внутренними и внешними)
+                    all.Add(new Vector2(float.NaN, float.NaN));
+                }
+
+                cursorX += FontSize * LetterSpacing;
             }
 
-            if (all.Count == 0)
-                return new Rectangle(0, 0, Width, Height).GetBoundaryVerts();
             return all;
         }
 
