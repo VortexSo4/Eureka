@@ -1,4 +1,5 @@
 ﻿// Scene.cs
+using OpenTK.Mathematics;
 namespace PhysicsSimulation
 {
     public abstract class SceneObject
@@ -16,6 +17,22 @@ namespace PhysicsSimulation
         public bool Recording { get; private set; } = true;
         private float _timelineOffset;
         public float CurrentTime { get; set; }
+
+        // Background color animation
+        private Vector3 _backgroundColor = new Vector3(0.12f, 0.12f, 0.12f);
+        private Vector3 _backgroundStartColor;
+        private Vector3 _backgroundTargetColor = new Vector3(0.12f, 0.12f, 0.12f);
+        private float _backgroundAnimElapsed = 0f;
+        private float _backgroundAnimDuration = 0f;
+        private EaseType _backgroundEaseType = EaseType.Linear;
+        private bool _backgroundAnimating = false;
+
+        public Vector3 GetCurrentBackgroundColor()
+        {
+            return _backgroundColor;
+        }
+
+        public Vector3 BackgroundColor => _backgroundColor;
 
         public Scene()
         {
@@ -62,9 +79,50 @@ namespace PhysicsSimulation
             return this;
         }
 
+        public Scene AnimateBackgroundColor(Vector3 targetColor, float duration = 1f, EaseType ease = EaseType.Linear)
+        {
+            ScheduleOrExecute(() =>
+            {
+                _backgroundStartColor = _backgroundColor;          // сохраняем стартовый цвет
+                _backgroundTargetColor = targetColor;             // целевой цвет
+                _backgroundAnimElapsed = 0f;                      // сброс времени анимации
+                _backgroundAnimDuration = Math.Max(duration, 0.01f); // защита от нуля
+                _backgroundEaseType = ease;                       // easing
+                _backgroundAnimating = true;                      // включаем анимацию
+            });
+            return this;
+        }
+
+        private void ScheduleOrExecute(Action action)
+        {
+            if (Recording)
+                _actions.Add((_timelineOffset, action));
+            else
+                action();
+        }
+
         public virtual void Update(float dt)
         {
             CurrentTime += dt;
+
+            // Обновление анимации фона
+            if (_backgroundAnimating)
+            {
+                _backgroundAnimElapsed += dt;
+                float tRaw = Math.Min(1f, _backgroundAnimElapsed / _backgroundAnimDuration);
+                float t = Easing.Ease(_backgroundEaseType, tRaw);
+
+                // Интерполяция от стартового к целевому цвету
+                _backgroundColor = Vector3.Lerp(_backgroundStartColor, _backgroundTargetColor, t);
+
+                if (tRaw >= 1f)
+                {
+                    _backgroundColor = _backgroundTargetColor;
+                    _backgroundAnimating = false;
+                }
+            }
+
+            // Выполнение отложенных действий
             var actionsToExecute = _actions.Where(a => a.time <= CurrentTime).ToArray();
             foreach (var action in actionsToExecute)
             {
@@ -79,6 +137,7 @@ namespace PhysicsSimulation
                 }
             }
 
+            // Обновление объектов сцены
             foreach (var obj in Objects.ToArray())
             {
                 try
@@ -99,7 +158,7 @@ namespace PhysicsSimulation
                 obj.Render(program, vbo);
             }
         }
-
+        
         protected virtual void StartSlides()
         {
             Console.WriteLine("Base Scene StartSlides called (empty)");

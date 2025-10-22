@@ -1,4 +1,5 @@
-﻿using OpenTK.Graphics.OpenGL4;
+﻿// Helpers.cs
+using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.Common;
@@ -68,7 +69,8 @@ namespace PhysicsSimulation
             int vertexShader = CompileShader(ShaderType.VertexShader, @"
                 #version 330 core
                 layout(location = 0) in vec3 in_vert;
-                void main() { gl_Position = vec4(in_vert, 1.0); }
+                uniform float aspectRatio;
+                void main() { gl_Position = vec4(in_vert.x * aspectRatio, in_vert.y, in_vert.z, 1.0); }
             ");
 
             int fragmentShader = CompileShader(ShaderType.FragmentShader, @"
