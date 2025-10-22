@@ -95,12 +95,22 @@ namespace PhysicsSimulation
             float tRaw = Math.Min(1f, ShapeAnim.Elapsed / Math.Max(1e-9f, ShapeAnim.Duration));
             float t = Easing.Ease(ShapeAnim.Ease, tRaw);
 
-            BoundaryVerts = ShapeAnim.Start.Zip(ShapeAnim.Target, (s, targ) => Vector2.Lerp(s, targ, t)).ToList();
+            // Start и Target уже нормализованы (локальные) — просто lerp по парам
+            var interpolated = ShapeAnim.Start.Zip(ShapeAnim.Target, (s, targ) =>
+                (float.IsNaN(s.X) || float.IsNaN(s.Y)) ? new Vector2(float.NaN, float.NaN) : Vector2.Lerp(s, targ, t)
+            ).ToList();
+
+            // Записываем локальные вершины. TransformVerts применит X/Y, Rotation, Scale как обычно.
+            BoundaryVerts = interpolated;
 
             if (tRaw >= 1f)
             {
-                CustomBoundary = BoundaryVerts;
+                // на финале — сохранить целевую локальную границу, чтобы дальнейший рендер был корректен
+                CustomBoundary = ShapeAnim.FinalTargetBoundary ?? ShapeAnim.Target;
                 Filled = ShapeAnim.TargetFilled;
+                // если был флаг скрытия target — восстановим его (см. MorphTo ниже)
+                if (ShapeAnim.RestoreTargetOnFinish && ShapeAnim.TargetToRestore != null)
+                    ShapeAnim.TargetToRestore.SetFilled(true);
                 ShapeAnim = null;
             }
         }
@@ -257,36 +267,116 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive MorphTo(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut)
+        public Primitive MorphTo(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut,
+            bool hideTargetDuringMorph = false)
         {
             var startVerts = CustomBoundary ?? BoundaryVerts ?? GetBoundaryVerts();
             var targetVerts = target.GetBoundaryVerts();
 
-            if (startVerts.Count != targetVerts.Count)
+            // Получаем bounding centers (внутренняя утилита)
+            var startBounds = GetBounds(startVerts);
+            var targetBounds = GetBounds(targetVerts);
+
+            // Нормализуем в локальные координаты (убираем центры) — теперь это локальные формы
+            var normalizedStart = NormalizeVerts(startVerts, startBounds);
+            var normalizedTarget = NormalizeVerts(targetVerts, targetBounds);
+
+            // Подгоним длину списков как раньше
+            if (normalizedStart.Count != normalizedTarget.Count)
             {
-                if (startVerts.Count < targetVerts.Count)
-                    startVerts = Helpers.PadWithDuplicates(startVerts, targetVerts.Count);
+                if (normalizedStart.Count < normalizedTarget.Count)
+                    normalizedStart = Helpers.PadWithDuplicates(normalizedStart, normalizedTarget.Count);
                 else
-                    targetVerts = Helpers.PadWithDuplicates(targetVerts, startVerts.Count);
+                    normalizedTarget = Helpers.PadWithDuplicates(normalizedTarget, normalizedStart.Count);
+            }
+
+            // Опционально: скрыть target на время морфа (чтобы не было дублирования рендера)
+            if (hideTargetDuringMorph)
+            {
+                target.SetFilled(false);
             }
 
             ShapeAnim = new ShapeAnimation
             {
-                Start = startVerts,
-                Target = targetVerts,
+                Start = normalizedStart,
+                Target = normalizedTarget,
                 Duration = duration,
                 Ease = ease,
-                TargetFilled = target.Filled
+                TargetFilled = target.Filled,
+                FinalTargetBoundary = normalizedTarget, // локальная целевая граница — сохраняем как финал
+                // параметры для восстановления видимости target (если использовали hideTargetDuringMorph)
+                RestoreTargetOnFinish = hideTargetDuringMorph,
+                TargetToRestore = hideTargetDuringMorph ? target : null
             };
 
-            BoundaryVerts = startVerts;
+            // BoundaryVerts держим в локальных координатах — TransformVerts прибавит X/Y
+            BoundaryVerts = normalizedStart;
 
+            // Анимируем трансформ/цветы исходного объекта к параметрам target (одновременно)
             AnimateColor(target.Color, duration, ease);
             MoveTo(target.X, target.Y, duration, ease);
             Resize(target.Scale == 0f ? 1f : target.Scale, duration, ease);
             RotateTo(target.Rotation, duration, ease);
             SetLineWidth(target.LineWidth, duration, ease);
+
             return this;
+        }
+
+        private (Vector2 Min, Vector2 Max, Vector2 Center) GetBounds(List<Vector2> verts)
+        {
+            if (verts == null || verts.Count == 0)
+                return (Vector2.Zero, Vector2.Zero, Vector2.Zero);
+
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+
+            foreach (var v in verts)
+            {
+                if (float.IsNaN(v.X) || float.IsNaN(v.Y)) continue;
+        
+                if (v.X < minX) minX = v.X;
+                if (v.X > maxX) maxX = v.X;
+                if (v.Y < minY) minY = v.Y;
+                if (v.Y > maxY) maxY = v.Y;
+            }
+
+            var center = new Vector2((minX + maxX) / 2, (minY + maxY) / 2);
+            return (new Vector2(minX, minY), new Vector2(maxX, maxY), center);
+        }
+
+        private List<Vector2> NormalizeVerts(List<Vector2> verts, (Vector2 Min, Vector2 Max, Vector2 Center) bounds)
+        {
+            var result = new List<Vector2>(verts.Count);
+            foreach (var v in verts)
+            {
+                if (float.IsNaN(v.X) || float.IsNaN(v.Y))
+                {
+                    result.Add(new Vector2(float.NaN, float.NaN));
+                }
+                else
+                {
+                    // Центрируем вершины относительно центра bounding box'а
+                    result.Add(v - bounds.Center);
+                }
+            }
+            return result;
+        }
+
+        private List<Vector2> DenormalizeVerts(List<Vector2> verts, Vector2 center)
+        {
+            var result = new List<Vector2>(verts.Count);
+            foreach (var v in verts)
+            {
+                if (float.IsNaN(v.X) || float.IsNaN(v.Y))
+                {
+                    result.Add(new Vector2(float.NaN, float.NaN));
+                }
+                else
+                {
+                    result.Add(v + center);
+                }
+            }
+            return result;
         }
 
         public abstract List<Vector2> GetBoundaryVerts();
@@ -308,6 +398,9 @@ namespace PhysicsSimulation
             public float Elapsed;
             public EaseType Ease;
             public bool TargetFilled;
+            public List<Vector2>? FinalTargetBoundary;
+            public bool RestoreTargetOnFinish;
+            public Primitive? TargetToRestore;
         }
     }
 
@@ -517,22 +610,29 @@ namespace PhysicsSimulation
         {
             var all = new List<Vector2>();
 
-            float cursorX = 0;
+            float cursorX = -Width / 2f; // Начинаем с правильного смещения для центрирования
             for (int i = 0; i < TextContent.Length; i++)
             {
                 char c = TextContent[i];
-                var charContours = CharMap.GetCharContours(c, cursorX, FontSize);
+                var charContours = GetCharContours(c, cursorX);
 
                 foreach (var contour in charContours)
                 {
-                    all.AddRange(contour);
-                    // разделитель между контурами (чтобы не было мостов между внутренними и внешними)
-                    all.Add(new Vector2(float.NaN, float.NaN));
+                    if (contour.Count > 0)
+                    {
+                        all.AddRange(contour);
+                        // Добавляем разделитель между контурами
+                        all.Add(new Vector2(float.NaN, float.NaN));
+                    }
                 }
 
                 float adv = CharMap.GetGlyphAdvance(c, FontSize);
                 cursorX += adv + (i < TextContent.Length - 1 ? LetterPadding : 0f);
             }
+
+            // Убираем последний лишний разделитель
+            if (all.Count > 0 && float.IsNaN(all[^1].X))
+                all.RemoveAt(all.Count - 1);
 
             return all;
         }
