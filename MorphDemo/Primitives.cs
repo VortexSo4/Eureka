@@ -356,30 +356,52 @@ namespace PhysicsSimulation
     {
         public string TextContent { get; set; }
         public float FontSize { get; set; }
-        public float LetterSpacing { get; set; } = 0.6f;
+
+        /// <summary>Пиксельно/мировой padding между буквами (абсолютный). По умолчанию 0.01</summary>
+        public float LetterPadding { get; set; } = 0.01f;
+
         public float Width { get; private set; }
         public float Height { get; private set; }
 
-        // cache raw contours per char (relative to 0) to avoid repeated CharMap calls
-        private readonly Dictionary<char, List<List<Vector2>>> _contourCache = new();
+        // cache raw contours per char+size to avoid repeated CharMap calls
+        private readonly Dictionary<(char ch, float size), List<List<Vector2>>> _contourCache = new();
 
         // cache of per-char transformed vertices to avoid recomputing when not changed
         private readonly Dictionary<int, CachedChar> _charCache = new();
 
-        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterSpacing = 0.6f, Vector3 color = default)
+        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.01f,
+            Vector3 color = default)
             : base(x, y, false, color)
         {
             TextContent = text;
             FontSize = fontSize;
-            LetterSpacing = letterSpacing;
-            Width = text.Length * fontSize * letterSpacing;
+            LetterPadding = letterPadding;
             Height = fontSize;
+            RecalculateWidth();
+        }
+
+        private void RecalculateWidth()
+        {
+            float total = 0f;
+            for (int i = 0; i < TextContent.Length; i++)
+            {
+                char c = TextContent[i];
+                float adv = CharMap.GetGlyphAdvance(c, FontSize);
+                total += adv;
+                if (i < TextContent.Length - 1)
+                    total += LetterPadding;
+            }
+
+            Width = total;
         }
 
         private class CachedChar
         {
             public char C;
-            public float LastParentX; public float LastParentY; public float LastParentScale; public float LastParentRotation;
+            public float LastParentX;
+            public float LastParentY;
+            public float LastParentScale;
+            public float LastParentRotation;
             public Vector3[] CachedVerts = Array.Empty<Vector3>();
         }
 
@@ -391,6 +413,7 @@ namespace PhysicsSimulation
                 return;
             }
 
+            // отрисовываем символы слева-направо, выравнено по центру (Width/2)
             float offsetX = -Width / 2f;
             for (int i = 0; i < TextContent.Length; i++)
             {
@@ -398,7 +421,10 @@ namespace PhysicsSimulation
                 var contours = GetCharContours(c, offsetX);
                 // render each contour using per-char cache for transformed vertices
                 RenderContoursWithCharCache(c, i, contours, program, vbo);
-                offsetX += FontSize * LetterSpacing;
+
+                // advance курсора: ширина глифа + padding (padding не добавляем после последнего символа)
+                float adv = CharMap.GetGlyphAdvance(c, FontSize);
+                offsetX += adv + (i < TextContent.Length - 1 ? LetterPadding : 0f);
             }
         }
 
@@ -462,7 +488,6 @@ namespace PhysicsSimulation
             }
         }
 
-
         private void RenderContours(List<List<Vector2>> contours, int program, int vbo)
         {
             foreach (var contour in contours)
@@ -474,14 +499,17 @@ namespace PhysicsSimulation
             }
         }
 
+        // теперь кэш учитывает размер шрифта
         public List<List<Vector2>> GetCharContours(char c, float offsetX)
         {
-            if (!_contourCache.TryGetValue(c, out var contours))
+            var key = (c, FontSize);
+            if (!_contourCache.TryGetValue(key, out var contours))
             {
                 contours = CharMap.GetCharContours(c, 0f, FontSize);
-                _contourCache[c] = contours;
+                _contourCache[key] = contours;
             }
-            // apply offset
+
+            // apply offset (return deep copy with applied offset)
             return contours.Select(contour => contour.Select(v => new Vector2(v.X + offsetX, v.Y)).ToList()).ToList();
         }
 
@@ -490,8 +518,9 @@ namespace PhysicsSimulation
             var all = new List<Vector2>();
 
             float cursorX = 0;
-            foreach (char c in TextContent)
+            for (int i = 0; i < TextContent.Length; i++)
             {
+                char c = TextContent[i];
                 var charContours = CharMap.GetCharContours(c, cursorX, FontSize);
 
                 foreach (var contour in charContours)
@@ -501,7 +530,8 @@ namespace PhysicsSimulation
                     all.Add(new Vector2(float.NaN, float.NaN));
                 }
 
-                cursorX += FontSize * LetterSpacing;
+                float adv = CharMap.GetGlyphAdvance(c, FontSize);
+                cursorX += adv + (i < TextContent.Length - 1 ? LetterPadding : 0f);
             }
 
             return all;
@@ -512,9 +542,12 @@ namespace PhysicsSimulation
         {
             public char Char { get; set; }
             private readonly Text Parent;
-            public CharPrimitive(char c, Text parent, float x = 0f, float y = 0f, Vector3 color = default) : base(x, y, false, color)
+
+            public CharPrimitive(char c, Text parent, float x = 0f, float y = 0f, Vector3 color = default) : base(x, y,
+                false, color)
             {
-                Char = c; Parent = parent;
+                Char = c;
+                Parent = parent;
             }
 
             public override List<Vector2> GetBoundaryVerts()
@@ -529,7 +562,8 @@ namespace PhysicsSimulation
                 Parent.RenderContours(contours, program, vbo);
             }
 
-            public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration, EaseType ease, bool targetFilled)
+            public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration,
+                EaseType ease, bool targetFilled)
             {
                 ShapeAnim = new ShapeAnimation
                 {
@@ -547,7 +581,9 @@ namespace PhysicsSimulation
         public class GroupPrimitive : Primitive
         {
             private readonly List<Vector2> _initialVerts;
-            public GroupPrimitive(List<Vector2> verts, float x = 0f, float y = 0f, Vector3 color = default, bool filled = false) : base(x, y, filled, color)
+
+            public GroupPrimitive(List<Vector2> verts, float x = 0f, float y = 0f, Vector3 color = default,
+                bool filled = false) : base(x, y, filled, color)
             {
                 _initialVerts = verts;
                 CustomBoundary = verts;
@@ -563,7 +599,8 @@ namespace PhysicsSimulation
 
             public TextSlice(Text parent, List<CharPrimitive>? chars = null)
             {
-                _parent = parent; Chars = chars ?? new List<CharPrimitive>();
+                _parent = parent;
+                Chars = chars ?? new List<CharPrimitive>();
             }
 
             public void Morph(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut)
@@ -619,12 +656,21 @@ namespace PhysicsSimulation
                 return new TextSlice(this);
 
             var chars = new List<CharPrimitive>(length);
+            // Recompute starting offset for character i
+            float baseOffset = -Width / 2f;
+            for (int i = 0; i < startIndex; i++)
+            {
+                baseOffset += CharMap.GetGlyphAdvance(TextContent[i], FontSize) + LetterPadding;
+            }
+
             for (int i = startIndex; i < startIndex + length; i++)
             {
                 char c = TextContent[i];
-                float offsetX = -Width / 2f + (i * FontSize * LetterSpacing);
+                float offsetX = baseOffset;
                 chars.Add(new CharPrimitive(c, this, offsetX, 0f, Color));
+                baseOffset += CharMap.GetGlyphAdvance(c, FontSize) + LetterPadding;
             }
+
             return new TextSlice(this, chars);
         }
     }

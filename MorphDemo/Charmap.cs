@@ -1,8 +1,4 @@
-﻿// CharmapFixed.cs
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using OpenTK.Mathematics;
+﻿using OpenTK.Mathematics;
 using SkiaSharp;
 
 namespace PhysicsSimulation
@@ -16,118 +12,125 @@ namespace PhysicsSimulation
             using var typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Normal);
             using var font = new SKFont(typeface, size);
 
-            ushort[] glyphs = new ushort[1];
-            font.GetGlyphs(new[] { c }, glyphs);
-            if (glyphs[0] == 0) return contours;
-
-            var path = font.GetGlyphPath(glyphs[0]);
+            if (!TryGetGlyph(font, c, out ushort glyph)) return contours;
+            using var path = font.GetGlyphPath(glyph);
             if (path == null) return contours;
 
-            var iter = path.CreateRawIterator();
-            SKPoint[] points = new SKPoint[4];
-            SKPathVerb verb;
-
             List<Vector2>? currentContour = null;
-            Vector2 lastPoint = Vector2.Zero;
+            var iter = path.CreateRawIterator();
+            var points = new SKPoint[4];
+            SKPathVerb verb;
 
             while ((verb = iter.Next(points)) != SKPathVerb.Done)
             {
                 switch (verb)
                 {
                     case SKPathVerb.Move:
-                        // если был предыдущий контур — замкнуть и добавить
-                        if (currentContour != null && currentContour.Count > 0)
-                            CloseContour(currentContour, size);
-                        currentContour = new List<Vector2>();
-                        lastPoint = ToVec(points[0], offsetX);
-                        currentContour.Add(lastPoint);
+                        currentContour = StartNewContour(currentContour, contours, size);
+                        currentContour.Add(ToVec(points[0], offsetX));
                         break;
-
                     case SKPathVerb.Line:
-                        lastPoint = ToVec(points[1], offsetX);
-                        currentContour?.Add(lastPoint);
+                        currentContour?.Add(ToVec(points[1], offsetX));
                         break;
-
                     case SKPathVerb.Quad:
-                        AddQuadratic(currentContour, points[0], points[1], points[2], offsetX);
-                        lastPoint = ToVec(points[2], offsetX);
-                        break;
-
                     case SKPathVerb.Conic:
-                        AddQuadratic(currentContour, points[0], points[1], points[2], offsetX);
-                        lastPoint = ToVec(points[2], offsetX);
+                        AddCurve(currentContour, points[..3], offsetX);
                         break;
-
                     case SKPathVerb.Cubic:
-                        AddCubic(currentContour, points[0], points[1], points[2], points[3], offsetX);
-                        lastPoint = ToVec(points[3], offsetX);
+                        AddCurve(currentContour, points[..4], offsetX);
                         break;
-
                     case SKPathVerb.Close:
-                        if (currentContour != null && currentContour.Count > 0)
-                            CloseContour(currentContour, size);
+                        CloseContour(currentContour, contours, size);
                         currentContour = null;
                         break;
                 }
             }
 
-            // добавить последний контур если остался
-            if (currentContour != null && currentContour.Count > 0)
-                CloseContour(currentContour, size);
-
+            CloseContour(currentContour, contours, size);
             return contours;
+        }
 
-            // --- локальные функции ---
-            Vector2 ToVec(SKPoint p, float ox) => new(p.X + ox, -p.Y);
+        // Возвращает ширину символа
+        public static float GetGlyphAdvance(char c, float size)
+        {
+            using var typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Normal);
+            using var font = new SKFont(typeface, size);
 
-            void CloseContour(List<Vector2> contour, float minSize)
+            if (!TryGetGlyph(font, c, out ushort glyph)) return size * 0.5f;
+            float[] widths = new float[1];
+            SKRect[] bounds = new SKRect[1];
+            font.GetGlyphWidths(new ushort[] { glyph }, widths, bounds, null);
+            if (widths[0] > 0) return widths[0];
+
+            var contours = GetCharContours(c, 0f, size);
+            if (contours.Count == 0) return size * 0.5f;
+
+            float minX = float.MaxValue, maxX = float.MinValue;
+            foreach (var contour in contours)
+                foreach (var p in contour)
+                {
+                    if (p.X < minX) minX = p.X;
+                    if (p.X > maxX) maxX = p.X;
+                }
+
+            return (minX == float.MaxValue || maxX == float.MinValue) ? size * 0.5f : maxX - minX;
+        }
+
+        private static bool TryGetGlyph(SKFont font, char c, out ushort glyph)
+        {
+            glyph = 0;
+            ushort[] glyphs = new ushort[1];
+            font.GetGlyphs(new[] { c }, glyphs);
+            glyph = glyphs[0];
+            return glyph != 0;
+        }
+
+        private static Vector2 ToVec(SKPoint p, float offsetX) => new(p.X + offsetX, -p.Y);
+
+        private static List<Vector2> StartNewContour(List<Vector2>? existing, List<List<Vector2>> target, float minSize)
+        {
+            CloseContour(existing, target, minSize);
+            return new List<Vector2>();
+        }
+
+        private static void CloseContour(List<Vector2>? contour, List<List<Vector2>> target, float minSize)
+        {
+            if (contour == null || contour.Count == 0) return;
+
+            if (contour.Count < 2)
             {
-                if (contour.Count < 2)
-                {
-                    // очень маленький контур, превратим в квадрат 2x2 px
-                    contour.Clear();
-                    float s = minSize * 0.1f;
-                    contour.Add(new Vector2(-s, -s));
-                    contour.Add(new Vector2(s, -s));
-                    contour.Add(new Vector2(s, s));
-                    contour.Add(new Vector2(-s, s));
-                }
-                else
-                {
-                    // замкнуть контур
-                    if ((contour[^1] - contour[0]).Length > 1e-5f)
-                        contour.Add(contour[0]);
-                }
-                contours.Add(contour);
+                float s = minSize * 0.1f;
+                contour.Clear();
+                contour.AddRange(new[] { new Vector2(-s, -s), new Vector2(s, -s), new Vector2(s, s), new Vector2(-s, s) });
+            }
+            else if ((contour[^1] - contour[0]).Length > 1e-5f)
+            {
+                contour.Add(contour[0]);
             }
 
-            void AddQuadratic(List<Vector2>? contour, SKPoint p0, SKPoint p1, SKPoint p2, float ox, int steps = 8)
-            {
-                if (contour == null) return;
-                for (int i = 1; i <= steps; i++)
-                {
-                    float t = i / (float)steps;
-                    float u = 1 - t;
-                    contour.Add(new Vector2(
-                        u * u * p0.X + 2 * u * t * p1.X + t * t * p2.X + ox,
-                        -(u * u * p0.Y + 2 * u * t * p1.Y + t * t * p2.Y)
-                    ));
-                }
-            }
+            target.Add(contour);
+        }
 
-            void AddCubic(List<Vector2>? contour, SKPoint p0, SKPoint p1, SKPoint p2, SKPoint p3, float ox, int steps = 12)
+        private static void AddCurve(List<Vector2>? contour, SKPoint[] controlPoints, float offsetX, int steps = 12)
+        {
+            if (contour == null || controlPoints.Length < 2) return;
+            for (int i = 1; i <= steps; i++)
             {
-                if (contour == null) return;
-                for (int i = 1; i <= steps; i++)
-                {
-                    float t = i / (float)steps;
-                    float u = 1 - t;
-                    contour.Add(new Vector2(
-                        u * u * u * p0.X + 3 * u * u * t * p1.X + 3 * u * t * t * p2.X + t * t * t * p3.X + ox,
-                        -(u * u * u * p0.Y + 3 * u * u * t * p1.Y + 3 * u * t * t * p2.Y + t * t * t * p3.Y)
-                    ));
-                }
+                float t = i / (float)steps;
+                var pt = DeCasteljau(controlPoints, t);
+                contour.Add(new Vector2(pt.X + offsetX, -pt.Y));
             }
+        }
+
+        private static SKPoint DeCasteljau(SKPoint[] points, float t)
+        {
+            var temp = (SKPoint[])points.Clone();
+            int n = points.Length - 1;
+            for (int r = 1; r <= n; r++)
+                for (int i = 0; i <= n - r; i++)
+                    temp[i] = new SKPoint((1 - t) * temp[i].X + t * temp[i + 1].X,
+                                           (1 - t) * temp[i].Y + t * temp[i + 1].Y);
+            return temp[0];
         }
     }
 }
