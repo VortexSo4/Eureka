@@ -506,6 +506,7 @@ namespace PhysicsSimulation
         public float FontSize { get; set; }
 
         public float LetterPadding { get; set; } = 0.01f;
+        public float LineSpacing { get; set; } = 0.02f;
 
         public float Width { get; private set; }
         public float Height { get; private set; }
@@ -524,22 +525,28 @@ namespace PhysicsSimulation
             FontSize = fontSize;
             LetterPadding = letterPadding;
             Height = fontSize;
-            RecalculateWidth();
+            RecalculateWidthHeight();
         }
-
-        private void RecalculateWidth()
+        
+        private void RecalculateWidthHeight()
         {
-            float total = 0f;
-            for (int i = 0; i < TextContent.Length; i++)
+            var lines = TextContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            Width = 0f;
+            foreach (var line in lines)
             {
-                char c = TextContent[i];
-                float adv = CharMap.GetGlyphAdvance(c, FontSize);
-                total += adv;
-                if (i < TextContent.Length - 1)
-                    total += LetterPadding;
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize);
+                    if (i < line.Length - 1)
+                        lineWidth += LetterPadding;
+                }
+                if (lineWidth > Width)
+                    Width = lineWidth;
             }
 
-            Width = total;
+            Height = lines.Length * FontSize + (lines.Length - 1) * LineSpacing;
         }
 
         private class CachedChar
@@ -549,7 +556,9 @@ namespace PhysicsSimulation
             public float LastParentY;
             public float LastParentScale;
             public float LastParentRotation;
-            public Vector3[] CachedVerts = Array.Empty<Vector3>();
+            public float LastOffsetX;
+            public float LastOffsetY;
+            public List<List<Vector3>> CachedContours = new List<List<Vector3>>();
         }
 
         public override void Render(int program, int vbo)
@@ -560,31 +569,43 @@ namespace PhysicsSimulation
                 return;
             }
 
-            // отрисовываем символы слева-направо, выравнено по центру (Width/2)
-            float offsetX = -Width / 2f;
-            for (int i = 0; i < TextContent.Length; i++)
-            {
-                char c = TextContent[i];
-                var contours = GetCharContours(c, offsetX);
-                // render each contour using per-char cache for transformed vertices
-                RenderContoursWithCharCache(c, i, contours, program, vbo);
+            var lines = TextContent.Replace("\r", "").Split('\n'); // убираем \r для Windows
 
-                // advance курсора: ширина глифа + padding (padding не добавляем после последнего символа)
-                float adv = CharMap.GetGlyphAdvance(c, FontSize);
-                offsetX += adv + (i < TextContent.Length - 1 ? LetterPadding : 0f);
+            float cursorY = (Height / 2f) - FontSize; // стартовая Y-координата (верхняя строка)
+
+            foreach (var line in lines)
+            {
+                // рассчитываем смещение по X для центрирования строки
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) +
+                                 (i < line.Length - 1 ? LetterPadding : 0f);
+
+                float offsetX = -lineWidth / 2f;
+
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    var contours = GetCharContours(c, offsetX, cursorY);
+                    RenderContoursWithCharCache( c, i, contours, offsetX, cursorY, program, vbo);
+
+                    // продвигаем X-курсор
+                    float adv = CharMap.GetGlyphAdvance(c, FontSize);
+                    offsetX += adv + (i < line.Length - 1 ? LetterPadding : 0f);
+                }
+
+                cursorY -= FontSize + LineSpacing; // переход к следующей строке
             }
         }
 
-        private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, int program, int vbo)
+        private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, float offsetX, float offsetY, int program, int vbo)
         {
-            if (contours == null || contours.Count == 0)
-                return;
+            if (contours == null || contours.Count == 0) return;
 
-            // key is index to separate identical characters in different positions
             int key = index;
             if (!_charCache.TryGetValue(key, out var cache))
             {
-                cache = new CachedChar { C = c };
+                cache = new CachedChar { C = c, CachedContours = new List<List<Vector3>>() };
                 _charCache[key] = cache;
             }
 
@@ -592,46 +613,41 @@ namespace PhysicsSimulation
                          cache.LastParentX != X ||
                          cache.LastParentY != Y ||
                          cache.LastParentScale != Scale ||
-                         cache.LastParentRotation != Rotation;
+                         cache.LastParentRotation != Rotation ||
+                         cache.LastOffsetX != offsetX ||
+                         cache.LastOffsetY != offsetY;
 
             if (dirty)
             {
-                // rebuild cached vertices for each contour separately
-                var allTransformed = new List<Vector3>();
+                cache.CachedContours.Clear();
                 float cos = MathF.Cos(Rotation) * Scale;
                 float sin = MathF.Sin(Rotation) * Scale;
 
                 foreach (var contour in contours)
                 {
+                    var transformed = new List<Vector3>();
                     foreach (var v in contour)
                     {
-                        allTransformed.Add(new Vector3(v.X * cos - v.Y * sin + X, v.X * sin + v.Y * cos + Y, 0f));
+                        // contours already include offsetX/offsetY when created by GetCharContours,
+                        // but to be robust we still apply rotation/scale and parent X/Y here.
+                        transformed.Add(new Vector3(v.X * cos - v.Y * sin + X, v.X * sin + v.Y * cos + Y, 0f));
                     }
+                    cache.CachedContours.Add(transformed);
                 }
 
-                cache.CachedVerts = allTransformed.ToArray();
                 cache.C = c;
                 cache.LastParentX = X;
                 cache.LastParentY = Y;
                 cache.LastParentScale = Scale;
                 cache.LastParentRotation = Rotation;
+                cache.LastOffsetX = offsetX;
+                cache.LastOffsetY = offsetY;
             }
 
-            // Render each contour separately
-            float cosT = MathF.Cos(Rotation) * Scale;
-            float sinT = MathF.Sin(Rotation) * Scale;
-
-            foreach (var contour in contours)
+            foreach (var contour in cache.CachedContours)
             {
-                if (contour.Count < 2)
-                    continue;
-
-                var transformed = contour
-                    .Select(v => new Vector3(v.X * cosT - v.Y * sinT + X, v.X * sinT + v.Y * cosT + Y, 0f))
-                    .ToList();
-
-                var drawVerts = PrepareDrawVerts(transformed, Filled);
-                RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+                if (contour.Count < 2) continue;
+                RenderVerts(contour, Filled, program, vbo, Color, LineWidth);
             }
         }
 
@@ -647,7 +663,7 @@ namespace PhysicsSimulation
         }
 
         // теперь кэш учитывает размер шрифта
-        public List<List<Vector2>> GetCharContours(char c, float offsetX)
+        public List<List<Vector2>> GetCharContours(char c, float offsetX, float offsetY = 0f)
         {
             var key = (c, FontSize);
             if (!_contourCache.TryGetValue(key, out var contours))
@@ -656,35 +672,41 @@ namespace PhysicsSimulation
                 _contourCache[key] = contours;
             }
 
-            // apply offset (return deep copy with applied offset)
-            return contours.Select(contour => contour.Select(v => new Vector2(v.X + offsetX, v.Y)).ToList()).ToList();
+            return contours
+                .Select(contour => contour.Select(v => new Vector2(v.X + offsetX, v.Y + offsetY)).ToList())
+                .ToList();
         }
 
         public override List<Vector2> GetBoundaryVerts()
         {
             var all = new List<Vector2>();
+            var lines = TextContent.Split('\n');
 
-            float cursorX = -Width / 2f; // Начинаем с правильного смещения для центрирования
-            for (int i = 0; i < TextContent.Length; i++)
+            float cursorY = (Height / 2f) - FontSize; // начинаем с верхней строки
+            foreach (var line in lines)
             {
-                char c = TextContent[i];
-                var charContours = GetCharContours(c, cursorX);
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) + (i < line.Length - 1 ? LetterPadding : 0f);
 
-                foreach (var contour in charContours)
+                float offsetX = -lineWidth / 2f; // центрирование по горизонтали
+
+                for (int i = 0; i < line.Length; i++)
                 {
-                    if (contour.Count > 0)
+                    char c = line[i];
+                    var contours = GetCharContours(c, offsetX, cursorY);
+                    foreach (var contour in contours)
                     {
                         all.AddRange(contour);
-                        // Добавляем разделитель между контурами
                         all.Add(new Vector2(float.NaN, float.NaN));
                     }
+
+                    offsetX += CharMap.GetGlyphAdvance(c, FontSize) + (i < line.Length - 1 ? LetterPadding : 0f);
                 }
 
-                float adv = CharMap.GetGlyphAdvance(c, FontSize);
-                cursorX += adv + (i < TextContent.Length - 1 ? LetterPadding : 0f);
+                cursorY -= FontSize + LineSpacing; // переход к следующей строке
             }
 
-            // Убираем последний лишний разделитель
             if (all.Count > 0 && float.IsNaN(all[^1].X))
                 all.RemoveAt(all.Count - 1);
 
