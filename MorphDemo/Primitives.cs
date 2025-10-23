@@ -505,7 +505,6 @@ namespace PhysicsSimulation
         public string TextContent { get; set; }
         public float FontSize { get; set; }
 
-        /// <summary>Пиксельно/мировой padding между буквами (абсолютный). По умолчанию 0.01</summary>
         public float LetterPadding { get; set; } = 0.01f;
 
         public float Width { get; private set; }
@@ -827,19 +826,6 @@ namespace PhysicsSimulation
             }
 
             return new TextSlice(this, chars);
-        }
-    }
-
-    // ------------------ EXTENSIONS ------------------
-    public static class PrimitiveExtensions
-    {
-        public static T Do<T>(this T p, Action<T> action) where T : Primitive { action(p); return p; }
-
-        // convenience color animation for primitives
-        public static Primitive AnimateColor(this Primitive p, Vector3 target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
-        {
-            p.Animate(t => p.Color = Vector3.Lerp(p.Color, target, t), 0f, 1f, duration, ease);
-            return p;
         }
     }
 }

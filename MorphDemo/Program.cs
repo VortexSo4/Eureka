@@ -14,8 +14,8 @@ namespace PhysicsSimulation
 
             string sceneName = args.Length > 0 ? args[0] : "CustomScene";
 
-            var window = Helpers.InitOpenTKWindow();
-            var (program, vbo) = Helpers.CreateGLContextAndProgram();
+            var window = Helpers.InitOpenTkWindow();
+            var (program, vbo) = Helpers.CreateGlContextAndProgram();
 
             int aspectLoc = GL.GetUniformLocation(program, "aspectRatio");
             if (aspectLoc >= 0)

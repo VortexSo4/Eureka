@@ -1,67 +1,64 @@
-﻿// Helpers.cs
-using OpenTK.Graphics.OpenGL4;
+﻿using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.Common;
+using OpenTK.Windowing.GraphicsLibraryFramework;
+
 namespace PhysicsSimulation
 {
     public static class Helpers
     {
-        // --- PadWithDuplicates для вершин ---
-        public static List<Vector2> PadWithDuplicates(List<Vector2> verts, int targetLen)
+        // --- Инициализация окна OpenTK ---
+        public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = true)
         {
-            if (verts == null) throw new ArgumentNullException(nameof(verts));
-            if (targetLen <= 0) return new List<Vector2>();
-
-            if (verts.Count == 0)
-                return Enumerable.Repeat(Vector2.Zero, targetLen).ToList();
-
-            if (verts.Count >= targetLen)
+            var settings = new NativeWindowSettings
             {
-                float step = (float)verts.Count / targetLen;
-                return Enumerable.Range(0, targetLen).Select(i => verts[(int)(i * step)]).ToList();
-            }
-
-            var newVerts = new List<Vector2>(targetLen);
-            int q = targetLen / verts.Count;
-            int r = targetLen % verts.Count;
-            for (int i = 0; i < verts.Count; i++)
-            {
-                int repeats = q + (i < r ? 1 : 0);
-                newVerts.AddRange(Enumerable.Repeat(verts[i], repeats));
-            }
-            return newVerts;
-        }
-
-        // --- OpenTK Helpers ---
-        public static GameWindow InitOpenTKWindow(string title = "Physics Simulation Framework")
-        {
-            var nativeSettings = new NativeWindowSettings
-            {
-                Size = new Vector2i(1920, 1080),
+                ClientSize = new Vector2i(1920, 1080),
                 Title = title,
                 Profile = ContextProfile.Core,
                 API = ContextAPI.OpenGL,
                 APIVersion = new Version(3, 3),
-                NumberOfSamples = 4
+                NumberOfSamples = 4,
+                WindowState = fullscreen ? WindowState.Fullscreen : WindowState.Normal
             };
 
-            var window = new GameWindow(GameWindowSettings.Default, nativeSettings);
-            window.VSync = VSyncMode.On;
+            var window = new GameWindow(GameWindowSettings.Default, settings) { VSync = VSyncMode.On };
 
-            // Включаем мультисэмплинг в OpenGL
+            // GL настройки
             GL.Enable(EnableCap.Multisample);
-
-            // Остальной антиалиазинг для линий и точек
-            GL.Enable(EnableCap.LineSmooth);   // сглаживание линий
-            GL.Enable(EnableCap.PolygonSmooth); // сглаживание полигонов (можно оставить, но иногда вызывает артефакты)
+            GL.Enable(EnableCap.LineSmooth);
+            GL.Enable(EnableCap.PolygonSmooth);
             GL.Hint(HintTarget.LineSmoothHint, HintMode.Nicest);
             GL.Hint(HintTarget.PolygonSmoothHint, HintMode.Nicest);
+
+            // Переключение полноэкранного режима по F11
+            var prevSize = window.ClientSize;
+            var prevState = window.WindowState;
+
+            window.UpdateFrame += _ =>
+            {
+                if (!window.KeyboardState.IsKeyPressed(Keys.F11)) return;
+
+                if (window.WindowState == WindowState.Fullscreen)
+                {
+                    window.WindowState = prevState;
+                    window.ClientSize = prevSize;
+                    window.WindowBorder = WindowBorder.Resizable;
+                }
+                else
+                {
+                    prevSize = window.ClientSize;
+                    prevState = window.WindowState;
+                    window.WindowBorder = WindowBorder.Hidden;
+                    window.WindowState = WindowState.Fullscreen;
+                }
+            };
 
             return window;
         }
 
-        public static (int Program, int Vbo) CreateGLContextAndProgram()
+        // --- Компиляция шейдеров и создание GL-программы ---
+        public static (int Program, int Vbo) CreateGlContextAndProgram()
         {
             GL.Enable(EnableCap.Blend);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
@@ -89,29 +86,51 @@ namespace PhysicsSimulation
             GL.DeleteShader(vertexShader);
             GL.DeleteShader(fragmentShader);
 
-            int vbo = GL.GenBuffer();
-            return (program, vbo);
+            return (program, GL.GenBuffer());
         }
 
-        private static int CompileShader(ShaderType type, string source)
+        private static int CompileShader(ShaderType type, string src)
         {
             int shader = GL.CreateShader(type);
-            GL.ShaderSource(shader, source);
+            GL.ShaderSource(shader, src);
             GL.CompileShader(shader);
-            GL.GetShader(shader, ShaderParameter.CompileStatus, out int success);
-            if (success == 0)
-                throw new Exception($"{type} compilation failed: " + GL.GetShaderInfoLog(shader));
+            GL.GetShader(shader, ShaderParameter.CompileStatus, out int ok);
+            if (ok == 0) throw new Exception($"{type} compilation failed: {GL.GetShaderInfoLog(shader)}");
             return shader;
         }
 
         private static void CheckLinkStatus(int program)
         {
-            GL.GetProgram(program, GetProgramParameterName.LinkStatus, out int success);
-            if (success == 0)
-                throw new Exception("Program linking failed: " + GL.GetProgramInfoLog(program));
+            GL.GetProgram(program, GetProgramParameterName.LinkStatus, out int ok);
+            if (ok == 0) throw new Exception($"Program link failed: {GL.GetProgramInfoLog(program)}");
+        }
+        
+        // --- Дублирование вершин до нужной длины ---
+        public static List<Vector2> PadWithDuplicates(List<Vector2> verts, int targetLen)
+        {
+            if (verts == null) throw new ArgumentNullException(nameof(verts));
+            if (targetLen <= 0) return new();
+
+            int count = verts.Count;
+            if (count == 0)
+                return Enumerable.Repeat(Vector2.Zero, targetLen).ToList();
+
+            if (count >= targetLen)
+            {
+                float step = (float)count / targetLen;
+                return Enumerable.Range(0, targetLen).Select(i => verts[(int)(i * step)]).ToList();
+            }
+
+            var result = new List<Vector2>(targetLen);
+            int q = targetLen / count, r = targetLen % count;
+            for (int i = 0; i < count; i++)
+                result.AddRange(Enumerable.Repeat(verts[i], q + (i < r ? 1 : 0)));
+
+            return result;
         }
 
-        public static void RenderVertices(int program, int vbo, List<Vector3> verts, Vector3 color, PrimitiveType mode, float lineWidth = 1.0f)
+        // --- Отрисовка вершин ---
+        public static void RenderVertices(int program, int vbo, List<Vector3> verts, Vector3 color, PrimitiveType mode, float lineWidth = 1f)
         {
             if (verts == null || verts.Count == 0) return;
 
@@ -119,10 +138,10 @@ namespace PhysicsSimulation
             GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(), BufferUsageHint.DynamicDraw);
 
             GL.UseProgram(program);
-            var loc = GL.GetUniformLocation(program, "color");
-            if (loc >= 0) GL.Uniform3(loc, color);
+            int colorLoc = GL.GetUniformLocation(program, "color");
+            if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
-            if (mode == PrimitiveType.LineStrip || mode == PrimitiveType.Lines)
+            if (mode is PrimitiveType.Lines or PrimitiveType.LineStrip)
                 GL.LineWidth(lineWidth);
 
             int vao = GL.GenVertexArray();
@@ -130,8 +149,8 @@ namespace PhysicsSimulation
             GL.EnableVertexAttribArray(0);
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
             GL.DrawArrays(mode, 0, verts.Count);
-            GL.DeleteVertexArray(vao);
 
+            GL.DeleteVertexArray(vao);
             GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         }
     }
