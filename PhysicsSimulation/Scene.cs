@@ -100,6 +100,12 @@ namespace PhysicsSimulation
             else
                 action();
         }
+        
+        public virtual void Dispose()
+        {
+            Console.WriteLine($"Disposing scene {GetType().Name}");
+            Objects.Clear();
+        }
 
         public virtual void Update(float dt)
         {

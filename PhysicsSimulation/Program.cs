@@ -1,7 +1,7 @@
-﻿// Program.cs
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Windowing.Desktop;
+using OpenTK.Windowing.GraphicsLibraryFramework;
 
 namespace PhysicsSimulation
 {
@@ -12,7 +12,7 @@ namespace PhysicsSimulation
             Console.WriteLine($"Current Directory: {Environment.CurrentDirectory}");
             Console.WriteLine($"Runtime: {Environment.Version}");
 
-            string sceneName = args.Length > 0 ? args[0] : "CustomScene";
+            string sceneName = args.Length > 0 ? args[0] : "MainMenuScene";
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
@@ -26,13 +26,13 @@ namespace PhysicsSimulation
             }
 
             UpdateViewport(window);
-
             window.Resize += (_) => UpdateViewport(window);
 
-            Scene scene = LoadScene(sceneName);
+            Scene scene = SceneManager.Load(sceneName);
 
             var stopwatch = Stopwatch.StartNew();
             double lastTime = stopwatch.Elapsed.TotalSeconds;
+
             window.RenderFrame += (_) =>
             {
                 double currentTime = stopwatch.Elapsed.TotalSeconds;
@@ -40,14 +40,28 @@ namespace PhysicsSimulation
                 lastTime = currentTime;
 
                 scene.Update(dt);
-                GL.ClearColor(0f, 0f, 0f, 1f);
-                GL.Clear(ClearBufferMask.ColorBufferBit);
-                UpdateViewport(window);
+
                 GL.ClearColor(scene.BackgroundColor.X, scene.BackgroundColor.Y, scene.BackgroundColor.Z, 1f);
                 GL.Clear(ClearBufferMask.ColorBufferBit);
-                scene.Render(program, vbo);
 
+                scene.Render(program, vbo);
                 window.SwapBuffers();
+            };
+
+            // --- переключение сцен по пробелу ---
+            bool spacePressed = false;
+            window.UpdateFrame += (_) =>
+            {
+                if (window.KeyboardState.IsKeyDown(Keys.Space))
+                {
+                    if (!spacePressed)
+                    {
+                        SceneManager.Next();
+                        scene = SceneManager.Current!;
+                        spacePressed = true;
+                    }
+                }
+                else spacePressed = false;
             };
 
             window.Run();
@@ -55,8 +69,7 @@ namespace PhysicsSimulation
 
         private static void UpdateViewport(GameWindow window)
         {
-            int width = window.Size.X;
-            int height = window.Size.Y;
+            int width = window.Size.X, height = window.Size.Y;
             if (width <= 0 || height <= 0) return;
 
             float desiredAspect = 16f / 9f;
@@ -66,36 +79,16 @@ namespace PhysicsSimulation
 
             if (windowAspect > desiredAspect)
             {
-                // Window is wider: black bars left and right
                 vpWidth = (int)(height * desiredAspect);
                 vpX = (width - vpWidth) / 2;
             }
             else
             {
-                // Window is taller: black bars top and bottom
                 vpHeight = (int)(width / desiredAspect);
                 vpY = (height - vpHeight) / 2;
             }
 
             GL.Viewport(vpX, vpY, vpWidth, vpHeight);
-        }
-
-        private static Scene LoadScene(string sceneName)
-        {
-            try
-            {
-                Type? sceneType = Type.GetType($"PhysicsSimulation.{sceneName}");
-                if (sceneType == null)
-                    throw new Exception($"Scene type not found: {sceneName}");
-                Console.WriteLine($"Loaded scene: {sceneName}");
-                return (Scene)Activator.CreateInstance(sceneType)!;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to load {sceneName}: {ex.Message}");
-                Console.WriteLine(ex.StackTrace);
-                return new Scene();
-            }
         }
     }
 }
