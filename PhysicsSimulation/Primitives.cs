@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data.SqlTypes;
 using System.Linq;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
@@ -502,11 +503,16 @@ namespace PhysicsSimulation
     // ------------------ TEXT (with per-char caching) ------------------
     public class Text : Primitive
     {
+        public enum HorizontalAlignment { Left, Center, Right }
+        public enum VerticalAlignment { Top, Middle, Bottom }
         public string TextContent { get; set; }
         public float FontSize { get; set; }
 
-        public float LetterPadding { get; set; } = 0.01f;
-        public float LineSpacing { get; set; } = 0.02f;
+        public float LetterPadding { get; set; }
+        public float VerticalPadding { get; set; }
+
+        public HorizontalAlignment Horizontal { get; set; }
+        public VerticalAlignment Vertical { get; set; }
 
         public float Width { get; private set; }
         public float Height { get; private set; }
@@ -517,17 +523,21 @@ namespace PhysicsSimulation
         // cache of per-char transformed vertices to avoid recomputing when not changed
         private readonly Dictionary<int, CachedChar> _charCache = new();
 
-        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.01f,
-            Vector3 color = default)
-            : base(x, y, false, color)
+        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f, 
+            float verticalPadding = 0.1f, Vector3 color = default, 
+            HorizontalAlignment horizontal = HorizontalAlignment.Center,
+            VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false)
+            : base(x, y, filled, color)
         {
             TextContent = text;
             FontSize = fontSize;
             LetterPadding = letterPadding;
-            Height = fontSize;
+            VerticalPadding = verticalPadding;
+            Horizontal = horizontal;
+            Vertical = vertical;
             RecalculateWidthHeight();
         }
-        
+
         private void RecalculateWidthHeight()
         {
             var lines = TextContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
@@ -540,13 +550,13 @@ namespace PhysicsSimulation
                     char c = line[i];
                     lineWidth += CharMap.GetGlyphAdvance(c, FontSize);
                     if (i < line.Length - 1)
-                        lineWidth += LetterPadding;
+                        lineWidth += LetterPadding * FontSize;
                 }
                 if (lineWidth > Width)
                     Width = lineWidth;
             }
 
-            Height = lines.Length * FontSize + (lines.Length - 1) * LineSpacing;
+            Height = lines.Length * FontSize + (lines.Length > 0 ? (lines.Length - 1) * (VerticalPadding * FontSize) : 0f);
         }
 
         private class CachedChar
@@ -560,45 +570,9 @@ namespace PhysicsSimulation
             public float LastOffsetY;
             public List<List<Vector3>> CachedContours = new List<List<Vector3>>();
         }
-
-        public override void Render(int program, int vbo)
-        {
-            if (CustomBoundary != null || ShapeAnim != null)
-            {
-                base.Render(program, vbo);
-                return;
-            }
-
-            var lines = TextContent.Replace("\r", "").Split('\n'); // убираем \r для Windows
-
-            float cursorY = (Height / 2f) - FontSize; // стартовая Y-координата (верхняя строка)
-
-            foreach (var line in lines)
-            {
-                // рассчитываем смещение по X для центрирования строки
-                float lineWidth = 0f;
-                for (int i = 0; i < line.Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) +
-                                 (i < line.Length - 1 ? LetterPadding : 0f);
-
-                float offsetX = -lineWidth / 2f;
-
-                for (int i = 0; i < line.Length; i++)
-                {
-                    char c = line[i];
-                    var contours = GetCharContours(c, offsetX, cursorY);
-                    RenderContoursWithCharCache( c, i, contours, offsetX, cursorY, program, vbo);
-
-                    // продвигаем X-курсор
-                    float adv = CharMap.GetGlyphAdvance(c, FontSize);
-                    offsetX += adv + (i < line.Length - 1 ? LetterPadding : 0f);
-                }
-
-                cursorY -= FontSize + LineSpacing; // переход к следующей строке
-            }
-        }
-
-        private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, float offsetX, float offsetY, int program, int vbo)
+        
+        private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, float offsetX,
+            float offsetY, int program, int vbo)
         {
             if (contours == null || contours.Count == 0) return;
 
@@ -628,10 +602,11 @@ namespace PhysicsSimulation
                     var transformed = new List<Vector3>();
                     foreach (var v in contour)
                     {
-                        // contours already include offsetX/offsetY when created by GetCharContours,
-                        // but to be robust we still apply rotation/scale and parent X/Y here.
-                        transformed.Add(new Vector3(v.X * cos - v.Y * sin + X, v.X * sin + v.Y * cos + Y, 0f));
+                        // contours содержат локальные координаты (offsetX/offsetY локальные),
+                        // применяем только Scale/Rotation здесь; X/Y добавим единоразово ниже
+                        transformed.Add(new Vector3(v.X * cos - v.Y * sin, v.X * sin + v.Y * cos, 0f));
                     }
+
                     cache.CachedContours.Add(transformed);
                 }
 
@@ -647,7 +622,9 @@ namespace PhysicsSimulation
             foreach (var contour in cache.CachedContours)
             {
                 if (contour.Count < 2) continue;
-                RenderVerts(contour, Filled, program, vbo, Color, LineWidth);
+                // Смещаем контуры на позицию якоря (X, Y) после трансформации (и т.к. contours уже содержат локальные offsetX/offsetY)
+                var finalContours = contour.Select(v => new Vector3(v.X + X, v.Y + Y, v.Z)).ToList();
+                RenderVerts(finalContours, Filled, program, vbo, Color, LineWidth);
             }
         }
 
@@ -662,7 +639,6 @@ namespace PhysicsSimulation
             }
         }
 
-        // теперь кэш учитывает размер шрифта
         public List<List<Vector2>> GetCharContours(char c, float offsetX, float offsetY = 0f)
         {
             var key = (c, FontSize);
@@ -675,42 +651,6 @@ namespace PhysicsSimulation
             return contours
                 .Select(contour => contour.Select(v => new Vector2(v.X + offsetX, v.Y + offsetY)).ToList())
                 .ToList();
-        }
-
-        public override List<Vector2> GetBoundaryVerts()
-        {
-            var all = new List<Vector2>();
-            var lines = TextContent.Split('\n');
-
-            float cursorY = (Height / 2f) - FontSize; // начинаем с верхней строки
-            foreach (var line in lines)
-            {
-                float lineWidth = 0f;
-                for (int i = 0; i < line.Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) + (i < line.Length - 1 ? LetterPadding : 0f);
-
-                float offsetX = -lineWidth / 2f; // центрирование по горизонтали
-
-                for (int i = 0; i < line.Length; i++)
-                {
-                    char c = line[i];
-                    var contours = GetCharContours(c, offsetX, cursorY);
-                    foreach (var contour in contours)
-                    {
-                        all.AddRange(contour);
-                        all.Add(new Vector2(float.NaN, float.NaN));
-                    }
-
-                    offsetX += CharMap.GetGlyphAdvance(c, FontSize) + (i < line.Length - 1 ? LetterPadding : 0f);
-                }
-
-                cursorY -= FontSize + LineSpacing; // переход к следующей строке
-            }
-
-            if (all.Count > 0 && float.IsNaN(all[^1].X))
-                all.RemoveAt(all.Count - 1);
-
-            return all;
         }
 
         // CharPrimitive nested (still useful if user wants per-char primitives)
@@ -783,13 +723,12 @@ namespace PhysicsSimulation
             {
                 if (Chars.Count == 0 || target == null) return;
 
-                // flatten vertices from chars into one list
                 var startVerts = Chars.SelectMany(c => c.GetBoundaryVerts()).ToList();
                 var gp = new GroupPrimitive(startVerts, _parent.X, _parent.Y, _parent.Color, _parent.Filled);
                 Scene.CurrentScene?.Add(gp);
 
                 foreach (var c in Chars)
-                    c.Animate(v => c.Scale = v, c.Scale, 0f, 0f, ease); // quickly hide chars
+                    c.Animate(v => c.Scale = v, c.Scale, 0f, 0f, ease);
 
                 gp.MorphTo(target, duration, ease);
             }
@@ -825,26 +764,194 @@ namespace PhysicsSimulation
             }
         }
 
-        // helper: get a TextSlice referencing chars by range
+        public override void Render(int program, int vbo)
+        {
+            if (CustomBoundary != null || ShapeAnim != null)
+            {
+                base.Render(program, vbo);
+                return;
+            }
+
+            var lines = TextContent.Replace("\r", "").Split('\n');
+
+            float step = FontSize + (VerticalPadding * FontSize); // вертикальный шаг между строками
+            float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
+
+            float centerOffset = Vertical switch
+            {
+                VerticalAlignment.Top => Height / 2f,
+                VerticalAlignment.Bottom => -Height / 2f,
+                _ => 0f
+            };
+
+            int globalCharIndex = 0;
+
+            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
+            {
+                var line = lines[lineIdx];
+
+                float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
+
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) +
+                                 (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+
+                float offsetXLocal = Horizontal switch
+                {
+                    HorizontalAlignment.Left => 0f,
+                    HorizontalAlignment.Right => -lineWidth,
+                    _ => -lineWidth / 2f
+                };
+
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    var contours = GetCharContours(c, offsetXLocal, cursorY);
+                    RenderContoursWithCharCache(c, globalCharIndex, contours, offsetXLocal, cursorY, program, vbo);
+
+                    float adv = CharMap.GetGlyphAdvance(c, FontSize);
+                    offsetXLocal += adv + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+
+                    globalCharIndex++;
+                }
+            }
+        }
+
+        public override List<Vector2> GetBoundaryVerts()
+        {
+            var all = new List<Vector2>();
+            var lines = TextContent.Replace("\r", "").Split('\n');
+
+            float step = FontSize + (VerticalPadding * FontSize);
+            float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
+
+            float centerOffset = Vertical switch
+            {
+                VerticalAlignment.Top => Height / 2f,
+                VerticalAlignment.Bottom => -Height / 2f,
+                _ => 0f
+            };
+
+            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
+            {
+                var line = lines[lineIdx];
+                float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
+
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) +
+                                 (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+
+                float offsetXLocal = Horizontal switch
+                {
+                    HorizontalAlignment.Left => 0f,
+                    HorizontalAlignment.Right => -lineWidth,
+                    _ => -lineWidth / 2f
+                };
+
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    var contours = GetCharContours(c, offsetXLocal, cursorY);
+                    foreach (var contour in contours)
+                    {
+                        all.AddRange(contour);
+                        all.Add(new Vector2(float.NaN, float.NaN));
+                    }
+
+                    offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize) + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+                }
+            }
+
+            if (all.Count > 0 && float.IsNaN(all[^1].X))
+                all.RemoveAt(all.Count - 1);
+
+            return all;
+        }
+
         public TextSlice GetSlice(int startIndex, int length)
         {
             if (startIndex < 0 || startIndex >= TextContent.Length || startIndex + length > TextContent.Length)
                 return new TextSlice(this);
 
             var chars = new List<CharPrimitive>(length);
-            // Recompute starting offset for character i
-            float baseOffset = -Width / 2f;
-            for (int i = 0; i < startIndex; i++)
+            var lines = TextContent.Replace("\r", "").Split('\n');
+
+            float step = FontSize + (VerticalPadding * FontSize);
+            float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
+            float centerOffset = Vertical switch
             {
-                baseOffset += CharMap.GetGlyphAdvance(TextContent[i], FontSize) + LetterPadding;
+                VerticalAlignment.Top => Height / 2f,
+                VerticalAlignment.Bottom => -Height / 2f,
+                _ => 0f
+            };
+
+            int remaining = startIndex;
+            int lineIndex = 0;
+            while (lineIndex < lines.Length && remaining >= lines[lineIndex].Length)
+            {
+                remaining -= lines[lineIndex].Length;
+                lineIndex++;
             }
 
-            for (int i = startIndex; i < startIndex + length; i++)
+            int posInLine = Math.Max(0, Math.Min(remaining, lines.Length > lineIndex ? lines[lineIndex].Length : 0));
+            float cursorY = line0YRelativeToCenter - lineIndex * step - centerOffset;
+
+            float lineWidth = 0f;
+            if (lineIndex < lines.Length)
             {
-                char c = TextContent[i];
-                float offsetX = baseOffset;
-                chars.Add(new CharPrimitive(c, this, offsetX, 0f, Color));
-                baseOffset += CharMap.GetGlyphAdvance(c, FontSize) + LetterPadding;
+                for (int i = 0; i < lines[lineIndex].Length; i++)
+                    lineWidth += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize) +
+                                 (i < lines[lineIndex].Length - 1 ? LetterPadding * FontSize : 0f);
+            }
+
+            float offsetXLocal = Horizontal switch
+            {
+                HorizontalAlignment.Left => 0f,
+                HorizontalAlignment.Right => -lineWidth,
+                _ => -lineWidth / 2f
+            };
+
+            for (int i = 0; i < posInLine; i++)
+                offsetXLocal += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize) + LetterPadding * FontSize;
+
+            int taken = 0;
+            int li = lineIndex;
+            int pi = posInLine;
+            while (taken < length && li < lines.Length)
+            {
+                var line = lines[li];
+                if (pi >= line.Length)
+                {
+                    li++;
+                    pi = 0;
+                    cursorY = line0YRelativeToCenter - li * step - centerOffset;
+
+                    if (li < lines.Length)
+                    {
+                        float nextLineWidth = 0f;
+                        for (int j = 0; j < lines[li].Length; j++)
+                            nextLineWidth += CharMap.GetGlyphAdvance(lines[li][j], FontSize) +
+                                             (j < lines[li].Length - 1 ? LetterPadding * FontSize : 0f);
+
+                        offsetXLocal = Horizontal switch
+                        {
+                            HorizontalAlignment.Left => 0f,
+                            HorizontalAlignment.Right => -nextLineWidth,
+                            _ => -nextLineWidth / 2f
+                        };
+                    }
+
+                    continue;
+                }
+
+                char c = line[pi];
+                chars.Add(new CharPrimitive(c, this, offsetXLocal, cursorY, Color));
+
+                offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize) + LetterPadding * FontSize;
+                pi++;
+                taken++;
             }
 
             return new TextSlice(this, chars);

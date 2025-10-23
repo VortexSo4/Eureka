@@ -9,7 +9,7 @@ namespace PhysicsSimulation
     public static class Helpers
     {
         // --- Инициализация окна OpenTK ---
-        public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = true)
+        public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = false)
         {
             var settings = new NativeWindowSettings
             {
