@@ -222,7 +222,7 @@ namespace PhysicsSimulation
         }
 
         // --- Convenience animation helpers (delegate-based) ---
-        public Primitive Animate(Action<float> setter, float start, float target, float duration = 1f, EaseType ease = EaseType.Linear)
+        public Primitive Animate(Action<float> setter, float start, float target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
         {
             ScheduleOrExecute(() =>
             {
@@ -235,12 +235,28 @@ namespace PhysicsSimulation
             });
             return this;
         }
-
-        public Primitive AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.Linear)
+        
+        // New: lazy-start overload — computes start value when scheduled/executed
+        public Primitive Animate(Func<float> startGetter, Action<float> setter, float target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
         {
-            Vector3 start = Color;
             ScheduleOrExecute(() =>
             {
+                float start = startGetter();
+                Animations.Add(new PropertyAnimation
+                {
+                    Apply = t => setter(start + (target - start) * t),
+                    Duration = duration,
+                    Ease = ease,
+                });
+            });
+            return this;
+        }
+
+        public Primitive AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            ScheduleOrExecute(() =>
+            {
+                Vector3 start = Color; // read at execution time
                 Animations.Add(new PropertyAnimation
                 {
                     Apply = t => Color = Vector3.Lerp(start, target, t),
@@ -251,16 +267,31 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive MoveTo(float x, float y, float duration = 1f, EaseType ease = EaseType.Linear)
+        public Primitive MoveTo(float x, float y, float duration = 1f, EaseType ease = EaseType.EaseInOut)
         {
-            Animate(v => X = v, X, x, duration, ease);
-            Animate(v => Y = v, Y, y, duration, ease);
+            Animate(() => X, v => X = v, x, duration, ease);
+            Animate(() => Y, v => Y = v, y, duration, ease);
             return this;
         }
 
-        public Primitive Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.Linear) => Animate(v => Scale = v, Scale, targetScale, duration, ease);
-        public Primitive RotateTo(float targetRotation, float duration = 1f, EaseType ease = EaseType.Linear) => Animate(v => Rotation = v, Rotation, targetRotation, duration, ease);
-        public Primitive SetLineWidth(float target, float duration = 1f, EaseType ease = EaseType.Linear) => Animate(v => LineWidth = v, LineWidth, target, duration, ease);
+        public Primitive Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            Animate(() => Scale, v => Scale = v, targetScale, duration, ease);
+            return this;
+        }
+
+        public Primitive RotateTo(float targetRotationDegrees, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            float targetRad = MathHelper.DegreesToRadians(targetRotationDegrees);
+            Animate(() => Rotation, v => Rotation = v, targetRad, duration, ease);
+            return this;
+        }
+
+        public Primitive SetLineWidth(float target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            Animate(() => LineWidth, v => LineWidth = v, target, duration, ease);
+            return this;
+        }
 
         public Primitive SetFilled(bool filled, float _duration = 0f) { Filled = filled; return this; }
 
@@ -742,25 +773,25 @@ namespace PhysicsSimulation
                 gp.MorphTo(target, duration, ease);
             }
 
-            public TextSlice Move(float dx, float dy, float duration = 1f, EaseType ease = EaseType.Linear)
+            public TextSlice Move(float dx, float dy, float duration = 1f, EaseType ease = EaseType.EaseInOut)
             {
                 foreach (var c in Chars) c.MoveTo(c.X + dx, c.Y + dy, duration, ease);
                 return this;
             }
 
-            public TextSlice Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.Linear)
+            public TextSlice Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.EaseInOut)
             {
                 foreach (var c in Chars) c.Animate(v => c.Scale = v, c.Scale, targetScale, duration, ease);
                 return this;
             }
 
-            public TextSlice Rotate(float targetRotation, float duration = 1f, EaseType ease = EaseType.Linear)
+            public TextSlice Rotate(float targetRotation, float duration = 1f, EaseType ease = EaseType.EaseInOut)
             {
                 foreach (var c in Chars) c.Animate(v => c.Rotation = v, c.Rotation, targetRotation, duration, ease);
                 return this;
             }
 
-            public TextSlice AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.Linear)
+            public TextSlice AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
             {
                 foreach (var c in Chars) c.AnimateColor(target, duration, ease);
                 return this;
@@ -805,7 +836,7 @@ namespace PhysicsSimulation
         public static T Do<T>(this T p, Action<T> action) where T : Primitive { action(p); return p; }
 
         // convenience color animation for primitives
-        public static Primitive AnimateColor(this Primitive p, Vector3 target, float duration = 1f, EaseType ease = EaseType.Linear)
+        public static Primitive AnimateColor(this Primitive p, Vector3 target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
         {
             p.Animate(t => p.Color = Vector3.Lerp(p.Color, target, t), 0f, 1f, duration, ease);
             return p;
