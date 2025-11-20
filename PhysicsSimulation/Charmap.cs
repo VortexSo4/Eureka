@@ -9,13 +9,10 @@ namespace PhysicsSimulation
             char c, 
             float offsetX, 
             float size,
-            FontFamily? fontFamily = null,
-            string? fontName = null)
+            SKTypeface typeface)
         {
             var contours = new List<List<Vector2>>();
 
-            fontFamily ??= FontFamily.Arial;
-            var typeface = FontManager.GetTypeface(fontFamily, fontName);
             using var font = new SKFont(typeface, size);
 
             if (!TryGetGlyph(font, c, out ushort glyph)) return contours;
@@ -57,22 +54,19 @@ namespace PhysicsSimulation
         }
 
         // Возвращает ширину символа
-        public static float GetGlyphAdvance(
-            char c,
-            float size,
-            FontFamily? fontFamily = null,
-            string? fontName = null)
+        public static float GetGlyphAdvance(char c, float size, SKTypeface typeface)
         {
-            var typeface = FontManager.GetTypeface(fontFamily, fontName);
-            using var font = new SKFont(typeface, size);
+            using var paint = new SKPaint
+            {
+                Typeface = typeface,
+                TextSize = size,
+                IsAntialias = true
+            };
 
-            if (!TryGetGlyph(font, c, out ushort glyph)) return size * 0.5f;
-            float[] widths = new float[1];
-            SKRect[] bounds = new SKRect[1];
-            font.GetGlyphWidths(new ushort[] { glyph }, widths, bounds, null);
-            if (widths[0] > 0) return widths[0];
+            float width = paint.MeasureText(c.ToString());
+            if (width > 0) return width;
 
-            var contours = GetCharContours(c, 0f, size);
+            var contours = GetCharContours(c, 0f, size, typeface);
             if (contours.Count == 0) return size * 0.5f;
 
             float minX = float.MaxValue, maxX = float.MinValue;

@@ -10,6 +10,7 @@ using System.Data.SqlTypes;
 using System.Linq;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
+using SkiaSharp;
 
 namespace PhysicsSimulation
 {
@@ -518,6 +519,8 @@ namespace PhysicsSimulation
 
         public float Width { get; private set; }
         public float Height { get; private set; }
+        
+        private readonly SKTypeface _typeface;
 
         // cache raw contours per char+size to avoid repeated CharMap calls
         private readonly Dictionary<(char ch, float size, string fontKey), List<List<Vector2>>> _contourCache = new();
@@ -541,6 +544,7 @@ namespace PhysicsSimulation
             Vertical = vertical;
             Font = font;
             FontName = fontName;
+            _typeface = FontManager.GetTypeface(Font, FontName);
             RecalculateWidthHeight();
         }
 
@@ -554,7 +558,7 @@ namespace PhysicsSimulation
                 for (int i = 0; i < line.Length; i++)
                 {
                     char c = line[i];
-                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize, Font, FontName);
+                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize, _typeface);
                     if (i < line.Length - 1)
                         lineWidth += LetterPadding * FontSize;
                 }
@@ -651,7 +655,7 @@ namespace PhysicsSimulation
             var key = (c, FontSize, fontKey);
             if (!_contourCache.TryGetValue(key, out var contours))
             {
-                contours = CharMap.GetCharContours(c, 0f, FontSize, Font, FontName);
+                contours = CharMap.GetCharContours(c, 0f, FontSize, _typeface);
                 _contourCache[key] = contours;
             }
 
@@ -801,7 +805,7 @@ namespace PhysicsSimulation
 
                 float lineWidth = 0f;
                 for (int i = 0; i < line.Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) +
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize, _typeface) +
                                  (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
 
                 float offsetXLocal = Horizontal switch
@@ -817,7 +821,7 @@ namespace PhysicsSimulation
                     var contours = GetCharContours(c, offsetXLocal, cursorY);
                     RenderContoursWithCharCache(c, globalCharIndex, contours, offsetXLocal, cursorY, program, vbo);
 
-                    float adv = CharMap.GetGlyphAdvance(c, FontSize, Font, FontName);
+                    float adv = CharMap.GetGlyphAdvance(c, FontSize, _typeface);
                     offsetXLocal += adv + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
 
                     globalCharIndex++;
@@ -847,7 +851,7 @@ namespace PhysicsSimulation
 
                 float lineWidth = 0f;
                 for (int i = 0; i < line.Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize) +
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize, _typeface) +
                                  (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
 
                 float offsetXLocal = Horizontal switch
@@ -867,7 +871,7 @@ namespace PhysicsSimulation
                         all.Add(new Vector2(float.NaN, float.NaN));
                     }
 
-                    offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize) + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+                    offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize, _typeface) + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
                 }
             }
 
@@ -909,7 +913,7 @@ namespace PhysicsSimulation
             if (lineIndex < lines.Length)
             {
                 for (int i = 0; i < lines[lineIndex].Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize) +
+                    lineWidth += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize, _typeface) +
                                  (i < lines[lineIndex].Length - 1 ? LetterPadding * FontSize : 0f);
             }
 
@@ -921,7 +925,7 @@ namespace PhysicsSimulation
             };
 
             for (int i = 0; i < posInLine; i++)
-                offsetXLocal += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize) + LetterPadding * FontSize;
+                offsetXLocal += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize, _typeface) + LetterPadding * FontSize;
 
             int taken = 0;
             int li = lineIndex;
@@ -939,7 +943,7 @@ namespace PhysicsSimulation
                     {
                         float nextLineWidth = 0f;
                         for (int j = 0; j < lines[li].Length; j++)
-                            nextLineWidth += CharMap.GetGlyphAdvance(lines[li][j], FontSize) +
+                            nextLineWidth += CharMap.GetGlyphAdvance(lines[li][j], FontSize, _typeface) +
                                              (j < lines[li].Length - 1 ? LetterPadding * FontSize : 0f);
 
                         offsetXLocal = Horizontal switch
@@ -956,7 +960,7 @@ namespace PhysicsSimulation
                 char c = line[pi];
                 chars.Add(new CharPrimitive(c, this, offsetXLocal, cursorY, Color));
 
-                offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize) + LetterPadding * FontSize;
+                offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize, _typeface) + LetterPadding * FontSize;
                 pi++;
                 taken++;
             }
