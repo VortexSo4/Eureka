@@ -14,5 +14,14 @@
         <PackageReference Include="OpenTK" Version="4.9.1" />
         <PackageReference Include="System.Drawing.Common" Version="7.0.0" />
     </ItemGroup>
-    
+
+    <ItemGroup>
+        <None Update="Assets\Fonts\*.ttf">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="Assets\Fonts\*.otf">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+    </ItemGroup>
+
 </Project>

@@ -19,9 +19,10 @@ namespace PhysicsSimulation.BuiltInScenes
                 fontSize: 0.2f,
                 color: new Vector3(1f, 1f, 1f), 
                 horizontal: Text.HorizontalAlignment.Right, vertical: Text.VerticalAlignment.Middle,
-                filled: false
+                filled: false,
+                fontName: "Audiowide"
             );
-            Add(title.Draw(1.5f), new Rectangle(0.85f, -0.8f, 1.5f, .425f));
+            Add(title.Draw(1.5f));
             var hint = new Text("Press [SPACE] to continue", y: -0.95f, fontSize: 0.05f, color: new Vector3(0.8f, 0.8f, 0.8f));
             Add(hint.Draw(1.5f));
         }

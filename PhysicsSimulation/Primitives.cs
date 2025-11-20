@@ -503,6 +503,8 @@ namespace PhysicsSimulation
     // ------------------ TEXT (with per-char caching) ------------------
     public class Text : Primitive
     {
+        public FontFamily Font { get; set; } = FontFamily.TimesNewRoman;
+        public string? FontName { get; set; } = null;
         public enum HorizontalAlignment { Left, Center, Right }
         public enum VerticalAlignment { Top, Middle, Bottom }
         public string TextContent { get; set; }
@@ -518,7 +520,7 @@ namespace PhysicsSimulation
         public float Height { get; private set; }
 
         // cache raw contours per char+size to avoid repeated CharMap calls
-        private readonly Dictionary<(char ch, float size), List<List<Vector2>>> _contourCache = new();
+        private readonly Dictionary<(char ch, float size, string fontKey), List<List<Vector2>>> _contourCache = new();
 
         // cache of per-char transformed vertices to avoid recomputing when not changed
         private readonly Dictionary<int, CachedChar> _charCache = new();
@@ -526,7 +528,9 @@ namespace PhysicsSimulation
         public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f, 
             float verticalPadding = 0.1f, Vector3 color = default, 
             HorizontalAlignment horizontal = HorizontalAlignment.Center,
-            VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false)
+            VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false, 
+            FontFamily font = FontFamily.Arial,
+            string? fontName = null)
             : base(x, y, filled, color)
         {
             TextContent = text;
@@ -535,6 +539,8 @@ namespace PhysicsSimulation
             VerticalPadding = verticalPadding;
             Horizontal = horizontal;
             Vertical = vertical;
+            Font = font;
+            FontName = fontName;
             RecalculateWidthHeight();
         }
 
@@ -548,7 +554,7 @@ namespace PhysicsSimulation
                 for (int i = 0; i < line.Length; i++)
                 {
                     char c = line[i];
-                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize);
+                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize, Font, FontName);
                     if (i < line.Length - 1)
                         lineWidth += LetterPadding * FontSize;
                 }
@@ -639,12 +645,13 @@ namespace PhysicsSimulation
             }
         }
 
-        public List<List<Vector2>> GetCharContours(char c, float offsetX, float offsetY = 0f)
+        public List<List<Vector2>> GetCharContours(char c, float offsetX, float offsetY = 0f, FontFamily? fontFamily = null, string? fontName = null)
         {
-            var key = (c, FontSize);
+            var fontKey = FontName ?? FontManager.GetNameFromFamily(Font);
+            var key = (c, FontSize, fontKey);
             if (!_contourCache.TryGetValue(key, out var contours))
             {
-                contours = CharMap.GetCharContours(c, 0f, FontSize);
+                contours = CharMap.GetCharContours(c, 0f, FontSize, Font, FontName);
                 _contourCache[key] = contours;
             }
 
@@ -810,7 +817,7 @@ namespace PhysicsSimulation
                     var contours = GetCharContours(c, offsetXLocal, cursorY);
                     RenderContoursWithCharCache(c, globalCharIndex, contours, offsetXLocal, cursorY, program, vbo);
 
-                    float adv = CharMap.GetGlyphAdvance(c, FontSize);
+                    float adv = CharMap.GetGlyphAdvance(c, FontSize, Font, FontName);
                     offsetXLocal += adv + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
 
                     globalCharIndex++;

@@ -5,11 +5,17 @@ namespace PhysicsSimulation
 {
     public static class CharMap
     {
-        public static List<List<Vector2>> GetCharContours(char c, float offsetX, float size)
+        public static List<List<Vector2>> GetCharContours(
+            char c, 
+            float offsetX, 
+            float size,
+            FontFamily? fontFamily = null,
+            string? fontName = null)
         {
             var contours = new List<List<Vector2>>();
 
-            using var typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Normal);
+            fontFamily ??= FontFamily.Arial;
+            var typeface = FontManager.GetTypeface(fontFamily, fontName);
             using var font = new SKFont(typeface, size);
 
             if (!TryGetGlyph(font, c, out ushort glyph)) return contours;
@@ -51,9 +57,13 @@ namespace PhysicsSimulation
         }
 
         // Возвращает ширину символа
-        public static float GetGlyphAdvance(char c, float size)
+        public static float GetGlyphAdvance(
+            char c,
+            float size,
+            FontFamily? fontFamily = null,
+            string? fontName = null)
         {
-            using var typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Normal);
+            var typeface = FontManager.GetTypeface(fontFamily, fontName);
             using var font = new SKFont(typeface, size);
 
             if (!TryGetGlyph(font, c, out ushort glyph)) return size * 0.5f;
