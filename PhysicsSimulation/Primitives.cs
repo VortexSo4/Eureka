@@ -504,7 +504,7 @@ namespace PhysicsSimulation
     // ------------------ TEXT (with per-char caching) ------------------
     public class Text : Primitive
     {
-        public FontFamily Font { get; set; } = FontFamily.TimesNewRoman;
+        public object? Font { get; set; } = FontFamily.TimesNewRoman;
         public string? FontName { get; set; } = null;
         public enum HorizontalAlignment { Left, Center, Right }
         public enum VerticalAlignment { Top, Middle, Bottom }
@@ -532,8 +532,7 @@ namespace PhysicsSimulation
             float verticalPadding = 0.1f, Vector3 color = default, 
             HorizontalAlignment horizontal = HorizontalAlignment.Center,
             VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false, 
-            FontFamily font = FontFamily.Arial,
-            string? fontName = null)
+            object? font = null)
             : base(x, y, filled, color)
         {
             TextContent = text;
@@ -542,9 +541,17 @@ namespace PhysicsSimulation
             VerticalPadding = verticalPadding;
             Horizontal = horizontal;
             Vertical = vertical;
-            Font = font;
-            FontName = fontName;
-            _typeface = FontManager.GetTypeface(Font, FontName);
+            Font = font ?? FontFamily.Arial;
+            
+            string fontKey;
+            if (Font is FontFamily ff)
+                fontKey = FontManager.GetNameFromFamily(ff);
+            else if (Font is string s)
+                fontKey = s;
+            else
+                fontKey = "Arial";
+            
+            _typeface = FontManager.GetTypeface(null, fontKey);;
             RecalculateWidthHeight();
         }
 
@@ -649,9 +656,12 @@ namespace PhysicsSimulation
             }
         }
 
-        public List<List<Vector2>> GetCharContours(char c, float offsetX, float offsetY = 0f, FontFamily? fontFamily = null, string? fontName = null)
+        public List<List<Vector2>> GetCharContours(char c, float offsetX, float offsetY = 0f)
         {
-            var fontKey = FontName ?? FontManager.GetNameFromFamily(Font);
+            var fontKey = Font switch {
+                FontFamily ff => FontManager.GetNameFromFamily(ff),
+                string s => s,
+                _ => "Arial" };
             var key = (c, FontSize, fontKey);
             if (!_contourCache.TryGetValue(key, out var contours))
             {

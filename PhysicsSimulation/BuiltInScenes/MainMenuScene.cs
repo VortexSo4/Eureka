@@ -20,10 +20,10 @@ namespace PhysicsSimulation.BuiltInScenes
                 color: new Vector3(1f, 1f, 1f), 
                 horizontal: Text.HorizontalAlignment.Right, vertical: Text.VerticalAlignment.Middle,
                 filled: false,
-                fontName: "Quantico-Bold"
+                font: FontFamily.Audiowide
             );
             Add(title.Draw(1.5f));
-            var hint = new Text("Press [SPACE] to continue", y: -0.95f, fontSize: 0.05f, color: new Vector3(0.8f, 0.8f, 0.8f), font: FontFamily.ArialBlack);
+            var hint = new Text("Press [SPACE] to continue", y: -0.95f, fontSize: 0.05f, color: new Vector3(0.8f, 0.8f, 0.8f));
             Add(hint.Draw(1.5f));
         }
     }
