@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
@@ -16,6 +17,11 @@ namespace PhysicsSimulation
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
+
+            int vao = GL.GenVertexArray();
+            GL.BindVertexArray(vao);
+            GL.EnableVertexAttribArray(0);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
 
             int aspectLoc = GL.GetUniformLocation(program, "aspectRatio");
             if (aspectLoc >= 0)
@@ -44,7 +50,7 @@ namespace PhysicsSimulation
                 GL.ClearColor(scene.BackgroundColor.X, scene.BackgroundColor.Y, scene.BackgroundColor.Z, 1f);
                 GL.Clear(ClearBufferMask.ColorBufferBit);
 
-                scene.Render(program, vbo);
+                scene.Render(program, vbo, vao);
                 window.SwapBuffers();
             };
 

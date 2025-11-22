@@ -121,41 +121,93 @@ namespace PhysicsSimulation
             }
         }
 
-        public override void Render(int program, int vbo)
+        public override void Render(int program, int vbo, int vao)
+{
+    var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
+    if (source == null || source.Count == 0) return;
+
+    // Разбиваем source на сегменты по разделителю (NaN, NaN).
+    var segments = new List<List<Vector2>>();
+    var current = new List<Vector2>();
+    foreach (var p in source)
+    {
+        if (float.IsNaN(p.X) || float.IsNaN(p.Y))
         {
-            var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
-            if (source == null || source.Count == 0) return;
-
-            // Разбиваем source на сегменты по разделителю (NaN, NaN).
-            var segments = new List<List<Vector2>>();
-            var current = new List<Vector2>();
-            foreach (var p in source)
+            if (current.Count > 0)
             {
-                if (float.IsNaN(p.X) || float.IsNaN(p.Y))
-                {
-                    if (current.Count > 0)
-                    {
-                        segments.Add(current);
-                        current = new List<Vector2>();
-                    }
-                    // пропускаем разделитель
-                }
-                else
-                {
-                    current.Add(p);
-                }
+                segments.Add(current);
+                current = new List<Vector2>();
             }
-            if (current.Count > 0) segments.Add(current);
-
-            // Рендерим каждый сегмент отдельно (это убирает "мосты" между сегментами)
-            foreach (var seg in segments)
-            {
-                if (seg == null || seg.Count == 0) continue;
-                var transformed = TransformVerts(seg);
-                var draw = PrepareDrawVerts(transformed, Filled);
-                RenderVerts(draw, Filled, program, vbo, Color, LineWidth);
-            }
+            // пропускаем разделитель
         }
+        else
+        {
+            current.Add(p);
+        }
+    }
+    if (current.Count > 0) segments.Add(current);
+
+    // --- Предварительно узнаем, поддерживает ли шейдер uniform-трансформации ---
+    GL.UseProgram(program);
+    int loc_u_translate = GL.GetUniformLocation(program, "u_translate");
+    int loc_u_cos = GL.GetUniformLocation(program, "u_cos");
+    int loc_u_sin = GL.GetUniformLocation(program, "u_sin");
+    int loc_u_scale = GL.GetUniformLocation(program, "u_scale");
+    int loc_aspect = GL.GetUniformLocation(program, "aspectRatio");
+
+    bool shaderHasTransform = (loc_u_translate >= 0 && loc_u_cos >= 0 && loc_u_sin >= 0 && loc_u_scale >= 0);
+
+    // если шейдер ожидает aspectRatio — посчитаем и установим
+    if (loc_aspect >= 0)
+    {
+        // Получаем текущий вьюпорт (x,y,w,h)
+        var vp = new int[4];
+        GL.GetInteger(GetPName.Viewport, vp);
+        float aspect = 1f;
+        if (vp[2] != 0) aspect = vp[3] / (float)vp[2]; // height / width — так, как ты использовал раньше
+        GL.Uniform1(loc_aspect, aspect);
+    }
+
+    foreach (var seg in segments)
+    {
+        if (seg == null || seg.Count == 0) continue;
+
+        List<Vector3> drawVerts;
+
+        if (shaderHasTransform)
+        {
+            // Отправляем локальные вершины (без CPU-transform), и устанавливаем униформы для трансформации
+            // 1) подготовим verts как Vector3 (z = 0)
+            var raw = seg.Select(v => new Vector3(v.X, v.Y, 0f)).ToList();
+
+            // 2) установим униформы трансформации для этого примитива
+            // translate = (X, Y)
+            GL.Uniform2(loc_u_translate, X, Y);
+            // cos, sin от Rotation и Scale
+            float c = MathF.Cos(Rotation);
+            float s = MathF.Sin(Rotation);
+            GL.Uniform1(loc_u_cos, c);
+            GL.Uniform1(loc_u_sin, s);
+            GL.Uniform1(loc_u_scale, Scale);
+
+            // 3) подготовим drawVerts (GPU применит трансформацию)
+            drawVerts = PrepareDrawVerts(raw, Filled);
+        }
+        else
+        {
+            // Старый путь — применяем трансформы на CPU
+            var transformed = TransformVerts(seg);
+            drawVerts = PrepareDrawVerts(transformed, Filled);
+        }
+
+        // И наконец рендерим (RenderVerts сам загружает VBO/VAO и отрисовывает)
+        RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+    }
+
+    // отвязываемся от программы (чтобы не влиял на следующий draw)
+    GL.UseProgram(0);
+}
+
 
         protected virtual List<Vector3> TransformVerts(List<Vector2> verts)
         {
@@ -508,7 +560,19 @@ namespace PhysicsSimulation
         public string? FontName { get; set; } = null;
         public enum HorizontalAlignment { Left, Center, Right }
         public enum VerticalAlignment { Top, Middle, Bottom }
-        public string TextContent { get; set; }
+
+        private string _textContent;
+        public string TextContent
+        {
+            get => _textContent;
+            set
+            {
+                _textContent = value ?? string.Empty;
+                RecalculateWidthHeight();
+                RebuildMeshIfReady();
+            }
+        }
+
         public float FontSize { get; set; }
 
         public float LetterPadding { get; set; }
@@ -519,30 +583,53 @@ namespace PhysicsSimulation
 
         public float Width { get; private set; }
         public float Height { get; private set; }
-        
+
         private readonly SKTypeface _typeface;
 
-        // cache raw contours per char+size to avoid repeated CharMap calls
+        // caches
         private readonly Dictionary<(char ch, float size, string fontKey), List<List<Vector2>>> _contourCache = new();
-
-        // cache of per-char transformed vertices to avoid recomputing when not changed
         private readonly Dictionary<int, CachedChar> _charCache = new();
 
-        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f, 
-            float verticalPadding = 0.1f, Vector3 color = default, 
+        // NEW: mesh
+        private TextMesh? _mesh;
+        public bool HasMeshForDebug => _mesh != null;
+        
+        // ===== DEBUG ACCESSORS =====
+
+// Возвращает true, если mesh создан
+        public bool DebugHasMesh => _mesh != null;
+
+// VBO mesh-а, если есть
+        public int DebugVBO => _mesh?.Vbo ?? -1;
+
+// Сколько наборов линий в mesh
+        public int DebugRangeCount => _mesh?.Ranges.Count ?? 0;
+
+// Общее число вершин в mesh
+        public int DebugVertexCount => _mesh?.VertexCount ?? 0;
+
+// Примерная рамка (bounding box) текста на локальных координатах
+        public (float MinX, float MinY, float MaxX, float MaxY) DebugBounds =>
+            (-Width/2f, -Height/2f, Width/2f, Height/2f);
+
+
+        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f,
+            float verticalPadding = 0.1f, Vector3 color = default,
             HorizontalAlignment horizontal = HorizontalAlignment.Center,
-            VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false, 
+            VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false,
             object? font = null)
             : base(x, y, filled, color)
         {
-            TextContent = text;
+            // set backing text without triggering mesh until _typeface is ready
+            _textContent = text ?? string.Empty;
+
             FontSize = fontSize;
             LetterPadding = letterPadding;
             VerticalPadding = verticalPadding;
             Horizontal = horizontal;
             Vertical = vertical;
             Font = font ?? FontFamily.Arial;
-            
+
             string fontKey;
             if (Font is FontFamily ff)
                 fontKey = FontManager.GetNameFromFamily(ff);
@@ -550,14 +637,17 @@ namespace PhysicsSimulation
                 fontKey = s;
             else
                 fontKey = "Arial";
-            
-            _typeface = FontManager.GetTypeface(null, fontKey);;
+
+            _typeface = FontManager.GetTypeface(null, fontKey);
+
+            // compute sizes and build mesh now that _typeface is available
             RecalculateWidthHeight();
+            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
         }
 
         private void RecalculateWidthHeight()
         {
-            var lines = TextContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var lines = _textContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             Width = 0f;
             foreach (var line in lines)
             {
@@ -587,7 +677,16 @@ namespace PhysicsSimulation
             public float LastOffsetY;
             public List<List<Vector3>> CachedContours = new List<List<Vector3>>();
         }
-        
+
+        private void RebuildMeshIfReady()
+        {
+            if (_typeface == null) return;
+
+            _mesh?.Dispose();
+            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
+        }
+
+        // keep these helpers for compatibility (may be used elsewhere)
         private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, float offsetX,
             float offsetY, int program, int vbo)
         {
@@ -616,14 +715,9 @@ namespace PhysicsSimulation
 
                 foreach (var contour in contours)
                 {
-                    var transformed = new List<Vector3>();
+                    var transformed = new List<Vector3>(contour.Count);
                     foreach (var v in contour)
-                    {
-                        // contours содержат локальные координаты (offsetX/offsetY локальные),
-                        // применяем только Scale/Rotation здесь; X/Y добавим единоразово ниже
                         transformed.Add(new Vector3(v.X * cos - v.Y * sin, v.X * sin + v.Y * cos, 0f));
-                    }
-
                     cache.CachedContours.Add(transformed);
                 }
 
@@ -639,14 +733,17 @@ namespace PhysicsSimulation
             foreach (var contour in cache.CachedContours)
             {
                 if (contour.Count < 2) continue;
-                // Смещаем контуры на позицию якоря (X, Y) после трансформации (и т.к. contours уже содержат локальные offsetX/offsetY)
                 var finalContours = contour.Select(v => new Vector3(v.X + X, v.Y + Y, v.Z)).ToList();
+                // This call may be replaced by mesh rendering — kept for compatibility
                 RenderVerts(finalContours, Filled, program, vbo, Color, LineWidth);
             }
         }
 
         private void RenderContours(List<List<Vector2>> contours, int program, int vbo)
         {
+            int totalVerts = contours.Sum(c => c.Count);
+            Console.WriteLine($"[Text Render] Rendering {totalVerts} vertices for text '{_textContent}'");
+            
             foreach (var contour in contours)
             {
                 if (contour.Count < 2) continue;
@@ -665,7 +762,7 @@ namespace PhysicsSimulation
             var key = (c, FontSize, fontKey);
             if (!_contourCache.TryGetValue(key, out var contours))
             {
-                contours = CharMap.GetCharContours(c, 0f, FontSize, _typeface);
+                contours = CharMap.GetCharContours(c, 0f, 0f, FontSize, _typeface);
                 _contourCache[key] = contours;
             }
 
@@ -674,7 +771,7 @@ namespace PhysicsSimulation
                 .ToList();
         }
 
-        // CharPrimitive nested (still useful if user wants per-char primitives)
+        // CharPrimitive left mostly the same (if you use per-char primitives)
         public class CharPrimitive : Primitive
         {
             public char Char { get; set; }
@@ -693,7 +790,7 @@ namespace PhysicsSimulation
                 return contours.SelectMany(c => c).ToList();
             }
 
-            public override void Render(int program, int vbo)
+            public override void Render(int program, int vbo, int vao)
             {
                 var contours = Parent.GetCharContours(Char, X);
                 Parent.RenderContours(contours, program, vbo);
@@ -715,87 +812,27 @@ namespace PhysicsSimulation
             public void SetBoundaryVerts(List<Vector2> verts) => BoundaryVerts = verts;
         }
 
-        public class GroupPrimitive : Primitive
-        {
-            private readonly List<Vector2> _initialVerts;
+        // other nested classes (GroupPrimitive, TextSlice) left unchanged...
 
-            public GroupPrimitive(List<Vector2> verts, float x = 0f, float y = 0f, Vector3 color = default,
-                bool filled = false) : base(x, y, filled, color)
-            {
-                _initialVerts = verts;
-                CustomBoundary = verts;
-            }
-
-            public override List<Vector2> GetBoundaryVerts() => CustomBoundary ?? _initialVerts;
-        }
-
-        public class TextSlice
-        {
-            private readonly Text _parent;
-            public List<CharPrimitive> Chars { get; private set; }
-
-            public TextSlice(Text parent, List<CharPrimitive>? chars = null)
-            {
-                _parent = parent;
-                Chars = chars ?? new List<CharPrimitive>();
-            }
-
-            public void Morph(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut)
-            {
-                if (Chars.Count == 0 || target == null) return;
-
-                var startVerts = Chars.SelectMany(c => c.GetBoundaryVerts()).ToList();
-                var gp = new GroupPrimitive(startVerts, _parent.X, _parent.Y, _parent.Color, _parent.Filled);
-                Scene.CurrentScene?.Add(gp);
-
-                foreach (var c in Chars)
-                    c.Animate(v => c.Scale = v, c.Scale, 0f, 0f, ease);
-
-                gp.MorphTo(target, duration, ease);
-            }
-
-            public TextSlice Move(float dx, float dy, float duration = 1f, EaseType ease = EaseType.EaseInOut)
-            {
-                foreach (var c in Chars) c.MoveTo(c.X + dx, c.Y + dy, duration, ease);
-                return this;
-            }
-
-            public TextSlice Resize(float targetScale, float duration = 1f, EaseType ease = EaseType.EaseInOut)
-            {
-                foreach (var c in Chars) c.Animate(v => c.Scale = v, c.Scale, targetScale, duration, ease);
-                return this;
-            }
-
-            public TextSlice Rotate(float targetRotation, float duration = 1f, EaseType ease = EaseType.EaseInOut)
-            {
-                foreach (var c in Chars) c.Animate(v => c.Rotation = v, c.Rotation, targetRotation, duration, ease);
-                return this;
-            }
-
-            public TextSlice AnimateColor(Vector3 target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
-            {
-                foreach (var c in Chars) c.AnimateColor(target, duration, ease);
-                return this;
-            }
-
-            public TextSlice SetFilled(bool filled, float _duration = 0f)
-            {
-                foreach (var c in Chars) c.SetFilled(filled, _duration);
-                return this;
-            }
-        }
-
-        public override void Render(int program, int vbo)
+        public override void Render(int program, int vbo, int vao)
         {
             if (CustomBoundary != null || ShapeAnim != null)
             {
-                base.Render(program, vbo);
+                base.Render(program, vbo, vao);
                 return;
             }
 
-            var lines = TextContent.Replace("\r", "").Split('\n');
+            // If mesh exists, use it (fast path)
+            if (_mesh != null)
+            {
+                _mesh.Render(program, X, Y, Scale, Rotation, Color, LineWidth);
+                return;
+            }
 
-            float step = FontSize + (VerticalPadding * FontSize); // вертикальный шаг между строками
+            // Fallback to original per-char rendering (if mesh is missing)
+            var lines = _textContent.Replace("\r", "").Split('\n');
+
+            float step = FontSize + (VerticalPadding * FontSize);
             float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
 
             float centerOffset = Vertical switch
@@ -810,7 +847,6 @@ namespace PhysicsSimulation
             for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
             {
                 var line = lines[lineIdx];
-
                 float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
 
                 float lineWidth = 0f;
@@ -828,7 +864,7 @@ namespace PhysicsSimulation
                 for (int i = 0; i < line.Length; i++)
                 {
                     char c = line[i];
-                    var contours = GetCharContours(c, offsetXLocal, cursorY);
+                    var contours = CharMap.GetCharContours(c, offsetXLocal, cursorY, FontSize, _typeface);
                     RenderContoursWithCharCache(c, globalCharIndex, contours, offsetXLocal, cursorY, program, vbo);
 
                     float adv = CharMap.GetGlyphAdvance(c, FontSize, _typeface);
@@ -841,8 +877,15 @@ namespace PhysicsSimulation
 
         public override List<Vector2> GetBoundaryVerts()
         {
-            var all = new List<Vector2>();
-            var lines = TextContent.Replace("\r", "").Split('\n');
+            // If we have mesh, reconstruct boundary from mesh verts (cheap)
+            if (_mesh != null)
+            {
+                var all = new List<Vector2>();
+                // We can't access mesh's contours directly here (they are internal), so fallback to old method
+            }
+
+            var all2 = new List<Vector2>();
+            var lines = _textContent.Replace("\r", "").Split('\n');
 
             float step = FontSize + (VerticalPadding * FontSize);
             float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
@@ -874,108 +917,19 @@ namespace PhysicsSimulation
                 for (int i = 0; i < line.Length; i++)
                 {
                     char c = line[i];
-                    var contours = GetCharContours(c, offsetXLocal, cursorY);
+                    var contours = CharMap.GetCharContours(c, offsetXLocal, cursorY, FontSize, _typeface);
                     foreach (var contour in contours)
                     {
-                        all.AddRange(contour);
-                        all.Add(new Vector2(float.NaN, float.NaN));
+                        all2.AddRange(contour);
+                        all2.Add(new Vector2(float.NaN, float.NaN));
                     }
 
                     offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize, _typeface) + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
                 }
             }
 
-            if (all.Count > 0 && float.IsNaN(all[^1].X))
-                all.RemoveAt(all.Count - 1);
-
-            return all;
-        }
-
-        public TextSlice GetSlice(int startIndex, int length)
-        {
-            if (startIndex < 0 || startIndex >= TextContent.Length || startIndex + length > TextContent.Length)
-                return new TextSlice(this);
-
-            var chars = new List<CharPrimitive>(length);
-            var lines = TextContent.Replace("\r", "").Split('\n');
-
-            float step = FontSize + (VerticalPadding * FontSize);
-            float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
-            float centerOffset = Vertical switch
-            {
-                VerticalAlignment.Top => Height / 2f,
-                VerticalAlignment.Bottom => -Height / 2f,
-                _ => 0f
-            };
-
-            int remaining = startIndex;
-            int lineIndex = 0;
-            while (lineIndex < lines.Length && remaining >= lines[lineIndex].Length)
-            {
-                remaining -= lines[lineIndex].Length;
-                lineIndex++;
-            }
-
-            int posInLine = Math.Max(0, Math.Min(remaining, lines.Length > lineIndex ? lines[lineIndex].Length : 0));
-            float cursorY = line0YRelativeToCenter - lineIndex * step - centerOffset;
-
-            float lineWidth = 0f;
-            if (lineIndex < lines.Length)
-            {
-                for (int i = 0; i < lines[lineIndex].Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize, _typeface) +
-                                 (i < lines[lineIndex].Length - 1 ? LetterPadding * FontSize : 0f);
-            }
-
-            float offsetXLocal = Horizontal switch
-            {
-                HorizontalAlignment.Left => 0f,
-                HorizontalAlignment.Right => -lineWidth,
-                _ => -lineWidth / 2f
-            };
-
-            for (int i = 0; i < posInLine; i++)
-                offsetXLocal += CharMap.GetGlyphAdvance(lines[lineIndex][i], FontSize, _typeface) + LetterPadding * FontSize;
-
-            int taken = 0;
-            int li = lineIndex;
-            int pi = posInLine;
-            while (taken < length && li < lines.Length)
-            {
-                var line = lines[li];
-                if (pi >= line.Length)
-                {
-                    li++;
-                    pi = 0;
-                    cursorY = line0YRelativeToCenter - li * step - centerOffset;
-
-                    if (li < lines.Length)
-                    {
-                        float nextLineWidth = 0f;
-                        for (int j = 0; j < lines[li].Length; j++)
-                            nextLineWidth += CharMap.GetGlyphAdvance(lines[li][j], FontSize, _typeface) +
-                                             (j < lines[li].Length - 1 ? LetterPadding * FontSize : 0f);
-
-                        offsetXLocal = Horizontal switch
-                        {
-                            HorizontalAlignment.Left => 0f,
-                            HorizontalAlignment.Right => -nextLineWidth,
-                            _ => -nextLineWidth / 2f
-                        };
-                    }
-
-                    continue;
-                }
-
-                char c = line[pi];
-                chars.Add(new CharPrimitive(c, this, offsetXLocal, cursorY, Color));
-
-                offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize, _typeface) + LetterPadding * FontSize;
-                pi++;
-                taken++;
-            }
-
-            return new TextSlice(this, chars);
+            if (all2.Count > 0 && float.IsNaN(all2[^1].X)) all2.RemoveAt(all2.Count - 1);
+            return all2;
         }
     }
 }

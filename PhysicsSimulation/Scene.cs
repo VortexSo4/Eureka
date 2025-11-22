@@ -1,11 +1,13 @@
 ﻿// Scene.cs
+
+using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 namespace PhysicsSimulation
 {
     public abstract class SceneObject
     {
         public virtual void Update(float dt) { }
-        public virtual void Render(int program, int vbo) { }
+        public virtual void Render(int program, int vbo, int vao) { }
     }
 
     public class Scene
@@ -157,14 +159,14 @@ namespace PhysicsSimulation
             }
         }
 
-        public virtual void Render(int program, int vbo)
+        public virtual void Render(int program, int vbo, int vao)
         {
             foreach (var obj in Objects.ToArray())
             {
-                obj.Render(program, vbo);
+                obj.Render(program, vbo, vao);
             }
         }
-        
+
         protected virtual void StartSlides()
         {
             Console.WriteLine("Base Scene StartSlides called (empty)");

@@ -1,140 +1,200 @@
-﻿using OpenTK.Mathematics;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using OpenTK.Mathematics;
 using SkiaSharp;
+using System.Threading;
 
 namespace PhysicsSimulation
 {
     public static class CharMap
     {
-        public static List<List<Vector2>> GetCharContours(
-            char c, 
-            float offsetX, 
-            float size,
-            SKTypeface typeface)
+        // GlyphData как раньше
+        private sealed class GlyphData
+        {
+            public IReadOnlyList<List<Vector2>> Contours { get; }
+            public float Advance { get; }
+
+            public GlyphData(List<List<Vector2>> contours, float advance)
+            {
+                Contours = contours;
+                Advance = advance;
+            }
+        }
+
+        private static readonly ConcurrentDictionary<string, GlyphData> GlyphCache = new();
+
+        private static string MakeKey(char c, float size, SKTypeface? face) =>
+            $"{c}|{face?.FamilyName ?? "Default"}|{size:F4}";
+
+        // ThreadLocal caches для SKFont / SKPaint, ключ — typeface.FamilyName + size
+        private static readonly ThreadLocal<Dictionary<string, SKFont>> _threadFonts =
+            new(() => new Dictionary<string, SKFont>(StringComparer.OrdinalIgnoreCase));
+
+        private static readonly ThreadLocal<Dictionary<string, SKPaint>> _threadPaints =
+            new(() => new Dictionary<string, SKPaint>(StringComparer.OrdinalIgnoreCase));
+
+        private static SKFont GetThreadFont(SKTypeface face, float size)
+        {
+            string k = $"{face.FamilyName ?? "default"}|{size:F4}";
+            var d = _threadFonts.Value!;
+            if (!d.TryGetValue(k, out var font))
+            {
+                font = new SKFont(face, size);
+                d[k] = font;
+            }
+            return d[k];
+        }
+
+        private static SKPaint GetThreadPaint(SKTypeface face, float size)
+        {
+            string k = $"{face.FamilyName ?? "default"}|{size:F4}";
+            var d = _threadPaints.Value!;
+            if (!d.TryGetValue(k, out var paint))
+            {
+                paint = new SKPaint { Typeface = face, TextSize = size, IsAntialias = true };
+                d[k] = paint;
+            }
+            return d[k];
+        }
+
+        private static GlyphData GetGlyphData(char c, float size, SKTypeface? typeface)
+        {
+            string key = MakeKey(c, size, typeface);
+            return GlyphCache.GetOrAdd(key, _ => ComputeGlyphData(c, size, typeface));
+        }
+
+        private static GlyphData ComputeGlyphData(char c, float size, SKTypeface? typeface)
+        {
+            var tf = typeface ?? SKTypeface.Default;
+
+            // берём объекты из ThreadLocal - это безопасно для параллельного выполнения
+            var font = GetThreadFont(tf, size);
+            var paint = GetThreadPaint(tf, size);
+
+            // измерение advance через paint (кэшируется на уровне потоков)
+            float advance = paint.MeasureText(c.ToString());
+
+            // Получаем глиф и путь
+            ushort glyphId = font.GetGlyph(c);
+            if (glyphId != 0)
+            {
+                using var path = font.GetGlyphPath(glyphId);
+                if (path != null && !path.IsEmpty)
+                {
+                    var contours = ExtractContours(path);
+                    if (contours.Count != 0)
+                        return new GlyphData(contours, advance);
+                }
+            }
+            
+            if (char.IsWhiteSpace(c))
+            {
+                return new GlyphData(new List<List<Vector2>>(), advance);
+            }
+
+            float s = size * 0.1f;
+            var fallbackContours = new List<List<Vector2>>
+            {
+                new()
+                {
+                    new(-s, -s), new(s, -s), new(s, s), new(-s, s), new(-s, -s)
+                }
+            };
+
+            return new GlyphData(fallbackContours, size * 0.5f);
+        }
+
+        // Парсинг SKPath в контуры (как раньше)
+        private static List<List<Vector2>> ExtractContours(SKPath path)
         {
             var contours = new List<List<Vector2>>();
+            List<Vector2>? contour = null;
 
-            using var font = new SKFont(typeface, size);
-
-            if (!TryGetGlyph(font, c, out ushort glyph)) return contours;
-            using var path = font.GetGlyphPath(glyph);
-            if (path == null) return contours;
-
-            List<Vector2>? currentContour = null;
             var iter = path.CreateRawIterator();
-            var points = new SKPoint[4];
+            var pts = new SKPoint[4];
             SKPathVerb verb;
 
-            while ((verb = iter.Next(points)) != SKPathVerb.Done)
+            while ((verb = iter.Next(pts)) != SKPathVerb.Done)
             {
                 switch (verb)
                 {
                     case SKPathVerb.Move:
-                        currentContour = StartNewContour(currentContour, contours, size);
-                        currentContour.Add(ToVec(points[0], offsetX));
+                        CloseAndAdd(contour, contours);
+                        contour = new List<Vector2> { ToVec(pts[0]) };
                         break;
                     case SKPathVerb.Line:
-                        currentContour?.Add(ToVec(points[1], offsetX));
+                        contour?.Add(ToVec(pts[1]));
                         break;
                     case SKPathVerb.Quad:
                     case SKPathVerb.Conic:
-                        AddCurve(currentContour, points[..3], offsetX);
+                        AddBezierCurve(contour, pts.AsSpan(0, 3));
                         break;
                     case SKPathVerb.Cubic:
-                        AddCurve(currentContour, points[..4], offsetX);
+                        AddBezierCurve(contour, pts);
                         break;
                     case SKPathVerb.Close:
-                        CloseContour(currentContour, contours, size);
-                        currentContour = null;
+                        CloseAndAdd(contour, contours);
+                        contour = null;
                         break;
                 }
             }
 
-            CloseContour(currentContour, contours, size);
+            CloseAndAdd(contour, contours);
             return contours;
         }
 
-        // Возвращает ширину символа
-        public static float GetGlyphAdvance(char c, float size, SKTypeface typeface)
-        {
-            using var paint = new SKPaint
-            {
-                Typeface = typeface,
-                TextSize = size,
-                IsAntialias = true
-            };
+        private static Vector2 ToVec(SKPoint p) => new(p.X, -p.Y);
 
-            float width = paint.MeasureText(c.ToString());
-            if (width > 0) return width;
-
-            var contours = GetCharContours(c, 0f, size, typeface);
-            if (contours.Count == 0) return size * 0.5f;
-
-            float minX = float.MaxValue, maxX = float.MinValue;
-            foreach (var contour in contours)
-                foreach (var p in contour)
-                {
-                    if (p.X < minX) minX = p.X;
-                    if (p.X > maxX) maxX = p.X;
-                }
-
-            return (minX == float.MaxValue || maxX == float.MinValue) ? size * 0.5f : maxX - minX;
-        }
-
-        private static bool TryGetGlyph(SKFont font, char c, out ushort glyph)
-        {
-            glyph = 0;
-            ushort[] glyphs = new ushort[1];
-            font.GetGlyphs(new[] { c }, glyphs);
-            glyph = glyphs[0];
-            return glyph != 0;
-        }
-
-        private static Vector2 ToVec(SKPoint p, float offsetX) => new(p.X + offsetX, -p.Y);
-
-        private static List<Vector2> StartNewContour(List<Vector2>? existing, List<List<Vector2>> target, float minSize)
-        {
-            CloseContour(existing, target, minSize);
-            return new List<Vector2>();
-        }
-
-        private static void CloseContour(List<Vector2>? contour, List<List<Vector2>> target, float minSize)
+        private static void CloseAndAdd(List<Vector2>? contour, List<List<Vector2>> target)
         {
             if (contour == null || contour.Count == 0) return;
-
-            if (contour.Count < 2)
-            {
-                float s = minSize * 0.1f;
-                contour.Clear();
-                contour.AddRange(new[] { new Vector2(-s, -s), new Vector2(s, -s), new Vector2(s, s), new Vector2(-s, s) });
-            }
-            else if ((contour[^1] - contour[0]).Length > 1e-5f)
-            {
-                contour.Add(contour[0]);
-            }
-
+            if (contour[0] != contour[^1]) contour.Add(contour[0]);
             target.Add(contour);
         }
 
-        private static void AddCurve(List<Vector2>? contour, SKPoint[] controlPoints, float offsetX, int steps = 12)
+        private static void AddBezierCurve(List<Vector2>? contour, ReadOnlySpan<SKPoint> points, int steps = 8)
         {
-            if (contour == null || controlPoints.Length < 2) return;
+            if (contour == null || points.Length < 2) return;
             for (int i = 1; i <= steps; i++)
             {
                 float t = i / (float)steps;
-                var pt = DeCasteljau(controlPoints, t);
-                contour.Add(new Vector2(pt.X + offsetX, -pt.Y));
+                SKPoint p = DeCasteljau(points, t);
+                contour.Add(ToVec(p));
             }
         }
 
-        private static SKPoint DeCasteljau(SKPoint[] points, float t)
+        private static SKPoint DeCasteljau(ReadOnlySpan<SKPoint> points, float t)
         {
-            var temp = (SKPoint[])points.Clone();
-            int n = points.Length - 1;
+            var tmp = points.ToArray();
+            int n = tmp.Length - 1;
             for (int r = 1; r <= n; r++)
                 for (int i = 0; i <= n - r; i++)
-                    temp[i] = new SKPoint((1 - t) * temp[i].X + t * temp[i + 1].X,
-                                           (1 - t) * temp[i].Y + t * temp[i + 1].Y);
-            return temp[0];
+                    tmp[i] = new SKPoint(tmp[i].X + (tmp[i + 1].X - tmp[i].X) * t,
+                                         tmp[i].Y + (tmp[i + 1].Y - tmp[i].Y) * t);
+            return tmp[0];
         }
+
+        // Public API (как в рефакторинге)
+        public static List<List<Vector2>> GetCharContours(
+            char c, float offsetX, float cursorY, float size, SKTypeface? typeface)
+        {
+            var data = GetGlyphData(c, size, typeface);
+
+            var shifted = new List<List<Vector2>>(data.Contours.Count);
+            foreach (var c0 in data.Contours)
+            {
+                var cn = new List<Vector2>(c0.Count + 1);
+                foreach (var p in c0)
+                    cn.Add(new Vector2(p.X + offsetX, p.Y + cursorY));
+                if (cn.Count > 0 && cn[0] != cn[^1]) cn.Add(cn[0]);
+                shifted.Add(cn);
+            }
+
+            return shifted;
+        }
+
+        public static float GetGlyphAdvance(char c, float size, SKTypeface? typeface) =>
+            GetGlyphData(c, size, typeface).Advance;
     }
 }

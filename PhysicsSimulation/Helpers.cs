@@ -9,7 +9,7 @@ namespace PhysicsSimulation
     public static class Helpers
     {
         // --- Инициализация окна OpenTK ---
-        public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = false)
+        public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = false, bool debug_mode = true)
         {
             var settings = new NativeWindowSettings
             {
@@ -22,7 +22,7 @@ namespace PhysicsSimulation
                 WindowState = fullscreen ? WindowState.Fullscreen : WindowState.Normal
             };
 
-            var window = new GameWindow(GameWindowSettings.Default, settings) { VSync = VSyncMode.On };
+            var window = new GameWindow(GameWindowSettings.Default, settings) { VSync = VSyncMode.Off };
 
             // GL настройки
             GL.Enable(EnableCap.Multisample);
@@ -34,9 +34,14 @@ namespace PhysicsSimulation
             // Переключение полноэкранного режима по F11
             var prevSize = window.ClientSize;
             var prevState = window.WindowState;
+            
+            int instantFrames = 0, avgFrames = 0;
+            double instantTimer = 0, avgTimer = 0;
+            string baseTitle = title;
 
-            window.UpdateFrame += _ =>
+            window.UpdateFrame += e =>
             {
+                UpdateFPS(window, e.Time, ref instantFrames, ref instantTimer, ref avgFrames, ref avgTimer, baseTitle, debug_mode);
                 if (!window.KeyboardState.IsKeyPressed(Keys.F11)) return;
 
                 if (window.WindowState == WindowState.Fullscreen)
@@ -64,11 +69,29 @@ namespace PhysicsSimulation
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
             int vertexShader = CompileShader(ShaderType.VertexShader, @"
-                #version 330 core
-                layout(location = 0) in vec3 in_vert;
-                uniform float aspectRatio;
-                void main() { gl_Position = vec4(in_vert.x * aspectRatio, in_vert.y, in_vert.z, 1.0); }
-            ");
+#version 330 core
+
+layout(location = 0) in vec3 in_vert;
+
+uniform float aspectRatio;
+
+// separate transform components
+uniform vec2 u_translate;
+uniform float u_cos;
+uniform float u_sin;
+uniform float u_scale;
+
+void main()
+{
+    float s = u_scale;
+    float c = u_cos;
+    float sn = u_sin;
+
+    float x = (in_vert.x * (c * s) - in_vert.y * (sn * s)) + u_translate.x;
+    float y = (in_vert.x * (sn * s) + in_vert.y * (c * s)) + u_translate.y;
+    gl_Position = vec4(x * aspectRatio, y, in_vert.z, 1.0);
+}
+");
 
             int fragmentShader = CompileShader(ShaderType.FragmentShader, @"
                 #version 330 core
@@ -130,10 +153,11 @@ namespace PhysicsSimulation
         }
 
         // --- Отрисовка вершин ---
-        public static void RenderVertices(int program, int vbo, List<Vector3> verts, Vector3 color, PrimitiveType mode, float lineWidth = 1f)
+        public static void RenderVertices(int program, int vbo, int vao, List<Vector3> verts, Vector3 color, PrimitiveType mode, float lineWidth = 1f)
         {
             if (verts == null || verts.Count == 0) return;
 
+            GL.BindVertexArray(vao);
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
             GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(), BufferUsageHint.DynamicDraw);
 
@@ -141,17 +165,49 @@ namespace PhysicsSimulation
             int colorLoc = GL.GetUniformLocation(program, "color");
             if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
-            if (mode is PrimitiveType.Lines or PrimitiveType.LineStrip)
+            if (mode == PrimitiveType.Lines || mode == PrimitiveType.LineStrip || mode == PrimitiveType.LineLoop)
                 GL.LineWidth(lineWidth);
 
-            int vao = GL.GenVertexArray();
-            GL.BindVertexArray(vao);
-            GL.EnableVertexAttribArray(0);
-            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
             GL.DrawArrays(mode, 0, verts.Count);
+        }
+        
+        public static void UpdateFPS(GameWindow window, double dt, ref int instantFrames, ref double instantTimer,
+            ref int avgFrames, ref double avgTimer, string baseTitle, bool debug_mode,
+            double instantUpdateInterval = 0.5, double avgInterval = 5.0)
+        {
+            if (!debug_mode) return;
 
-            GL.DeleteVertexArray(vao);
-            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+            instantFrames++;
+            avgFrames++;
+            instantTimer += dt;
+            avgTimer += dt;
+
+            double instantFps = 0;
+            double avgFps = 0;
+            bool updated = false;
+
+            if (instantTimer >= instantUpdateInterval)
+            {
+                instantFps = instantFrames / instantTimer;
+                instantFrames = 0;
+                instantTimer = 0;
+                updated = true;
+            }
+
+            if (avgTimer >= avgInterval)
+            {
+                avgFps = avgFrames / avgTimer;
+                avgFrames = 0;
+                avgTimer = 0;
+                updated = true;
+            }
+
+            if (updated)
+            {
+                string fpsStr = ((int)instantFps).ToString().PadLeft(5, ' ');
+                string avgStr = ((int)avgFps).ToString().PadLeft(5, ' ');
+                window.Title = $"{baseTitle} | FPS: {fpsStr} | AVG: {avgStr}";
+            }
         }
     }
 }
