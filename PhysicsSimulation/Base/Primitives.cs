@@ -406,57 +406,31 @@ namespace PhysicsSimulation
             return this;
         }
 
-        public Primitive MorphTo(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut,
-            bool hideTargetDuringMorph = false)
+        public Primitive MorphTo(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut, bool hideTargetDuringMorph = false)
         {
-            // Подготовка вершин (как у тебя сейчас)
+            // ЗАХВАТЫВАЕМ ВЕРШИНЫ СРАЗУ — ДО SCHEDULE
+            var targetVerts = target.GetBoundaryVerts(); // ← СНИМОК ВЕРШИН
+            var targetFilled = target.Filled;
+
             var startVerts = NormalizeVerts(GetBoundaryVerts());
-            var targetVertsUnpadded = NormalizeVerts(target.GetBoundaryVerts());
-            var maxLen = Math.Max(startVerts.Count, targetVertsUnpadded.Count);
-            var paddedStart = Helpers.PadWithDuplicates(startVerts, maxLen);
-            var paddedTarget = Helpers.PadWithDuplicates(targetVertsUnpadded, maxLen);
+            var targetVertsNorm = NormalizeVerts(targetVerts);
+
+            int max = Math.Max(startVerts.Count, targetVertsNorm.Count);
+            startVerts = Helpers.ResizeVertexList(startVerts, max);
+            targetVertsNorm = Helpers.ResizeVertexList(targetVertsNorm, max);
 
             ScheduleOrExecute(() =>
             {
-                // Запускаем GPU-морфинг
-                GpuMorphInstance = new GpuMorph(paddedStart, paddedTarget, ease);
+                GpuMorphInstance = new GpuMorph(startVerts, targetVertsNorm, ease);
                 MorphDuration = duration;
                 MorphElapsed = 0f;
                 MorphEase = ease;
 
-                // Анимируем свойства
-                AnimateColor(target.Color, duration, ease);
-                MoveTo(target.X, target.Y, duration, ease);
-                Resize(target.Scale <= 0f ? 1f : target.Scale, duration, ease);
-                RotateTo(MathHelper.RadiansToDegrees(target.Rotation), duration, ease);
-                SetLineWidth(target.LineWidth, duration, ease);
+                _finalBoundaryAfterMorph = targetVerts; // ← Для фиксации после
+                _finalFilledAfterMorph = targetFilled;
 
                 if (hideTargetDuringMorph)
                     target.Visible = false;
-
-                // КЛЮЧЕВОЙ МОМЕНТ: после морфинга — ПОЛНОСТЬЮ ЗАМЕНЯЕМ СЕБЯ НА ЦЕЛЬ
-                Scene.CurrentScene?.Wait(duration).Schedule(() =>
-                {
-                    // 1. Удаляем старый объект (себя)
-                    Scene.CurrentScene?.Objects.Remove(this);
-
-                    // 2. Копируем все свойства из target
-                    target.X = this.X;
-                    target.Y = this.Y;
-                    target.Scale = this.Scale;
-                    target.Rotation = this.Rotation;
-                    target.Color = this.Color;
-                    target.LineWidth = this.LineWidth;
-                    target.Filled = this.Filled;
-                    target.Visible = true;
-
-                    // 3. Добавляем target вместо себя
-                    Scene.CurrentScene?.Add(target);
-
-                    // 4. Убиваем GPU-морфинг
-                    GpuMorphInstance?.Dispose();
-                    GpuMorphInstance = null;
-                });
             });
 
             return this;
@@ -567,12 +541,13 @@ namespace PhysicsSimulation
 
         protected override List<Vector2> GetBoundaryVertsOverride()
         {
-            var list = new List<Vector2>(Segments);
+            var list = new List<Vector2>(Segments + 1);
             for (int i = 0; i < Segments; i++)
             {
                 float a = 2 * MathF.PI * i / Segments;
                 list.Add(new Vector2(Radius * MathF.Cos(a), Radius * MathF.Sin(a)));
             }
+            list.Add(list[0]);
             return list;
         }
     }
@@ -592,7 +567,8 @@ namespace PhysicsSimulation
                 new(-hw, -hh),
                 new(hw, -hh),
                 new(hw, hh),
-                new(-hw, hh)
+                new(-hw, hh),
+                new(-hw, -hh)
             };
         }
     }

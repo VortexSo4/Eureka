@@ -142,25 +142,40 @@ void main()
         }
         
         // --- Дублирование вершин до нужной длины ---
-        public static List<Vector2> PadWithDuplicates(List<Vector2> verts, int targetLen)
+        public static List<Vector2> ResizeVertexList(List<Vector2> source, int targetCount)
         {
-            if (verts == null) throw new ArgumentNullException(nameof(verts));
-            if (targetLen <= 0) return new();
+            if (source.Count == targetCount) return source;
+            if (source.Count == 0) return new List<Vector2>(new Vector2[targetCount]);
+            if (targetCount <= 0) return new List<Vector2>();
 
-            int count = verts.Count;
-            if (count == 0)
-                return Enumerable.Repeat(Vector2.Zero, targetLen).ToList();
+            var result = new List<Vector2>(targetCount);
 
-            if (count >= targetLen)
+            if (source.Count < targetCount)
             {
-                float step = (float)count / targetLen;
-                return Enumerable.Range(0, targetLen).Select(i => verts[(int)(i * step)]).ToList();
-            }
+                // Увеличиваем: интерполируем между точками
+                float step = (float)(source.Count - 1) / (targetCount - 1);
+                for (int i = 0; i < targetCount; i++)
+                {
+                    float t = i * step;
+                    int idx = (int)t;
+                    float frac = t - idx;
 
-            var result = new List<Vector2>(targetLen);
-            int q = targetLen / count, r = targetLen % count;
-            for (int i = 0; i < count; i++)
-                result.AddRange(Enumerable.Repeat(verts[i], q + (i < r ? 1 : 0)));
+                    if (idx >= source.Count - 1)
+                        result.Add(source[^1]);
+                    else
+                        result.Add(Vector2.Lerp(source[idx], source[idx + 1], frac));
+                }
+            }
+            else
+            {
+                // Уменьшаем: берём точки равномерно
+                float step = (float)source.Count / targetCount;
+                for (int i = 0; i < targetCount; i++)
+                {
+                    int idx = (int)(i * step);
+                    result.Add(source[idx]);
+                }
+            }
 
             return result;
         }

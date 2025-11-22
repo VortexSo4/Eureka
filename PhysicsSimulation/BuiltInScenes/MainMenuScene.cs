@@ -7,7 +7,7 @@ namespace PhysicsSimulation.BuiltInScenes
     {
         protected override void StartSlides()
         {
-            Console.WriteLine("Main Menu loaded");
+            Debug.Info("Main Menu loaded");
             AnimateBackgroundColor(new Vector3(0.05f, 0.05f, 0.08f));
 
             var title = new Text(
@@ -36,12 +36,16 @@ namespace PhysicsSimulation.BuiltInScenes
                 filled: false,
                 font: FontFamily.Audiowide
             );
+
+            var circle = new Circle(x: -.5f);
+            var square = new Rectangle(x: .5f);
             
-            Add(title.Draw(4), text.Draw(4));
+            Add(title.Draw(), circle.Draw(), square.Draw());
             var hint = new Text("Press [SPACE] to continue", y: -0.95f, fontSize: 0.05f, color: new Vector3(0.8f, 0.8f, 0.8f));
             Add(hint.Draw(1.5f));
             Wait(4);
-            text.MorphTo(new Circle());
+            circle.MorphTo(new Rectangle(x: -.5f));
+            square.MorphTo(new Circle(x: .5f));
         }
     }
 }

@@ -11,6 +11,11 @@ namespace PhysicsSimulation
     /// </summary>
     public sealed class GpuMorph : IDisposable
     {
+        public float Duration { get; set; }
+        public EaseType? Ease { get; set; }
+        public Action? OnComplete { get; set; }
+        public Vector3 TargetColor { get; set; }
+        public float TargetX, TargetY, TargetScale;
         public int VertCount { get; }
         private readonly int _ssboStart;
         private readonly int _ssboTarget;
