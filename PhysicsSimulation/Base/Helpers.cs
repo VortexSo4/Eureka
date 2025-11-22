@@ -8,6 +8,47 @@ namespace PhysicsSimulation
 {
     public static class Helpers
     {
+        private static string vertexShaderSource = @"
+#version 430 core
+layout (location = 0) in vec3 aPosition;
+
+uniform vec2 u_translate;
+uniform float u_cos;
+uniform float u_sin;
+uniform float u_scale;
+uniform vec3 u_color;
+uniform float u_aspectRatio;
+
+out vec3 fragColor;
+
+void main()
+{
+    vec3 pos = aPosition;
+    float x = pos.x * u_cos - pos.y * u_sin;
+    float y = pos.x * u_sin + pos.y * u_cos;
+    x *= u_scale;
+    y *= u_scale;
+    x += u_translate.x;
+    y += u_translate.y;
+    x *= u_aspectRatio;
+    gl_Position = vec4(x, y, pos.z, 1.0);
+    fragColor = u_color;
+}
+";
+
+        
+        private static string fragmentShaderSource = @"
+#version 430 core
+in vec3 fragColor;
+out vec4 FragColor;
+
+void main()
+{
+    FragColor = vec4(fragColor, 1.0);
+}
+";
+
+        
         // --- Инициализация окна OpenTK ---
         public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = false, bool debug_mode = true)
         {
@@ -17,7 +58,7 @@ namespace PhysicsSimulation
                 Title = title,
                 Profile = ContextProfile.Core,
                 API = ContextAPI.OpenGL,
-                APIVersion = new Version(3, 3),
+                APIVersion = new Version(4, 3),
                 NumberOfSamples = 4,
                 WindowState = fullscreen ? WindowState.Fullscreen : WindowState.Normal
             };
@@ -68,37 +109,9 @@ namespace PhysicsSimulation
             GL.Enable(EnableCap.Blend);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
-            int vertexShader = CompileShader(ShaderType.VertexShader, @"
-#version 330 core
+            int vertexShader = CompileShader(ShaderType.VertexShader, vertexShaderSource);
 
-layout(location = 0) in vec3 in_vert;
-
-uniform float aspectRatio;
-
-// separate transform components
-uniform vec2 u_translate;
-uniform float u_cos;
-uniform float u_sin;
-uniform float u_scale;
-
-void main()
-{
-    float s = u_scale;
-    float c = u_cos;
-    float sn = u_sin;
-
-    float x = (in_vert.x * (c * s) - in_vert.y * (sn * s)) + u_translate.x;
-    float y = (in_vert.x * (sn * s) + in_vert.y * (c * s)) + u_translate.y;
-    gl_Position = vec4(x * aspectRatio, y, in_vert.z, 1.0);
-}
-");
-
-            int fragmentShader = CompileShader(ShaderType.FragmentShader, @"
-                #version 330 core
-                uniform vec3 color;
-                out vec4 f_color;
-                void main() { f_color = vec4(color, 1.0); }
-            ");
+            int fragmentShader = CompileShader(ShaderType.FragmentShader, fragmentShaderSource);
 
             int program = GL.CreateProgram();
             GL.AttachShader(program, vertexShader);
@@ -162,7 +175,7 @@ void main()
             GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(), BufferUsageHint.DynamicDraw);
 
             GL.UseProgram(program);
-            int colorLoc = GL.GetUniformLocation(program, "color");
+            int colorLoc = GL.GetUniformLocation(program, "u_color");
             if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
             if (mode == PrimitiveType.Lines || mode == PrimitiveType.LineStrip || mode == PrimitiveType.LineLoop)

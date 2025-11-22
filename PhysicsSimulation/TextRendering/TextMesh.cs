@@ -173,7 +173,7 @@ namespace PhysicsSimulation
 
             GL.UseProgram(program);
 
-            int colorLoc = GL.GetUniformLocation(program, "color");
+            int colorLoc = GL.GetUniformLocation(program, "u_color");
             if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
             float cos = MathF.Cos(rotation);

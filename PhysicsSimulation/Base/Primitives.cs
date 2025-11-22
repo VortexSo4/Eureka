@@ -40,6 +40,8 @@ namespace PhysicsSimulation
         public Vector3 Color { get; set; } = Vector3.One;
         public float LineWidth { get; set; } = 1f;
         public bool Filled { get; set; }
+        
+        public bool Visible { get; set; } = true;
 
         // simple physics
         public float Vx { get; set; }
@@ -48,6 +50,16 @@ namespace PhysicsSimulation
         // animations
         protected readonly List<PropertyAnimation> Animations = new();
         protected ShapeAnimation? ShapeAnim { get; set; }
+        
+        protected GpuMorph? GpuMorphInstance { get; set; }
+        protected float MorphElapsed { get; set; }
+        protected float MorphDuration { get; set; }
+        protected EaseType MorphEase { get; set; } = EaseType.Linear;
+
+        protected List<Vector2>? FinalMorphVerts { get; set; }
+        
+        protected List<Vector2>? _finalBoundaryAfterMorph;
+        protected bool _finalFilledAfterMorph;
 
         // custom boundaries and morphing
         protected List<Vector2>? CustomBoundary { get; set; }
@@ -65,6 +77,15 @@ namespace PhysicsSimulation
 
         public override void Update(float dt)
         {
+            if (GpuMorphInstance != null)
+            {
+                MorphElapsed += dt;
+                float t = Math.Min(1f, MorphElapsed / MorphDuration);
+                float easedT = Easing.Ease(MorphEase, t);
+
+                GpuMorphInstance.Update(easedT);
+            }
+            
             // physics
             X += Vx * dt; Y += Vy * dt;
             if (Math.Abs(X) > 1f) Vx = -Vx;
@@ -120,93 +141,122 @@ namespace PhysicsSimulation
                 ShapeAnim = null;
             }
         }
+        
+        private List<Vector2> NormalizeVerts(List<Vector2> verts)
+        {
+            if (verts == null || verts.Count == 0) return new List<Vector2>();
+
+            var bounds = GetBounds(verts);
+            var result = new List<Vector2>(verts.Count);
+
+            foreach (var v in verts)
+            {
+                if (float.IsNaN(v.X) || float.IsNaN(v.Y))
+                    result.Add(new Vector2(float.NaN, float.NaN));
+                else
+                    result.Add(v - bounds.Center);
+            }
+            return result;
+        }
 
         public override void Render(int program, int vbo, int vao)
-{
-    var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
-    if (source == null || source.Count == 0) return;
-
-    // Разбиваем source на сегменты по разделителю (NaN, NaN).
-    var segments = new List<List<Vector2>>();
-    var current = new List<Vector2>();
-    foreach (var p in source)
-    {
-        if (float.IsNaN(p.X) || float.IsNaN(p.Y))
         {
-            if (current.Count > 0)
+            if (!Visible) return;
+
+            // === GPU MORPHING: самый быстрый путь ===
+            if (GpuMorphInstance != null)
             {
-                segments.Add(current);
-                current = new List<Vector2>();
+                GL.UseProgram(program);
+
+                // Цвет
+                int colorLoc = GL.GetUniformLocation(program, "u_color");
+                if (colorLoc >= 0) GL.Uniform3(colorLoc, Color);
+
+                // Трансформация
+                int transLoc = GL.GetUniformLocation(program, "u_translate");
+                int cosLoc = GL.GetUniformLocation(program, "u_cos");
+                int sinLoc = GL.GetUniformLocation(program, "u_sin");
+                int scaleLoc = GL.GetUniformLocation(program, "u_scale");
+
+                if (transLoc >= 0) GL.Uniform2(transLoc, X, Y);
+                if (cosLoc >= 0) GL.Uniform1(cosLoc, MathF.Cos(Rotation));
+                if (sinLoc >= 0) GL.Uniform1(sinLoc, MathF.Sin(Rotation));
+                if (scaleLoc >= 0) GL.Uniform1(scaleLoc, Scale);
+
+                // Рендерим с GPU-буфера
+                GL.BindVertexArray(vao);
+                GpuMorphInstance.BindOutputAsArrayBuffer();
+                GL.EnableVertexAttribArray(0);
+
+                if (!Filled) GL.LineWidth(LineWidth);
+
+                GL.DrawArrays(PrimitiveType.LineStrip, 0, GpuMorphInstance.VertCount);
+
+                GL.BindVertexArray(0);
+                GL.UseProgram(0);
+                return;
             }
-            // пропускаем разделитель
+
+            // === CPU-путь (ShapeAnim или обычные вершины) ===
+            var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
+            if (source == null || source.Count == 0) return;
+
+            // Разбиваем по NaN-разделителям
+            var segments = new List<List<Vector2>>();
+            var current = new List<Vector2>();
+            foreach (var p in source)
+            {
+                if (float.IsNaN(p.X) || float.IsNaN(p.Y))
+                {
+                    if (current.Count > 0)
+                    {
+                        segments.Add(current);
+                        current = new List<Vector2>();
+                    }
+                }
+                else current.Add(p);
+            }
+
+            if (current.Count > 0) segments.Add(current);
+
+            GL.UseProgram(program);
+
+            // === Трансформация (GPU или CPU) ===
+            int locTranslate = GL.GetUniformLocation(program, "u_translate");
+            int locCos = GL.GetUniformLocation(program, "u_cos");
+            int locSin = GL.GetUniformLocation(program, "u_sin");
+            int locScale = GL.GetUniformLocation(program, "u_scale");
+            bool useGpuTransform = locTranslate >= 0 && locCos >= 0 && locSin >= 0 && locScale >= 0;
+
+            if (useGpuTransform)
+            {
+                GL.Uniform2(locTranslate, X, Y);
+                float c = MathF.Cos(Rotation);
+                float s = MathF.Sin(Rotation);
+                GL.Uniform1(locCos, c);
+                GL.Uniform1(locSin, s);
+                GL.Uniform1(locScale, Scale);
+            }
+
+            // === Цвет (один раз — здесь, без конфликта) ===
+            int colorUniform = GL.GetUniformLocation(program, "color");
+            if (colorUniform >= 0) GL.Uniform3(colorUniform, Color);
+
+            // === Рендерим каждый сегмент ===
+            foreach (var seg in segments)
+            {
+                if (seg.Count < 2) continue;
+
+                List<Vector3> drawVerts = useGpuTransform
+                    ? seg.Select(v => new Vector3(v.X, v.Y, 0f)).ToList()
+                    : TransformVerts(seg);
+
+                var finalVerts = PrepareDrawVerts(drawVerts, Filled);
+                RenderVerts(finalVerts, Filled, program, vbo, Color, LineWidth);
+            }
+
+            GL.UseProgram(0);
         }
-        else
-        {
-            current.Add(p);
-        }
-    }
-    if (current.Count > 0) segments.Add(current);
-
-    // --- Предварительно узнаем, поддерживает ли шейдер uniform-трансформации ---
-    GL.UseProgram(program);
-    int loc_u_translate = GL.GetUniformLocation(program, "u_translate");
-    int loc_u_cos = GL.GetUniformLocation(program, "u_cos");
-    int loc_u_sin = GL.GetUniformLocation(program, "u_sin");
-    int loc_u_scale = GL.GetUniformLocation(program, "u_scale");
-    int loc_aspect = GL.GetUniformLocation(program, "aspectRatio");
-
-    bool shaderHasTransform = (loc_u_translate >= 0 && loc_u_cos >= 0 && loc_u_sin >= 0 && loc_u_scale >= 0);
-
-    // если шейдер ожидает aspectRatio — посчитаем и установим
-    if (loc_aspect >= 0)
-    {
-        // Получаем текущий вьюпорт (x,y,w,h)
-        var vp = new int[4];
-        GL.GetInteger(GetPName.Viewport, vp);
-        float aspect = 1f;
-        if (vp[2] != 0) aspect = vp[3] / (float)vp[2]; // height / width — так, как ты использовал раньше
-        GL.Uniform1(loc_aspect, aspect);
-    }
-
-    foreach (var seg in segments)
-    {
-        if (seg == null || seg.Count == 0) continue;
-
-        List<Vector3> drawVerts;
-
-        if (shaderHasTransform)
-        {
-            // Отправляем локальные вершины (без CPU-transform), и устанавливаем униформы для трансформации
-            // 1) подготовим verts как Vector3 (z = 0)
-            var raw = seg.Select(v => new Vector3(v.X, v.Y, 0f)).ToList();
-
-            // 2) установим униформы трансформации для этого примитива
-            // translate = (X, Y)
-            GL.Uniform2(loc_u_translate, X, Y);
-            // cos, sin от Rotation и Scale
-            float c = MathF.Cos(Rotation);
-            float s = MathF.Sin(Rotation);
-            GL.Uniform1(loc_u_cos, c);
-            GL.Uniform1(loc_u_sin, s);
-            GL.Uniform1(loc_u_scale, Scale);
-
-            // 3) подготовим drawVerts (GPU применит трансформацию)
-            drawVerts = PrepareDrawVerts(raw, Filled);
-        }
-        else
-        {
-            // Старый путь — применяем трансформы на CPU
-            var transformed = TransformVerts(seg);
-            drawVerts = PrepareDrawVerts(transformed, Filled);
-        }
-
-        // И наконец рендерим (RenderVerts сам загружает VBO/VAO и отрисовывает)
-        RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
-    }
-
-    // отвязываемся от программы (чтобы не влиял на следующий draw)
-    GL.UseProgram(0);
-}
 
 
         protected virtual List<Vector3> TransformVerts(List<Vector2> verts)
@@ -250,7 +300,7 @@ namespace PhysicsSimulation
             if (verts == null || verts.Count == 0) return;
 
             GL.UseProgram(program);
-            int colorLoc = GL.GetUniformLocation(program, "color");
+            int colorLoc = GL.GetUniformLocation(program, "u_color");
             if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
@@ -359,72 +409,54 @@ namespace PhysicsSimulation
         public Primitive MorphTo(Primitive target, float duration = 2f, EaseType ease = EaseType.EaseInOut,
             bool hideTargetDuringMorph = false)
         {
-            // Помещаем всю логику внутрь ScheduleOrExecute, чтобы при Recording=true
-            // создание ShapeAnim и регистрация property-анимаций происходили синхронно
-            // в момент срабатывания по timeline.
+            // Подготовка вершин (как у тебя сейчас)
+            var startVerts = NormalizeVerts(GetBoundaryVerts());
+            var targetVertsUnpadded = NormalizeVerts(target.GetBoundaryVerts());
+            var maxLen = Math.Max(startVerts.Count, targetVertsUnpadded.Count);
+            var paddedStart = Helpers.PadWithDuplicates(startVerts, maxLen);
+            var paddedTarget = Helpers.PadWithDuplicates(targetVertsUnpadded, maxLen);
+
             ScheduleOrExecute(() =>
             {
-                // --- helper deep copy ---
-                List<Vector2> DeepCopy(List<Vector2>? src) =>
-                    src?.Select(v => new Vector2(v.X, v.Y)).ToList() ?? new List<Vector2>();
+                // Запускаем GPU-морфинг
+                GpuMorphInstance = new GpuMorph(paddedStart, paddedTarget, ease);
+                MorphDuration = duration;
+                MorphElapsed = 0f;
+                MorphEase = ease;
 
-                // pluck verts (deep copy чтобы избежать алиасинга на кеш CharMap и т.д.)
-                var startVerts = DeepCopy(CustomBoundary ?? BoundaryVerts ?? GetBoundaryVerts());
-                var targetVerts = DeepCopy(target.GetBoundaryVerts());
-
-                // Получаем bounding centers (внутренняя утилита)
-                var startBounds = GetBounds(startVerts);
-                var targetBounds = GetBounds(targetVerts);
-
-                // Нормализуем в локальные координаты (убираем центры) — теперь это локальные формы
-                var normalizedStart = NormalizeVerts(startVerts, startBounds);
-                var normalizedTarget = NormalizeVerts(targetVerts, targetBounds);
-
-                // Подгоним длину списков как раньше
-                if (normalizedStart.Count != normalizedTarget.Count)
-                {
-                    if (normalizedStart.Count < normalizedTarget.Count)
-                        normalizedStart = Helpers.PadWithDuplicates(normalizedStart, normalizedTarget.Count);
-                    else
-                        normalizedTarget = Helpers.PadWithDuplicates(normalizedTarget, normalizedStart.Count);
-                }
-
-                // Опционально: скрыть target на время морфа (чтобы не было дублирования рендера)
-                List<Vector2>? origTargetCustom = null;
-                if (hideTargetDuringMorph)
-                {
-                    origTargetCustom = target.CustomBoundary;
-                    target.CustomBoundary = new List<Vector2>(); // временно пусто — target не будет рендериться
-                    target.Animations.Clear(); // приостанавливаем/убираем его property-анимации на время морфа
-                    target.Filled = false;
-                }
-
-                // Сохраняем локальную целевую границу (deep copy)
-                var finalLocalTarget = DeepCopy(normalizedTarget);
-
-                ShapeAnim = new ShapeAnimation
-                {
-                    Start = normalizedStart,
-                    Target = normalizedTarget,
-                    Duration = duration,
-                    Ease = ease,
-                    TargetFilled = target.Filled,
-                    FinalTargetBoundary = finalLocalTarget,
-                    RestoreTargetOnFinish = hideTargetDuringMorph,
-                    TargetToRestore = hideTargetDuringMorph ? target : null,
-                    // если скрывали — сохраним оригинал для восстановления
-                    OriginalTargetCustomBoundary = origTargetCustom
-                };
-
-                // BoundaryVerts держим в локальных координатах — TransformVerts прибавит X/Y/Scale/Rotation
-                BoundaryVerts = normalizedStart;
-
-                // Анимируем трансформ/цветы исходного объекта к параметрам target (одновременно)
+                // Анимируем свойства
                 AnimateColor(target.Color, duration, ease);
                 MoveTo(target.X, target.Y, duration, ease);
-                Resize(target.Scale == 0f ? 1f : target.Scale, duration, ease);
-                RotateTo(target.Rotation, duration, ease);
+                Resize(target.Scale <= 0f ? 1f : target.Scale, duration, ease);
+                RotateTo(MathHelper.RadiansToDegrees(target.Rotation), duration, ease);
                 SetLineWidth(target.LineWidth, duration, ease);
+
+                if (hideTargetDuringMorph)
+                    target.Visible = false;
+
+                // КЛЮЧЕВОЙ МОМЕНТ: после морфинга — ПОЛНОСТЬЮ ЗАМЕНЯЕМ СЕБЯ НА ЦЕЛЬ
+                Scene.CurrentScene?.Wait(duration).Schedule(() =>
+                {
+                    // 1. Удаляем старый объект (себя)
+                    Scene.CurrentScene?.Objects.Remove(this);
+
+                    // 2. Копируем все свойства из target
+                    target.X = this.X;
+                    target.Y = this.Y;
+                    target.Scale = this.Scale;
+                    target.Rotation = this.Rotation;
+                    target.Color = this.Color;
+                    target.LineWidth = this.LineWidth;
+                    target.Filled = this.Filled;
+                    target.Visible = true;
+
+                    // 3. Добавляем target вместо себя
+                    Scene.CurrentScene?.Add(target);
+
+                    // 4. Убиваем GPU-морфинг
+                    GpuMorphInstance?.Dispose();
+                    GpuMorphInstance = null;
+                });
             });
 
             return this;
@@ -487,7 +519,18 @@ namespace PhysicsSimulation
             return result;
         }
 
-        public abstract List<Vector2> GetBoundaryVerts();
+        public virtual List<Vector2> GetBoundaryVerts()
+        {
+            if (_finalBoundaryAfterMorph != null)
+                return _finalBoundaryAfterMorph;
+
+            if (CustomBoundary != null)
+                return CustomBoundary;
+
+            return GetBoundaryVertsOverride();
+        }
+
+        protected abstract List<Vector2> GetBoundaryVertsOverride();
 
         // --- Internal animation classes ---
         protected class PropertyAnimation
@@ -522,7 +565,7 @@ namespace PhysicsSimulation
         public Circle(float x = 0f, float y = 0f, float radius = 0.1f, bool filled = false, Vector3 color = default, int segments = 80)
             : base(x, y, filled, color) { Radius = radius; Segments = segments; }
 
-        public override List<Vector2> GetBoundaryVerts()
+        protected override List<Vector2> GetBoundaryVertsOverride()
         {
             var list = new List<Vector2>(Segments);
             for (int i = 0; i < Segments; i++)
@@ -541,7 +584,7 @@ namespace PhysicsSimulation
         public Rectangle(float x = 0f, float y = 0f, float width = 0.2f, float height = 0.2f, bool filled = false, Vector3 color = default)
             : base(x, y, filled, color) { Width = width; Height = height; }
 
-        public override List<Vector2> GetBoundaryVerts()
+        protected override List<Vector2> GetBoundaryVertsOverride()
         {
             float hw = Width / 2, hh = Height / 2;
             return new List<Vector2>
@@ -612,7 +655,6 @@ namespace PhysicsSimulation
 // Примерная рамка (bounding box) текста на локальных координатах
         public (float MinX, float MinY, float MaxX, float MaxY) DebugBounds =>
             (-Width/2f, -Height/2f, Width/2f, Height/2f);
-
 
         public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f,
             float verticalPadding = 0.1f, Vector3 color = default,
@@ -785,16 +827,10 @@ namespace PhysicsSimulation
                 Parent = parent;
             }
 
-            public override List<Vector2> GetBoundaryVerts()
+            protected override List<Vector2> GetBoundaryVertsOverride()
             {
                 var contours = Parent.GetCharContours(Char, X);
                 return contours.SelectMany(c => c).ToList();
-            }
-
-            public override void Render(int program, int vbo, int vao)
-            {
-                var contours = Parent.GetCharContours(Char, X);
-                Parent.RenderContours(contours, program, vbo);
             }
 
             public void SetShapeAnimation(List<Vector2> startVerts, List<Vector2> targetVerts, float duration,
@@ -813,78 +849,30 @@ namespace PhysicsSimulation
             public void SetBoundaryVerts(List<Vector2> verts) => BoundaryVerts = verts;
         }
 
-        // other nested classes (GroupPrimitive, TextSlice) left unchanged...
-
         public override void Render(int program, int vbo, int vao)
         {
-            if (CustomBoundary != null || ShapeAnim != null)
+            if (!Visible) return;
+
+            // Если идёт GPU-морфинг — используем его (самый быстрый путь)
+            if (GpuMorphInstance != null)
             {
-                base.Render(program, vbo, vao);
+                base.Render(program, vbo, vao); // делегируем в Primitive.Render → он обработает GPU-морфинг
                 return;
             }
 
-            // If mesh exists, use it (fast path)
+            // Если есть готовый TextMesh — используем его
             if (_mesh != null)
             {
                 _mesh.Render(program, X, Y, Scale, Rotation, Color, LineWidth);
                 return;
             }
 
-            // Fallback to original per-char rendering (if mesh is missing)
-            var lines = _textContent.Replace("\r", "").Split('\n');
-
-            float step = FontSize + (VerticalPadding * FontSize);
-            float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
-
-            float centerOffset = Vertical switch
-            {
-                VerticalAlignment.Top => Height / 2f,
-                VerticalAlignment.Bottom => -Height / 2f,
-                _ => 0f
-            };
-
-            int globalCharIndex = 0;
-
-            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
-            {
-                var line = lines[lineIdx];
-                float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
-
-                float lineWidth = 0f;
-                for (int i = 0; i < line.Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize, _typeface) +
-                                 (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
-
-                float offsetXLocal = Horizontal switch
-                {
-                    HorizontalAlignment.Left => 0f,
-                    HorizontalAlignment.Right => -lineWidth,
-                    _ => -lineWidth / 2f
-                };
-
-                for (int i = 0; i < line.Length; i++)
-                {
-                    char c = line[i];
-                    var contours = CharMap.GetCharContours(c, offsetXLocal, cursorY, FontSize, _typeface);
-                    RenderContoursWithCharCache(c, globalCharIndex, contours, offsetXLocal, cursorY, program, vbo);
-
-                    float adv = CharMap.GetGlyphAdvance(c, FontSize, _typeface);
-                    offsetXLocal += adv + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
-
-                    globalCharIndex++;
-                }
-            }
+            // Иначе — старый fallback (по контурам)
+            base.Render(program, vbo, vao);
         }
 
-        public override List<Vector2> GetBoundaryVerts()
+        protected override List<Vector2> GetBoundaryVertsOverride()
         {
-            // If we have mesh, reconstruct boundary from mesh verts (cheap)
-            if (_mesh != null)
-            {
-                var all = new List<Vector2>();
-                // We can't access mesh's contours directly here (they are internal), so fallback to old method
-            }
-
             var all2 = new List<Vector2>();
             var lines = _textContent.Replace("\r", "").Split('\n');
 

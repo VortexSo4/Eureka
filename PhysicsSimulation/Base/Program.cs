@@ -23,11 +23,11 @@ namespace PhysicsSimulation
             GL.EnableVertexAttribArray(0);
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
 
-            int aspectLoc = GL.GetUniformLocation(program, "aspectRatio");
+            int aspectLoc = GL.GetUniformLocation(program, "u_aspectRatio");
             if (aspectLoc >= 0)
             {
                 GL.UseProgram(program);
-                GL.Uniform1(aspectLoc, 9f / 16f);
+                GL.Uniform1(aspectLoc, (float)window.Size.Y / window.Size.X);
                 GL.UseProgram(0);
             }
 
@@ -46,6 +46,11 @@ namespace PhysicsSimulation
                 lastTime = currentTime;
 
                 scene.Update(dt);
+                
+                GL.Viewport(0, 0, window.Size.X, window.Size.Y);
+                GL.ClearColor(0f, 0f, 0f, 1f);
+                GL.Clear(ClearBufferMask.ColorBufferBit);
+                UpdateViewport(window);
 
                 GL.ClearColor(scene.BackgroundColor.X, scene.BackgroundColor.Y, scene.BackgroundColor.Z, 1f);
                 GL.Clear(ClearBufferMask.ColorBufferBit);

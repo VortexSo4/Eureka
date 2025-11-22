@@ -16,8 +16,7 @@ namespace PhysicsSimulation.BuiltInScenes
                 fontSize: 0.2f,
                 color: new Vector3(1f, 1f, 1f), 
                 horizontal: Text.HorizontalAlignment.Right, vertical: Text.VerticalAlignment.Middle,
-                filled: false,
-                font: FontFamily.QuanticoBold
+                filled: false
             );
 
             int N = 50;
@@ -38,7 +37,7 @@ namespace PhysicsSimulation.BuiltInScenes
                 font: FontFamily.Audiowide
             );
             
-            Add(title, text.Draw(4));
+            Add(title.Draw(4), text.Draw(4));
             var hint = new Text("Press [SPACE] to continue", y: -0.95f, fontSize: 0.05f, color: new Vector3(0.8f, 0.8f, 0.8f));
             Add(hint.Draw(1.5f));
             Wait(4);
