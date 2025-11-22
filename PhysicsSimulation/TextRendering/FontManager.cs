@@ -9,10 +9,7 @@ namespace PhysicsSimulation
         ArialBlack,
         Calibri,
         Audiowide,
-        Orbitron,
-        Quantico,
-        Oxanium,
-        Exo2
+        QuanticoBold
     }
 
     public static class FontManager
@@ -31,10 +28,7 @@ namespace PhysicsSimulation
                 FontFamily.ArialBlack => "Arial Black",
                 FontFamily.Calibri => "Calibri",
                 FontFamily.Audiowide => "Audiowide",
-                FontFamily.Orbitron => "Orbitron",
-                FontFamily.Quantico => "Quantico",
-                FontFamily.Oxanium => "Oxanium",
-                FontFamily.Exo2 => "Exo 2",
+                FontFamily.QuanticoBold => "Quantico-Bold",
                 _ => "Arial"
             };
         }
