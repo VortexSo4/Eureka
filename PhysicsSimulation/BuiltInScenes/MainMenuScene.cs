@@ -19,12 +19,9 @@ namespace PhysicsSimulation.BuiltInScenes
                 filled: false,
                 font: FontFamily.QuanticoBold
             );
-            
-            int N = 240;
-            int M = 11;
-            
-            Console.WriteLine(N*M);
-            Console.WriteLine(N*M/7);
+
+            int N = 50;
+            int M = 100;
 
             string longText = string.Join("\n",
                 Enumerable.Range(0, N)

@@ -517,16 +517,17 @@ namespace PhysicsSimulation
     public class Circle : Primitive
     {
         public float Radius { get; set; }
-        public Circle(float x = 0f, float y = 0f, float radius = 0.1f, bool filled = false, Vector3 color = default)
-            : base(x, y, filled, color) { Radius = radius; }
+        public int Segments { get; set; }
+        
+        public Circle(float x = 0f, float y = 0f, float radius = 0.1f, bool filled = false, Vector3 color = default, int segments = 80)
+            : base(x, y, filled, color) { Radius = radius; Segments = segments; }
 
         public override List<Vector2> GetBoundaryVerts()
         {
-            const int steps = 80;
-            var list = new List<Vector2>(steps);
-            for (int i = 0; i < steps; i++)
+            var list = new List<Vector2>(Segments);
+            for (int i = 0; i < Segments; i++)
             {
-                float a = 2 * MathF.PI * i / steps;
+                float a = 2 * MathF.PI * i / Segments;
                 list.Add(new Vector2(Radius * MathF.Cos(a), Radius * MathF.Sin(a)));
             }
             return list;
