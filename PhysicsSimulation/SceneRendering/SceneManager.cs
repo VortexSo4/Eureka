@@ -12,6 +12,7 @@ namespace PhysicsSimulation
         public static Scene? Current => _current;
         public static IReadOnlyDictionary<string, Type> RegisteredScenes => _scenes;
 
+        // Core scenes (фиксированный порядок)
         private static readonly string[] CoreSceneOrder =
         [
             "MainMenuScene",

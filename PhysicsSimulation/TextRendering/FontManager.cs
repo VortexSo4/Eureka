@@ -38,7 +38,8 @@ namespace PhysicsSimulation
             string key = fontName ?? GetNameFromFamily(family);
             if (string.IsNullOrWhiteSpace(key)) key = "Arial";
 
-            DebugManager.Font($"Requested font key: '{key}' (fontName param {(fontName == null ? "null" : "set")} )");
+            DebugManager.Font(
+                $"Requested font key: '{key}' (fontName param {(fontName == null ? "null" : "set")})");
 
             // --- 1) Сформировать кандидатов локальных путей (учитываем случаи с расширением / путём) ---
             var localCandidates = new List<string>();
@@ -75,7 +76,7 @@ namespace PhysicsSimulation
 
             // краткая печать кандидатов
             DebugManager.Font($"Local candidates to check ({localCandidates.Count}):");
-            foreach (var c in localCandidates) DebugManager.Font($"  → {c}");
+            foreach (var c in localCandidates) DebugManager.Font($"  -> {c}");
 
             try
             {
