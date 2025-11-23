@@ -36,7 +36,7 @@ namespace PhysicsSimulation
                 if (type != null)
                 {
                     _scenes[name] = type;
-                    Debug.Info($"Core-scene '{name}' is loaded");
+                    DebugManager.Info($"Core-scene '{name}' is loaded");
                 }
             }
 
@@ -50,14 +50,14 @@ namespace PhysicsSimulation
             foreach (var t in builtIn)
             {
                 _scenes[t.Name] = t;
-                Debug.Info($"Built-in scene '{t.Name}' is loaded");
+                DebugManager.Info($"Built-in scene '{t.Name}' is loaded");
             }
 
             // --- 3. User сцены ---
             string userScenesPath = Path.Combine(Environment.CurrentDirectory, "UserScenes");
             if (Directory.Exists(userScenesPath))
             {
-                Debug.Info($"User scenes search started: {userScenesPath}");
+                DebugManager.Info($"User scenes search started: {userScenesPath}");
 
                 foreach (var file in Directory.GetFiles(userScenesPath, "*.cs"))
                 {
@@ -72,22 +72,22 @@ namespace PhysicsSimulation
                             if (!_scenes.ContainsKey(t.Name))
                             {
                                 _scenes[t.Name] = t;
-                                Debug.Info($"User scene '{t.Name}' is loaded from {Path.GetFileName(file)}");
+                                DebugManager.Info($"User scene '{t.Name}' is loaded from {Path.GetFileName(file)}");
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        Debug.Error($"Scene load '{file}' is failed : {ex.Message}");
+                        DebugManager.Error($"Scene load '{file}' is failed : {ex.Message}");
                     }
                 }
             }
             else
             {
-                Debug.Info("folder UserScenes is not found - user scenes are disabled");
+                DebugManager.Info("folder UserScenes is not found - user scenes are disabled");
             }
 
-            Debug.Stats($"Total loaded scenes: {_scenes.Count} → {string.Join(", ", _scenes.Keys)}");
+            DebugManager.Stats($"Total loaded scenes: {_scenes.Count} → {string.Join(", ", _scenes.Keys)}");
         }
 
         public static Scene Load(string name)
@@ -95,7 +95,7 @@ namespace PhysicsSimulation
             if (!_scenes.TryGetValue(name, out var type))
                 throw new Exception($"Scene '{name}' is not found. Total: {string.Join(", ", _scenes.Keys)}");
 
-            Debug.Scene($"Scene Loaded: {name}");
+            DebugManager.Scene($"Scene Loaded: {name}");
             _current?.Dispose();
             _current = (Scene)Activator.CreateInstance(type)!;
             return _current;
@@ -105,7 +105,7 @@ namespace PhysicsSimulation
         {
             if (_scenes.Count == 0)
             {
-                Debug.Warn("Нет сцен для переключения");
+                DebugManager.Warn("Нет сцен для переключения");
                 return;
             }
 
@@ -120,11 +120,11 @@ namespace PhysicsSimulation
         {
             if (_current == null)
             {
-                Debug.Warn("Нечего перезагружать - текущая сцена null");
+                DebugManager.Warn("Нечего перезагружать - текущая сцена null");
                 return;
             }
 
-            Debug.Scene($"Перезагрузка текущей сцены: {_current.GetType().Name}");
+            DebugManager.Scene($"Перезагрузка текущей сцены: {_current.GetType().Name}");
             Load(_current.GetType().Name);
         }
 

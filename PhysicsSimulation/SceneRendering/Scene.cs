@@ -48,13 +48,13 @@ namespace PhysicsSimulation
                 Recording = false;
                 CurrentScene = null;
             }
-            Debug.Scene($"Initializing Scene (timeline length: {_timelineOffset:F2}s)");
+            DebugManager.Scene($"Initializing Scene (timeline length: {_timelineOffset:F2}s)");
         }
 
         private void AddNow(params SceneObject[] objs)
         {
             Objects.AddRange(objs);
-            Debug.Scene($"Added {objs.Length} objects, total: {Objects.Count}");
+            DebugManager.Scene($"Added {objs.Length} objects, total: {Objects.Count}");
         }
 
         public Scene Add(params SceneObject[] objs)
@@ -105,7 +105,7 @@ namespace PhysicsSimulation
         
         public virtual void Dispose()
         {
-            Debug.Scene($"Disposing scene {GetType().Name}");
+            DebugManager.Scene($"Disposing scene {GetType().Name}");
             Objects.Clear();
         }
 
@@ -141,7 +141,7 @@ namespace PhysicsSimulation
                 }
                 catch (Exception ex)
                 {
-                    Debug.Scene($"Scheduled action raised: {ex.Message}");
+                    DebugManager.Scene($"Scheduled action raised: {ex.Message}");
                 }
             }
 
@@ -154,7 +154,7 @@ namespace PhysicsSimulation
                 }
                 catch (Exception ex)
                 {
-                    Debug.Scene($"Object update error: {ex.Message}");
+                    DebugManager.Scene($"Object update error: {ex.Message}");
                 }
             }
         }
@@ -169,7 +169,7 @@ namespace PhysicsSimulation
 
         protected virtual void StartSlides()
         {
-            Debug.Scene("Base Scene StartSlides called (empty)");
+            DebugManager.Scene("Base Scene StartSlides called (empty)");
         }
     }
 }

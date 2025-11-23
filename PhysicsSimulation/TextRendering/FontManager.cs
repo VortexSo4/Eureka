@@ -14,7 +14,7 @@ namespace PhysicsSimulation
 
     public static class FontManager
     {
-        public static string FontDir { get; set; } = Path.Combine(AppContext.BaseDirectory, "Assets", "Fonts");
+        public static string FontDir { get; set; } = Helpers.GetApplicationPath("Assets\\Fonts");
 
         private static readonly Dictionary<string, SKTypeface> Cache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -38,7 +38,7 @@ namespace PhysicsSimulation
             string key = fontName ?? GetNameFromFamily(family);
             if (string.IsNullOrWhiteSpace(key)) key = "Arial";
 
-            Debug.Font($"Requested font key: '{key}' (fontName param {(fontName == null ? "null" : "set")} )");
+            DebugManager.Font($"Requested font key: '{key}' (fontName param {(fontName == null ? "null" : "set")} )");
 
             // --- 1) Сформировать кандидатов локальных путей (учитываем случаи с расширением / путём) ---
             var localCandidates = new List<string>();
@@ -74,8 +74,8 @@ namespace PhysicsSimulation
             }
 
             // краткая печать кандидатов
-            Debug.Font($"Local candidates to check ({localCandidates.Count}):");
-            foreach (var c in localCandidates) Debug.Font($"  → {c}");
+            DebugManager.Font($"Local candidates to check ({localCandidates.Count}):");
+            foreach (var c in localCandidates) DebugManager.Font($"  → {c}");
 
             try
             {
@@ -84,41 +84,41 @@ namespace PhysicsSimulation
                     if (string.IsNullOrWhiteSpace(path)) continue;
                     if (File.Exists(path))
                     {
-                        Debug.Font($"Found local font file: {path}");
+                        DebugManager.Font($"Found local font file: {path}");
                         try
                         {
                             var tf = SKTypeface.FromFile(path);
                             if (tf != null)
                             {
-                                Debug.Font($"Loaded SKTypeface from file: {path}");     
+                                DebugManager.Font($"Loaded SKTypeface from file: {path}");     
                                 Cache[key] = tf;
                                 return tf;
                             }
                             else
                             {
-                                Debug.Warn($"SKTypeface.FromFile returned null for: {path}");
+                                DebugManager.Warn($"SKTypeface.FromFile returned null for: {path}");
                             }
                         }
                         catch (Exception ex)
                         {
-                            Debug.Error($"Exception loading font from '{path}': {ex.Message}");
+                            DebugManager.Error($"Exception loading font from '{path}': {ex.Message}");
                         }
                     }
                     else
                     {
-                        Debug.Font($"Local file not found: {path}");
+                        DebugManager.Font($"Local file not found: {path}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Debug.Error($"Error scanning local font files: {ex.Message}");
+                DebugManager.Error($"Error scanning local font files: {ex.Message}");
             }
 
             // 1b) Если локального файла нет, но в кеше уже есть запись — вернуть её
             if (Cache.TryGetValue(key, out var cached))
             {
-                Debug.Font($"Using cached SKTypeface for key: '{key}'");
+                DebugManager.Font($"Using cached SKTypeface for key: '{key}'");
                 return cached;
             }
 
@@ -128,24 +128,24 @@ namespace PhysicsSimulation
                 var sys = SKTypeface.FromFamilyName(key);
                 if (sys != null)
                 {
-                    Debug.Font($"Using system font: '{key}'");
+                    DebugManager.Font($"Using system font: '{key}'");
                     Cache[key] = sys;
                     return sys;
                 }
                 else
                 {
-                    Debug.Warn($"SKTypeface.FromFamilyName returned null for '{key}'");
+                    DebugManager.Warn($"SKTypeface.FromFamilyName returned null for '{key}'");
                 }
             }
             catch (Exception ex)
             {
-                Debug.Error($"Exception while loading system font '{key}': {ex.Message}");
+                DebugManager.Error($"Exception while loading system font '{key}': {ex.Message}");
             }
 
             // 3) Fallback
             string fallback_font = "Arial";
             var fallback = SKTypeface.FromFamilyName(fallback_font) ?? SKTypeface.Default;
-            Debug.Font($"Using fallback font: {fallback_font}");
+            DebugManager.Font($"Using fallback font: {fallback_font}");
             Cache[key] = fallback;
             return fallback;
         }

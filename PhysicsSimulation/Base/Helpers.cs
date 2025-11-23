@@ -237,5 +237,33 @@ void main()
                 window.Title = $"{baseTitle} | FPS: {fpsStr} | AVG: {avgStr}";
             }
         }
+        
+        public static string GetApplicationPath(string subfolder)
+        {
+            string root = AppContext.BaseDirectory;
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+            {
+                var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
+                while (dir != null)
+                {
+                    var csprojFiles = dir.GetFiles("*.csproj", SearchOption.TopDirectoryOnly);
+                    if (csprojFiles.Length > 0)
+                    {
+                        root = dir.FullName;
+                        break;
+                    }
+                    dir = dir.Parent;
+                }
+
+                if (string.IsNullOrEmpty(root))
+                    root = Directory.GetCurrentDirectory();
+            }
+
+            string path = Path.Combine(root, subfolder);
+            if (!Directory.Exists(path))
+                Directory.CreateDirectory(path);
+
+            return path;
+        }
     }
 }

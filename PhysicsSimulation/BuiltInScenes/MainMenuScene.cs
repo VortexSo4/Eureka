@@ -7,7 +7,7 @@ namespace PhysicsSimulation.BuiltInScenes
     {
         protected override void StartSlides()
         {
-            Debug.Info("Main Menu loaded");
+            DebugManager.Info("Main Menu loaded");
             AnimateBackgroundColor(new Vector3(0.05f, 0.05f, 0.08f));
 
             var title = new Text(

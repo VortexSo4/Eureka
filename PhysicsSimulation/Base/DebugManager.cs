@@ -19,9 +19,10 @@ namespace PhysicsSimulation
         Custom
     }
 
-    public static class Debug
+    public static class DebugManager
     {
-        // Глобальные флаги — включай что хочешь
+        private static readonly string? LogFilePath;
+        private static readonly object FileLock = new();
         public static bool ShowInfo    { get; set; } = true;
         public static bool ShowWarn    { get; set; } = true;
         public static bool ShowError   { get; set; } = true;
@@ -45,6 +46,28 @@ namespace PhysicsSimulation
                 _maxTagLength = tag.Length;
 
             _knownTags.Add(tag);
+        }
+        
+        static DebugManager()
+        {
+            try
+            {
+                var now = DateTime.Now;
+                string filename = $"{now:dd.MM.yyyy_HH.mm.ss.fff}.txt";
+                string logDir = Helpers.GetApplicationPath("Logs");
+
+                if (!Directory.Exists(logDir))
+                    Directory.CreateDirectory(logDir);
+
+                LogFilePath = Path.Combine(logDir, filename);
+
+                string header = $"[DEBUG] | Session Started: {now:dd.MM.yyyy HH:mm:ss.fff} | {Environment.NewLine}";
+                File.WriteAllText(LogFilePath, header);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[FATAL] Failed to create log file: {ex.Message}");
+            }
         }
         
         public static void Log(LogLevel level, string message, string? customTag = null)
@@ -93,7 +116,26 @@ namespace PhysicsSimulation
             };
 
             string reset = "\u001b[0m";
-            Console.WriteLine($"{colorCode}[{tag}] | {timestamp} | {message}{reset}");
+            string line = $"{colorCode}[{tag}] | {timestamp} | {message}{reset}";
+
+            // В консоль
+            Console.WriteLine(line);
+
+            // В файл — безопасно и без блокировок
+            string plainLine = $"[{tag}] | {timestamp} | {message}";
+            if (LogFilePath == null) return;
+
+            lock (FileLock)
+            {
+                try
+                {
+                    File.AppendAllText(LogFilePath, plainLine + Environment.NewLine);
+                }
+                catch
+                {
+                    // ignored
+                }
+            }
         }
 
         public static void Info(string msg)    => Log(LogLevel.Info, msg);
