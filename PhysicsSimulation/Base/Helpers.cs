@@ -142,39 +142,88 @@ void main()
         }
         
         // --- Дублирование вершин до нужной длины ---
-        public static List<Vector2> ResizeVertexList(List<Vector2> source, int targetCount)
+        public static List<Vector2> ResizeVertexList(List<Vector2> source, int targetTotalPoints)
         {
-            if (source.Count == targetCount) return source;
-            if (source.Count == 0) return new List<Vector2>(new Vector2[targetCount]);
-            if (targetCount <= 0) return new List<Vector2>();
+            if (source == null || source.Count == 0)
+                return new List<Vector2>(new Vector2[targetTotalPoints]);
+            if (source.Count == targetTotalPoints)
+                return source;
+            if (targetTotalPoints <= 0)
+                return new List<Vector2>();
 
-            var result = new List<Vector2>(targetCount);
+            // Разбиваем на контуры по NaN
+            var contours = new List<List<Vector2>>();
+            var current = new List<Vector2>();
 
-            if (source.Count < targetCount)
+            foreach (var v in source)
             {
-                // Увеличиваем: интерполируем между точками
-                float step = (float)(source.Count - 1) / (targetCount - 1);
-                for (int i = 0; i < targetCount; i++)
+                if (float.IsNaN(v.X))
                 {
-                    float t = i * step;
-                    int idx = (int)t;
-                    float frac = t - idx;
-
-                    if (idx >= source.Count - 1)
-                        result.Add(source[^1]);
-                    else
-                        result.Add(Vector2.Lerp(source[idx], source[idx + 1], frac));
+                    if (current.Count > 0)
+                    {
+                        contours.Add(current);
+                        current = new List<Vector2>();
+                    }
                 }
+                else current.Add(v);
             }
-            else
+
+            if (current.Count > 0) contours.Add(current);
+
+            if (contours.Count == 0)
+                return new List<Vector2>(new Vector2[targetTotalPoints]);
+
+            var result = new List<Vector2>();
+
+            // Ключевое изменение: минимум 12 точек на контур — для идеальных прямых и углов
+            const int MIN_POINTS_PER_CONTOUR = 12;
+
+            int pointsPerContour = targetTotalPoints / contours.Count;
+            int extraPoints = targetTotalPoints % contours.Count;
+
+            // Гарантируем минимум 12 точек на контур
+            if (pointsPerContour < MIN_POINTS_PER_CONTOUR)
             {
-                // Уменьшаем: берём точки равномерно
-                float step = (float)source.Count / targetCount;
-                for (int i = 0; i < targetCount; i++)
+                pointsPerContour = MIN_POINTS_PER_CONTOUR;
+                extraPoints = 0; // перераспределять не будем — и так хватит
+            }
+
+            for (int i = 0; i < contours.Count; i++)
+            {
+                var contour = contours[i];
+                int targetPoints = pointsPerContour + (i < extraPoints ? 1 : 0);
+
+                if (contour.Count < 2)
                 {
-                    int idx = (int)(i * step);
-                    result.Add(source[idx]);
+                    // Пустой контур — дублируем
+                    for (int j = 0; j < targetPoints; j++)
+                        result.Add(contour.Count > 0 ? contour[0] : Vector2.Zero);
                 }
+                else
+                {
+                    result.Add(contour[0]); // первая — всегда точно
+
+                    if (targetPoints > 2)
+                    {
+                        float step = (float)(contour.Count - 1) / (targetPoints - 1);
+                        for (int j = 1; j < targetPoints - 1; j++)
+                        {
+                            float t = j * step;
+                            int idx = (int)t;
+                            float frac = t - idx;
+
+                            if (idx >= contour.Count - 1)
+                                result.Add(contour[^1]);
+                            else
+                                result.Add(Vector2.Lerp(contour[idx], contour[idx + 1], frac));
+                        }
+                    }
+
+                    result.Add(contour[^1]); // последняя — всегда точно
+                }
+
+                if (i < contours.Count - 1)
+                    result.Add(new Vector2(float.NaN, float.NaN));
             }
 
             return result;

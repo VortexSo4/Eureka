@@ -46,6 +46,7 @@ namespace PhysicsSimulation
             return d[k];
         }
 
+        //TODO: update to newer methods
         private static SKPaint GetThreadPaint(SKTypeface face, float size)
         {
             string k = $"{face.FamilyName ?? "default"}|{size:F4}";

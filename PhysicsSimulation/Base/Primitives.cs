@@ -250,7 +250,7 @@ namespace PhysicsSimulation
             if (verts == null || verts.Count == 0) return;
 
             GL.UseProgram(program);
-            int colorLoc = GL.GetUniformLocation(program, "color");
+            int colorLoc = GL.GetUniformLocation(program, "u_color");
             if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
@@ -384,9 +384,9 @@ namespace PhysicsSimulation
                 if (normalizedStart.Count != normalizedTarget.Count)
                 {
                     if (normalizedStart.Count < normalizedTarget.Count)
-                        normalizedStart = Helpers.PadWithDuplicates(normalizedStart, normalizedTarget.Count);
+                        normalizedStart = Helpers.ResizeVertexList(normalizedStart, normalizedTarget.Count);
                     else
-                        normalizedTarget = Helpers.PadWithDuplicates(normalizedTarget, normalizedStart.Count);
+                        normalizedTarget = Helpers.ResizeVertexList(normalizedTarget, normalizedStart.Count);
                 }
 
                 // Опционально: скрыть target на время морфа (чтобы не было дублирования рендера)
