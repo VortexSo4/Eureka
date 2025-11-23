@@ -28,16 +28,15 @@ namespace PhysicsSimulation
         private readonly int _locVertCount;
         private readonly int _locEasingType; // 0=Linear, 1=EaseInOut, 2=EaseOutBack и т.д.
 
-        private const string ComputeSource = @"
-        #version 430 core
+        private const string ComputeSource = @"#version 430 core
         layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
         
         layout(std430, binding = 0) restrict readonly buffer StartBuffer   { vec2 startVerts[]; };
         layout(std430, binding = 1) restrict readonly buffer TargetBuffer  { vec2 targetVerts[]; };
         layout(std430, binding = 2) restrict writeonly buffer OutputBuffer { vec2 resultVerts[]; };
         
-        uniform float t;           // 0..1 (уже с учётом easing)
-        uniform int   vertCount;
+        uniform float t;
+        uniform int vertCount;
         
         void main()
         {
@@ -50,8 +49,7 @@ namespace PhysicsSimulation
             float eased = t;
         
             resultVerts[i] = mix(a, b, eased);
-        }
-        ";
+        }";
         
         public GpuMorph(IReadOnlyList<Vector2> startVerts, IReadOnlyList<Vector2> targetVerts, EaseType ease = EaseType.EaseInOut)
         {
