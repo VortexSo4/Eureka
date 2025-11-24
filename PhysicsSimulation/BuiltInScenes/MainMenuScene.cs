@@ -17,7 +17,7 @@ namespace PhysicsSimulation.BuiltInScenes
                 y: -0.85f, x: 1.7f,
                 fontSize: 0.2f,
                 color: new Vector3(1f, 1f, 1f), 
-                horizontal: Text.HorizontalAlignment.Right, vertical: Text.VerticalAlignment.Middle,
+                horizontal: Text.HorizontalAlignment.Right, vertical: Text.VerticalAlignment.Center,
                 filled: true,
                 font: FontFamily.QuanticoBold
             );
@@ -35,7 +35,7 @@ namespace PhysicsSimulation.BuiltInScenes
                 y: 0f, x: 0f,
                 fontSize: 0.01f,
                 color: new Vector3(1f, 1f, 1f), 
-                horizontal: Text.HorizontalAlignment.Center, vertical: Text.VerticalAlignment.Middle,
+                horizontal: Text.HorizontalAlignment.Center, vertical: Text.VerticalAlignment.Center,
                 filled: false,
                 font: FontFamily.Audiowide
             );

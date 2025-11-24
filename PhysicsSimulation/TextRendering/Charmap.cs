@@ -7,16 +7,10 @@ namespace PhysicsSimulation.TextRendering
     public static class CharMap
     {
         // GlyphData как раньше
-        private sealed class GlyphData
+        private sealed class GlyphData(List<List<Vector2>> contours, float advance)
         {
-            public IReadOnlyList<List<Vector2>> Contours { get; }
-            public float Advance { get; }
-
-            public GlyphData(List<List<Vector2>> contours, float advance)
-            {
-                Contours = contours;
-                Advance = advance;
-            }
+            public IReadOnlyList<List<Vector2>> Contours { get; } = contours;
+            public float Advance { get; } = advance;
         }
 
         private static readonly ConcurrentDictionary<string, GlyphData> GlyphCache = new();
@@ -76,7 +70,7 @@ namespace PhysicsSimulation.TextRendering
             // Пробельные символы
             if (char.IsWhiteSpace(c))
             {
-                return new GlyphData(new List<List<Vector2>>(), advance);
+                return new GlyphData([], advance);
             }
 
             // fallback-квадрат для неизвестных глифов
@@ -85,7 +79,7 @@ namespace PhysicsSimulation.TextRendering
             {
                 new()
                 {
-                    new(-s, -s), new(s, -s), new(s, s), new(-s, s), new(-s, -s)
+                    new Vector2(-s, -s), new Vector2(s, -s), new Vector2(s, s), new Vector2(-s, s), new Vector2(-s, -s)
                 }
             };
 
@@ -108,7 +102,7 @@ namespace PhysicsSimulation.TextRendering
                 {
                     case SKPathVerb.Move:
                         CloseAndAdd(contour, contours);
-                        contour = new List<Vector2> { ToVec(pts[0]) };
+                        contour = [ToVec(pts[0])];
                         break;
 
                     case SKPathVerb.Line:

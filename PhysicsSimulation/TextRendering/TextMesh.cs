@@ -10,8 +10,8 @@ namespace PhysicsSimulation.TextRendering
     {
         public int Vbo { get; private set; } = -1;
         public int Vao { get; private set; } = -1;
-        public List<(int offset, int count)> TriRanges { get; } = new();
-        public List<(int offset, int count)> LineRanges { get; } = new();
+        public List<(int offset, int count)> TriRanges { get; } = [];
+        public List<(int offset, int count)> LineRanges { get; } = [];
 
         private List<Vector3>? _verts;
         private readonly SKTypeface _typeface;
@@ -41,7 +41,7 @@ namespace PhysicsSimulation.TextRendering
 
         public static TextMesh CreateFromText(string text, SKTypeface typeface, float fontSize,
             float letterPadding = 0.05f, float verticalPadding = 0.1f, bool filled = false,
-            Text.HorizontalAlignment hAlign = Text.HorizontalAlignment.Center, Text.VerticalAlignment vAlign = Text.VerticalAlignment.Middle)
+            Text.HorizontalAlignment hAlign = Text.HorizontalAlignment.Center, Text.VerticalAlignment vAlign = Text.VerticalAlignment.Center)
             => new(text, typeface, fontSize, letterPadding, verticalPadding, filled, hAlign, vAlign);
 
         private void BuildVertsAndUpload()
@@ -52,7 +52,7 @@ namespace PhysicsSimulation.TextRendering
             float step = _fontSize + _verticalPadding * _fontSize;
             float totalHeight = lines.Length * _fontSize +
                                 Math.Max(0, lines.Length - 1) * (_verticalPadding * _fontSize);
-            float line0YRelativeToCenter = totalHeight / 2f - (_fontSize / 2f);
+            float line0YRelativeToCenter = totalHeight / 2f - _fontSize / 2f;
 
             float centerOffset = _vAlign switch
             {
@@ -90,7 +90,7 @@ namespace PhysicsSimulation.TextRendering
             int nJobs = glyphJobs.Count;
             if (nJobs == 0)
             {
-                _verts = new List<Vector3>();
+                _verts = [];
                 TriRanges.Clear();
                 LineRanges.Clear();
                 if (Vbo != -1)
@@ -118,7 +118,7 @@ namespace PhysicsSimulation.TextRendering
                 contoursPerGlyph[i] = contours;
             });
 
-            _verts = new List<Vector3>();
+            _verts = [];
             TriRanges.Clear();
             LineRanges.Clear();
 

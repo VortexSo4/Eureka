@@ -145,11 +145,11 @@ void main()
         public static List<Vector2> ResizeVertexList(List<Vector2> source, int targetTotalPoints)
         {
             if (source.Count == 0)
-                return new List<Vector2>(new Vector2[targetTotalPoints]);
+                return [..new Vector2[targetTotalPoints]];
             if (source.Count == targetTotalPoints)
                 return source;
             if (targetTotalPoints <= 0)
-                return new List<Vector2>();
+                return [];
 
             // Разбиваем на контуры по NaN
             var contours = new List<List<Vector2>>();
@@ -162,7 +162,7 @@ void main()
                     if (current.Count > 0)
                     {
                         contours.Add(current);
-                        current = new List<Vector2>();
+                        current = [];
                     }
                 }
                 else current.Add(v);
@@ -171,7 +171,7 @@ void main()
             if (current.Count > 0) contours.Add(current);
 
             if (contours.Count == 0)
-                return new List<Vector2>(new Vector2[targetTotalPoints]);
+                return [..new Vector2[targetTotalPoints]];
 
             var result = new List<Vector2>();
 

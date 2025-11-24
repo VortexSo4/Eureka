@@ -22,35 +22,35 @@ namespace PhysicsSimulation.Base
     }
 
     // ------------------ PRIMITIVE BASE (optimized) ------------------
-    public abstract class Primitive : SceneObject
+    public abstract class Primitive(
+        float x = 0f,
+        float y = 0f,
+        bool filled = false,
+        Vector3 color = default,
+        float vx = 0f,
+        float vy = 0f)
+        : SceneObject
     {
         // transform state
-        public float X { get; set; }
-        public float Y { get; set; }
-        public float Scale { get; set; }
+        public float X { get; set; } = x;
+        public float Y { get; set; } = y;
+        public float Scale { get; set; } = 1f;
         public float Rotation { get; set; }
-        public Vector3 Color { get; set; }
+        public Vector3 Color { get; set; } = color == default ? Vector3.One : color;
         public float LineWidth { get; set; } = 1f;
-        public bool Filled { get; set; }
+        public bool Filled { get; set; } = filled;
 
         // simple physics
-        public float Vx { get; set; }
-        public float Vy { get; set; }
+        public float Vx { get; set; } = vx;
+        public float Vy { get; set; } = vy;
 
         // animations
-        protected readonly List<PropertyAnimation> Animations = new();
+        protected readonly List<PropertyAnimation> Animations = [];
         protected ShapeAnimation? ShapeAnim { get; set; }
 
         // custom boundaries and morphing
         protected List<Vector2>? CustomBoundary { get; set; }
         protected List<Vector2>? BoundaryVerts { get; set; }
-
-        protected Primitive(float x = 0f, float y = 0f, bool filled = false, Vector3 color = default,
-            float vx = 0f, float vy = 0f)
-        {
-            X = x; Y = y; Filled = filled; Color = color == default ? Vector3.One : color;
-            Vx = vx; Vy = vy; Scale = 1f;
-        }
 
         protected void ScheduleOrExecute(Action action) =>
             (Scene.CurrentScene?.Recording == true ? () => Scene.CurrentScene.Schedule(action) : action)();
@@ -91,7 +91,7 @@ namespace PhysicsSimulation.Base
 
             // Start и Target уже нормализованы (локальные) — просто lerp по парам
             var interpolated = ShapeAnim.Start.Zip(ShapeAnim.Target, (s, targ) =>
-                (float.IsNaN(s.X) || float.IsNaN(s.Y)) ? new Vector2(float.NaN, float.NaN) : Vector2.Lerp(s, targ, t)
+                float.IsNaN(s.X) || float.IsNaN(s.Y) ? new Vector2(float.NaN, float.NaN) : Vector2.Lerp(s, targ, t)
             ).ToList();
 
             // Записываем локальные вершины. TransformVerts применит X/Y, Rotation, Scale как обычно.
@@ -128,7 +128,7 @@ namespace PhysicsSimulation.Base
             if (current.Count > 0)
             {
                 segments.Add(current);
-                current = new List<Vector2>();
+                current = [];
             }
             // пропускаем разделитель
         }
@@ -147,7 +147,7 @@ namespace PhysicsSimulation.Base
     int loc_u_scale = GL.GetUniformLocation(program, "u_scale");
     int loc_aspect = GL.GetUniformLocation(program, "aspectRatio");
 
-    bool shaderHasTransform = (loc_u_translate >= 0 && loc_u_cos >= 0 && loc_u_sin >= 0 && loc_u_scale >= 0);
+    bool shaderHasTransform = loc_u_translate >= 0 && loc_u_cos >= 0 && loc_u_sin >= 0 && loc_u_scale >= 0;
 
     // если шейдер ожидает aspectRatio — посчитаем и установим
     if (loc_aspect >= 0)
@@ -213,7 +213,7 @@ namespace PhysicsSimulation.Base
 
         protected static List<Vector3> PrepareDrawVerts(List<Vector3> verts, bool filled)
         {
-            if (verts.Count < 2) return new List<Vector3>();
+            if (verts.Count < 2) return [];
 
             // Ensure the contour is closed
             var closedVerts = new List<Vector3>(verts);
@@ -222,7 +222,7 @@ namespace PhysicsSimulation.Base
 
             if (filled)
             {
-                if (closedVerts.Count < 3) return new List<Vector3>();
+                if (closedVerts.Count < 3) return [];
                 var centroid = closedVerts.Aggregate(Vector3.Zero, (s, v) => s + v) / closedVerts.Count;
                 var fan = new List<Vector3>(closedVerts.Count + 1) { centroid };
                 fan.AddRange(closedVerts);
@@ -358,7 +358,7 @@ namespace PhysicsSimulation.Base
             {
                 // --- helper deep copy ---
                 List<Vector2> DeepCopy(List<Vector2>? src) =>
-                    src?.Select(v => new Vector2(v.X, v.Y)).ToList() ?? new List<Vector2>();
+                    src?.Select(v => new Vector2(v.X, v.Y)).ToList() ?? [];
 
                 // pluck verts (deep copy чтобы избежать алиасинга на кеш CharMap и т.д.)
                 var startVerts = DeepCopy(CustomBoundary ?? BoundaryVerts ?? GetBoundaryVerts());
@@ -386,7 +386,7 @@ namespace PhysicsSimulation.Base
                 if (hideTargetDuringMorph)
                 {
                     origTargetCustom = target.CustomBoundary;
-                    target.CustomBoundary = new List<Vector2>(); // временно пусто — target не будет рендериться
+                    target.CustomBoundary = []; // временно пусто — target не будет рендериться
                     target.Animations.Clear(); // приостанавливаем/убираем его property-анимации на время морфа
                     target.Filled = false;
                 }
@@ -475,8 +475,8 @@ namespace PhysicsSimulation.Base
 
         protected class ShapeAnimation
         {
-            public List<Vector2> Start = new();
-            public List<Vector2> Target = new();
+            public List<Vector2> Start = [];
+            public List<Vector2> Target = [];
             public float Duration;
             public float Elapsed;
             public EaseType Ease;
@@ -489,13 +489,17 @@ namespace PhysicsSimulation.Base
     }
 
     // ------------------ PRIMITIVES ------------------
-    public class Circle : Primitive
+    public class Circle(
+        float x = 0f,
+        float y = 0f,
+        float radius = 0.1f,
+        bool filled = false,
+        Vector3 color = default,
+        int segments = 80)
+        : Primitive(x, y, filled, color)
     {
-        public float Radius { get; set; }
-        public int Segments { get; set; }
-        
-        public Circle(float x = 0f, float y = 0f, float radius = 0.1f, bool filled = false, Vector3 color = default, int segments = 80)
-            : base(x, y, filled, color) { Radius = radius; Segments = segments; }
+        public float Radius { get; set; } = radius;
+        public int Segments { get; set; } = segments;
 
         public override List<Vector2> GetBoundaryVerts()
         {
@@ -509,23 +513,28 @@ namespace PhysicsSimulation.Base
         }
     }
 
-    public class Rectangle : Primitive
+    public class Rectangle(
+        float x = 0f,
+        float y = 0f,
+        float width = 0.2f,
+        float height = 0.2f,
+        bool filled = false,
+        Vector3 color = default)
+        : Primitive(x, y, filled, color)
     {
-        public float Width { get; set; }
-        public float Height { get; set; }
-        public Rectangle(float x = 0f, float y = 0f, float width = 0.2f, float height = 0.2f, bool filled = false, Vector3 color = default)
-            : base(x, y, filled, color) { Width = width; Height = height; }
+        public float Width { get; set; } = width;
+        public float Height { get; set; } = height;
 
         public override List<Vector2> GetBoundaryVerts()
         {
             float hw = Width / 2, hh = Height / 2;
-            return new List<Vector2>
-            {
-                new(-hw, -hh),
-                new(hw, -hh),
-                new(hw, hh),
-                new(-hw, hh)
-            };
+            return
+            [
+                new Vector2(-hw, -hh),
+                new Vector2(hw, -hh),
+                new Vector2(hw, hh),
+                new Vector2(-hw, hh)
+            ];
         }
     }
 
@@ -534,7 +543,7 @@ namespace PhysicsSimulation.Base
     {
         public object? Font { get; set; }
         public enum HorizontalAlignment { Left, Center, Right }
-        public enum VerticalAlignment { Top, Middle, Bottom }
+        public enum VerticalAlignment { Top, Center, Bottom }
 
         private string _textContent;
 
@@ -560,7 +569,7 @@ namespace PhysicsSimulation.Base
         public Text(string text = "Empty text", float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f,
             float verticalPadding = 0.1f, Vector3 color = default,
             HorizontalAlignment horizontal = HorizontalAlignment.Center,
-            VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false,
+            VerticalAlignment vertical = VerticalAlignment.Center, bool filled = false,
             object? font = null)
             : base(x, y, filled, color)
         {
@@ -590,7 +599,7 @@ namespace PhysicsSimulation.Base
 
         private void RecalculateWidthHeight()
         {
-            var lines = _textContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var lines = _textContent.Split(["\r\n", "\n"], StringSplitOptions.None);
             Width = 0f;
             foreach (var line in lines)
             {
@@ -618,7 +627,7 @@ namespace PhysicsSimulation.Base
             public float LastParentRotation;
             public float LastOffsetX;
             public float LastOffsetY;
-            public List<List<Vector3>> CachedContours = new List<List<Vector3>>();
+            public List<List<Vector3>> CachedContours = [];
         }
 
         // keep these helpers for compatibility (may be used elsewhere)
@@ -630,7 +639,7 @@ namespace PhysicsSimulation.Base
             int key = index;
             if (!_charCache.TryGetValue(key, out var cache))
             {
-                cache = new CachedChar { C = c, CachedContours = new List<List<Vector3>>() };
+                cache = new CachedChar { C = c, CachedContours = [] };
                 _charCache[key] = cache;
             }
 
@@ -693,8 +702,8 @@ namespace PhysicsSimulation.Base
             // Fallback to original per-char rendering (if mesh is missing)
             var lines = _textContent.Replace("\r", "").Split('\n');
 
-            float step = FontSize + (VerticalPadding * FontSize);
-            float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
+            float step = FontSize + VerticalPadding * FontSize;
+            float line0YRelativeToCenter = Height / 2f - FontSize / 2f;
 
             float centerOffset = Vertical switch
             {
@@ -741,8 +750,8 @@ namespace PhysicsSimulation.Base
             var all2 = new List<Vector2>();
             var lines = _textContent.Replace("\r", "").Split('\n');
 
-            float step = FontSize + (VerticalPadding * FontSize);
-            float line0YRelativeToCenter = (Height / 2f) - (FontSize / 2f);
+            float step = FontSize + VerticalPadding * FontSize;
+            float line0YRelativeToCenter = Height / 2f - FontSize / 2f;
 
             float centerOffset = Vertical switch
             {

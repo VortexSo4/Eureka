@@ -144,7 +144,7 @@ namespace PhysicsSimulation.SceneRendering
 
             var compilation = CSharpCompilation.Create(
                 assemblyName,
-                new[] { syntaxTree },
+                [syntaxTree],
                 references,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
             );
