@@ -1,4 +1,6 @@
 ﻿using OpenTK.Mathematics;
+using PhysicsSimulation.Base;
+using PhysicsSimulation.SceneRendering;
 
 namespace PhysicsSimulation.BuiltInScenes
 {

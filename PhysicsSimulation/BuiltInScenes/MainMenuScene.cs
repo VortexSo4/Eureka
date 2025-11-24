@@ -1,5 +1,7 @@
-﻿using System.Data.SqlTypes;
-using OpenTK.Mathematics;
+﻿using OpenTK.Mathematics;
+using PhysicsSimulation.Base;
+using PhysicsSimulation.SceneRendering;
+using PhysicsSimulation.TextRendering;
 
 namespace PhysicsSimulation.BuiltInScenes
 {
@@ -16,7 +18,8 @@ namespace PhysicsSimulation.BuiltInScenes
                 fontSize: 0.2f,
                 color: new Vector3(1f, 1f, 1f), 
                 horizontal: Text.HorizontalAlignment.Right, vertical: Text.VerticalAlignment.Middle,
-                filled: false
+                filled: true,
+                font: FontFamily.QuanticoBold
             );
 
             int N = 50;
@@ -46,6 +49,10 @@ namespace PhysicsSimulation.BuiltInScenes
             Wait(4);
             circle.MorphTo(new Rectangle(x: -.5f));
             square.MorphTo(new Circle(x: .5f));
+            Wait(2);
+            Add(text.Draw());
+            Wait(2);
+            text.MorphTo(new Circle());
         }
     }
 }

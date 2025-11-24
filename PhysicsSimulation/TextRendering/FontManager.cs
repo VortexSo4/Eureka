@@ -1,6 +1,7 @@
-﻿using SkiaSharp;
+﻿using PhysicsSimulation.Base;
+using SkiaSharp;
 
-namespace PhysicsSimulation
+namespace PhysicsSimulation.TextRendering
 {
     public enum FontFamily
     {

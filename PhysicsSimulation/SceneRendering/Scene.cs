@@ -1,8 +1,7 @@
-﻿// Scene.cs
+﻿using OpenTK.Mathematics;
+using PhysicsSimulation.Base;
 
-using OpenTK.Graphics.OpenGL4;
-using OpenTK.Mathematics;
-namespace PhysicsSimulation
+namespace PhysicsSimulation.SceneRendering
 {
     public abstract class SceneObject
     {
@@ -14,20 +13,19 @@ namespace PhysicsSimulation
     {
         public static Scene? CurrentScene { get; set; }
 
-        public List<SceneObject> Objects { get; } = new List<SceneObject>();
-        private readonly List<(float time, Action action)> _actions = new List<(float, Action)>();
-        public bool Recording { get; private set; } = true;
+        public List<SceneObject> Objects { get; } = [];
+        private readonly List<(float time, Action action)> _actions = [];
+        public bool Recording { get; private set; }
         private float _timelineOffset;
         public float CurrentTime { get; set; }
 
-        // Background color animation
-        private Vector3 _backgroundColor = new Vector3(0.12f, 0.12f, 0.12f);
+        private Vector3 _backgroundColor;
         private Vector3 _backgroundStartColor;
-        private Vector3 _backgroundTargetColor = new Vector3(0.12f, 0.12f, 0.12f);
-        private float _backgroundAnimElapsed = 0f;
-        private float _backgroundAnimDuration = 0f;
+        private Vector3 _backgroundTargetColor;
+        private float _backgroundAnimElapsed;
+        private float _backgroundAnimDuration;
         private EaseType _backgroundEaseType = EaseType.Linear;
-        private bool _backgroundAnimating = false;
+        private bool _backgroundAnimating;
 
         public Vector3 GetCurrentBackgroundColor()
         {
@@ -38,10 +36,11 @@ namespace PhysicsSimulation
 
         public Scene()
         {
+            Recording = true;
             CurrentScene = this;
             try
             {
-                StartSlides();
+                StartSlidesBase();
             }
             finally
             {
@@ -103,13 +102,13 @@ namespace PhysicsSimulation
                 action();
         }
         
-        public virtual void Dispose()
+        public void Dispose()
         {
             DebugManager.Scene($"Disposing scene {GetType().Name}");
             Objects.Clear();
         }
 
-        public virtual void Update(float dt)
+        public void Update(float dt)
         {
             CurrentTime += dt;
 
@@ -159,7 +158,7 @@ namespace PhysicsSimulation
             }
         }
 
-        public virtual void Render(int program, int vbo, int vao)
+        public void Render(int program, int vbo, int vao)
         {
             foreach (var obj in Objects.ToArray())
             {
@@ -167,9 +166,7 @@ namespace PhysicsSimulation
             }
         }
 
-        protected virtual void StartSlides()
-        {
-            DebugManager.Scene("Base Scene StartSlides called (empty)");
-        }
+        protected void StartSlidesBase() { StartSlides(); }
+        protected virtual void StartSlides() { DebugManager.Scene("Base Scene StartSlides called (empty)"); }
     }
 }

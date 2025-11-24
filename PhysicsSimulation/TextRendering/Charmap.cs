@@ -1,11 +1,8 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
+﻿using System.Collections.Concurrent;
 using OpenTK.Mathematics;
 using SkiaSharp;
-using System.Threading;
 
-namespace PhysicsSimulation
+namespace PhysicsSimulation.TextRendering
 {
     public static class CharMap
     {
@@ -27,12 +24,9 @@ namespace PhysicsSimulation
         private static string MakeKey(char c, float size, SKTypeface? face) =>
             $"{c}|{face?.FamilyName ?? "Default"}|{size:F4}";
 
-        // ThreadLocal caches для SKFont / SKPaint, ключ — typeface.FamilyName + size
+        // ThreadLocal caches для SKFont (это новый корректный подход)
         private static readonly ThreadLocal<Dictionary<string, SKFont>> _threadFonts =
             new(() => new Dictionary<string, SKFont>(StringComparer.OrdinalIgnoreCase));
-
-        private static readonly ThreadLocal<Dictionary<string, SKPaint>> _threadPaints =
-            new(() => new Dictionary<string, SKPaint>(StringComparer.OrdinalIgnoreCase));
 
         private static SKFont GetThreadFont(SKTypeface face, float size)
         {
@@ -40,21 +34,12 @@ namespace PhysicsSimulation
             var d = _threadFonts.Value!;
             if (!d.TryGetValue(k, out var font))
             {
-                font = new SKFont(face, size);
+                font = new SKFont(face, size)
+                {
+                    Edging = SKFontEdging.Antialias,
+                    Hinting = SKFontHinting.Full
+                };
                 d[k] = font;
-            }
-            return d[k];
-        }
-
-        //TODO: update to newer methods
-        private static SKPaint GetThreadPaint(SKTypeface face, float size)
-        {
-            string k = $"{face.FamilyName ?? "default"}|{size:F4}";
-            var d = _threadPaints.Value!;
-            if (!d.TryGetValue(k, out var paint))
-            {
-                paint = new SKPaint { Typeface = face, TextSize = size, IsAntialias = true };
-                d[k] = paint;
             }
             return d[k];
         }
@@ -69,14 +54,13 @@ namespace PhysicsSimulation
         {
             var tf = typeface ?? SKTypeface.Default;
 
-            // берём объекты из ThreadLocal - это безопасно для параллельного выполнения
+            // Новый корректный объект для работы с текстом
             var font = GetThreadFont(tf, size);
-            var paint = GetThreadPaint(tf, size);
 
-            // измерение advance через paint (кэшируется на уровне потоков)
-            float advance = paint.MeasureText(c.ToString());
+            // Новый API: advance вычисляется через SKFont
+            float advance = font.MeasureText(c.ToString());
 
-            // Получаем глиф и путь
+            // Получаем глиф
             ushort glyphId = font.GetGlyph(c);
             if (glyphId != 0)
             {
@@ -88,12 +72,14 @@ namespace PhysicsSimulation
                         return new GlyphData(contours, advance);
                 }
             }
-            
+
+            // Пробельные символы
             if (char.IsWhiteSpace(c))
             {
                 return new GlyphData(new List<List<Vector2>>(), advance);
             }
 
+            // fallback-квадрат для неизвестных глифов
             float s = size * 0.1f;
             var fallbackContours = new List<List<Vector2>>
             {
@@ -124,16 +110,20 @@ namespace PhysicsSimulation
                         CloseAndAdd(contour, contours);
                         contour = new List<Vector2> { ToVec(pts[0]) };
                         break;
+
                     case SKPathVerb.Line:
                         contour?.Add(ToVec(pts[1]));
                         break;
+
                     case SKPathVerb.Quad:
                     case SKPathVerb.Conic:
                         AddBezierCurve(contour, pts.AsSpan(0, 3));
                         break;
+
                     case SKPathVerb.Cubic:
                         AddBezierCurve(contour, pts);
                         break;
+
                     case SKPathVerb.Close:
                         CloseAndAdd(contour, contours);
                         contour = null;
@@ -157,6 +147,7 @@ namespace PhysicsSimulation
         private static void AddBezierCurve(List<Vector2>? contour, ReadOnlySpan<SKPoint> points, int steps = 8)
         {
             if (contour == null || points.Length < 2) return;
+
             for (int i = 1; i <= steps; i++)
             {
                 float t = i / (float)steps;
@@ -169,14 +160,17 @@ namespace PhysicsSimulation
         {
             var tmp = points.ToArray();
             int n = tmp.Length - 1;
+
             for (int r = 1; r <= n; r++)
                 for (int i = 0; i <= n - r; i++)
-                    tmp[i] = new SKPoint(tmp[i].X + (tmp[i + 1].X - tmp[i].X) * t,
-                                         tmp[i].Y + (tmp[i + 1].Y - tmp[i].Y) * t);
+                    tmp[i] = new SKPoint(
+                        tmp[i].X + (tmp[i + 1].X - tmp[i].X) * t,
+                        tmp[i].Y + (tmp[i + 1].Y - tmp[i].Y) * t);
+
             return tmp[0];
         }
 
-        // Public API (как в рефакторинге)
+        // Public API — как раньше
         public static List<List<Vector2>> GetCharContours(
             char c, float offsetX, float cursorY, float size, SKTypeface? typeface)
         {

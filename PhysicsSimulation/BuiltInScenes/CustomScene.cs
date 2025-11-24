@@ -1,4 +1,6 @@
 ﻿using OpenTK.Mathematics;
+using PhysicsSimulation.Base;
+using PhysicsSimulation.SceneRendering;
 
 namespace PhysicsSimulation.BuiltInScenes
 {
@@ -42,8 +44,8 @@ namespace PhysicsSimulation.BuiltInScenes
             Wait(2.5f);
 
             // морфим E→M, N→O и т.д.
-            circle1.MorphTo(new Text("MOTION", x: 0.4f, y: -0.2f, fontSize: 0.1f, color: new Vector3(1f, 0.5f, 0.2f)), 2f);
-            square1.MorphTo(new Text("ENERGY", x: -0.4f, y: -0.2f, fontSize: 0.1f, color: new Vector3(0.8f, 0.6f, 1f)), 2f);
+            circle1.MorphTo(new Text("MOTION", x: 0.4f, y: -0.2f, fontSize: 0.1f, color: new Vector3(1f, 0.5f, 0.2f)));
+            square1.MorphTo(new Text("ENERGY", x: -0.4f, y: -0.2f, fontSize: 0.1f, color: new Vector3(0.8f, 0.6f, 1f)));
             Wait(1.5f);
             
             // --- 8. Финальный fade-out текста ---

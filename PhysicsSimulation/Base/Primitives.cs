@@ -1,18 +1,10 @@
-﻿// Optimized PhysicsSimulation framework (single-file reference implementation)
-// - Uses delegate-based animations (no reflection)
-// - Cached contour glyphs (CharMap) and per-char transform caching
-// - Cached VAO per VBO, minimal allocations
-// NOTE: Replace CharMap.GetCharContours with a proper font-to-contours implementation
-
-using System;
-using System.Collections.Generic;
-using System.Data.SqlTypes;
-using System.Linq;
-using OpenTK.Graphics.OpenGL4;
+﻿using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
+using PhysicsSimulation.SceneRendering;
+using PhysicsSimulation.TextRendering;
 using SkiaSharp;
 
-namespace PhysicsSimulation
+namespace PhysicsSimulation.Base
 {
     // ------------------ EASING ------------------
     public enum EaseType { Linear, EaseIn, EaseOut, EaseInOut }
@@ -35,9 +27,9 @@ namespace PhysicsSimulation
         // transform state
         public float X { get; set; }
         public float Y { get; set; }
-        public float Scale { get; set; } = 1f;
+        public float Scale { get; set; }
         public float Rotation { get; set; }
-        public Vector3 Color { get; set; } = Vector3.One;
+        public Vector3 Color { get; set; }
         public float LineWidth { get; set; } = 1f;
         public bool Filled { get; set; }
 
@@ -170,7 +162,7 @@ namespace PhysicsSimulation
 
     foreach (var seg in segments)
     {
-        if (seg == null || seg.Count == 0) continue;
+        if (seg.Count == 0) continue;
 
         List<Vector3> drawVerts;
 
@@ -247,7 +239,7 @@ namespace PhysicsSimulation
 
         protected static void RenderVerts(List<Vector3> verts, bool filled, int program, int vbo, Vector3 color, float lineWidth)
         {
-            if (verts == null || verts.Count == 0) return;
+            if (verts.Count == 0) return;
 
             GL.UseProgram(program);
             int colorLoc = GL.GetUniformLocation(program, "u_color");
@@ -432,7 +424,7 @@ namespace PhysicsSimulation
 
         private (Vector2 Min, Vector2 Max, Vector2 Center) GetBounds(List<Vector2> verts)
         {
-            if (verts == null || verts.Count == 0)
+            if (verts.Count == 0)
                 return (Vector2.Zero, Vector2.Zero, Vector2.Zero);
 
             float minX = float.MaxValue, minY = float.MaxValue;
@@ -465,23 +457,6 @@ namespace PhysicsSimulation
                 {
                     // Центрируем вершины относительно центра bounding box'а
                     result.Add(v - bounds.Center);
-                }
-            }
-            return result;
-        }
-
-        private List<Vector2> DenormalizeVerts(List<Vector2> verts, Vector2 center)
-        {
-            var result = new List<Vector2>(verts.Count);
-            foreach (var v in verts)
-            {
-                if (float.IsNaN(v.X) || float.IsNaN(v.Y))
-                {
-                    result.Add(new Vector2(float.NaN, float.NaN));
-                }
-                else
-                {
-                    result.Add(v + center);
                 }
             }
             return result;
@@ -557,22 +532,11 @@ namespace PhysicsSimulation
     // ------------------ TEXT (with per-char caching) ------------------
     public class Text : Primitive
     {
-        public object? Font { get; set; } = FontFamily.TimesNewRoman;
-        public string? FontName { get; set; } = null;
+        public object? Font { get; set; }
         public enum HorizontalAlignment { Left, Center, Right }
         public enum VerticalAlignment { Top, Middle, Bottom }
 
         private string _textContent;
-        public string TextContent
-        {
-            get => _textContent;
-            set
-            {
-                _textContent = value ?? string.Empty;
-                RecalculateWidthHeight();
-                RebuildMeshIfReady();
-            }
-        }
 
         public float FontSize { get; set; }
 
@@ -588,41 +552,19 @@ namespace PhysicsSimulation
         private readonly SKTypeface _typeface;
 
         // caches
-        private readonly Dictionary<(char ch, float size, string fontKey), List<List<Vector2>>> _contourCache = new();
         private readonly Dictionary<int, CachedChar> _charCache = new();
 
         // NEW: mesh
         private TextMesh? _mesh;
-        public bool HasMeshForDebug => _mesh != null;
-        
-        // ===== DEBUG ACCESSORS =====
 
-// Возвращает true, если mesh создан
-        public bool DebugHasMesh => _mesh != null;
-
-// VBO mesh-а, если есть
-        public int DebugVBO => _mesh?.Vbo ?? -1;
-
-// Сколько наборов линий в mesh
-        public int DebugRangeCount => _mesh?.Ranges.Count ?? 0;
-
-// Общее число вершин в mesh
-        public int DebugVertexCount => _mesh?.VertexCount ?? 0;
-
-// Примерная рамка (bounding box) текста на локальных координатах
-        public (float MinX, float MinY, float MaxX, float MaxY) DebugBounds =>
-            (-Width/2f, -Height/2f, Width/2f, Height/2f);
-
-
-        public Text(string text, float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f,
+        public Text(string text = "Empty text", float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f,
             float verticalPadding = 0.1f, Vector3 color = default,
             HorizontalAlignment horizontal = HorizontalAlignment.Center,
             VerticalAlignment vertical = VerticalAlignment.Middle, bool filled = false,
             object? font = null)
             : base(x, y, filled, color)
         {
-            // set backing text without triggering mesh until _typeface is ready
-            _textContent = text ?? string.Empty;
+            _textContent = text;
 
             FontSize = fontSize;
             LetterPadding = letterPadding;
@@ -679,19 +621,11 @@ namespace PhysicsSimulation
             public List<List<Vector3>> CachedContours = new List<List<Vector3>>();
         }
 
-        private void RebuildMeshIfReady()
-        {
-            if (_typeface == null) return;
-
-            _mesh?.Dispose();
-            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
-        }
-
         // keep these helpers for compatibility (may be used elsewhere)
         private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, float offsetX,
             float offsetY, int program, int vbo)
         {
-            if (contours == null || contours.Count == 0) return;
+            if (contours.Count == 0) return;
 
             int key = index;
             if (!_charCache.TryGetValue(key, out var cache))
@@ -700,13 +634,14 @@ namespace PhysicsSimulation
                 _charCache[key] = cache;
             }
 
-            bool dirty = cache.C != c ||
-                         cache.LastParentX != X ||
-                         cache.LastParentY != Y ||
-                         cache.LastParentScale != Scale ||
-                         cache.LastParentRotation != Rotation ||
-                         cache.LastOffsetX != offsetX ||
-                         cache.LastOffsetY != offsetY;
+            bool dirty =
+                cache.C != c ||
+                !Helpers.AlmostEqual(cache.LastParentX, X) ||
+                !Helpers.AlmostEqual(cache.LastParentY, Y) ||
+                !Helpers.AlmostEqual(cache.LastParentScale, Scale) ||
+                !Helpers.AlmostEqual(cache.LastParentRotation, Rotation) ||
+                !Helpers.AlmostEqual(cache.LastOffsetX, offsetX) ||
+                !Helpers.AlmostEqual(cache.LastOffsetY, offsetY);
 
             if (dirty)
             {
@@ -738,38 +673,6 @@ namespace PhysicsSimulation
                 // This call may be replaced by mesh rendering — kept for compatibility
                 RenderVerts(finalContours, Filled, program, vbo, Color, LineWidth);
             }
-        }
-
-        private void RenderContours(List<List<Vector2>> contours, int program, int vbo)
-        {
-            int totalVerts = contours.Sum(c => c.Count);
-            Console.WriteLine($"[Text Render] Rendering {totalVerts} vertices for text '{_textContent}'");
-            
-            foreach (var contour in contours)
-            {
-                if (contour.Count < 2) continue;
-                var transformed = TransformVerts(contour);
-                var drawVerts = PrepareDrawVerts(transformed, Filled);
-                RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
-            }
-        }
-
-        public List<List<Vector2>> GetCharContours(char c, float offsetX, float offsetY = 0f)
-        {
-            var fontKey = Font switch {
-                FontFamily ff => FontManager.GetNameFromFamily(ff),
-                string s => s,
-                _ => "Arial" };
-            var key = (c, FontSize, fontKey);
-            if (!_contourCache.TryGetValue(key, out var contours))
-            {
-                contours = CharMap.GetCharContours(c, 0f, 0f, FontSize, _typeface);
-                _contourCache[key] = contours;
-            }
-
-            return contours
-                .Select(contour => contour.Select(v => new Vector2(v.X + offsetX, v.Y + offsetY)).ToList())
-                .ToList();
         }
 
         public override void Render(int program, int vbo, int vao)
@@ -835,13 +738,6 @@ namespace PhysicsSimulation
 
         public override List<Vector2> GetBoundaryVerts()
         {
-            // If we have mesh, reconstruct boundary from mesh verts (cheap)
-            if (_mesh != null)
-            {
-                var all = new List<Vector2>();
-                // We can't access mesh's contours directly here (they are internal), so fallback to old method
-            }
-
             var all2 = new List<Vector2>();
             var lines = _textContent.Replace("\r", "").Split('\n');
 

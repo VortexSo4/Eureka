@@ -1,8 +1,9 @@
 ﻿using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using PhysicsSimulation.Base;
 
-namespace PhysicsSimulation
+namespace PhysicsSimulation.SceneRendering
 {
     public static class SceneManager
     {

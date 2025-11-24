@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-
-namespace PhysicsSimulation
+﻿namespace PhysicsSimulation.Base
 {
     public enum LogLevel
     {
@@ -37,15 +34,12 @@ namespace PhysicsSimulation
 
         private static readonly DateTime _startTime = DateTime.Now;
         
-        private static readonly HashSet<string> _knownTags = new();
         private static int _maxTagLength = 5;
         
         private static void RegisterTag(string tag)
         {
             if (tag.Length > _maxTagLength)
                 _maxTagLength = tag.Length;
-
-            _knownTags.Add(tag);
         }
         
         static DebugManager()

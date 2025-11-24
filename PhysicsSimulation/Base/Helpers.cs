@@ -4,7 +4,7 @@ using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
-namespace PhysicsSimulation
+namespace PhysicsSimulation.Base
 {
     public static class Helpers
     {
@@ -144,7 +144,7 @@ void main()
         // --- Дублирование вершин до нужной длины ---
         public static List<Vector2> ResizeVertexList(List<Vector2> source, int targetTotalPoints)
         {
-            if (source == null || source.Count == 0)
+            if (source.Count == 0)
                 return new List<Vector2>(new Vector2[targetTotalPoints]);
             if (source.Count == targetTotalPoints)
                 return source;
@@ -228,25 +228,6 @@ void main()
 
             return result;
         }
-
-        // --- Отрисовка вершин ---
-        public static void RenderVertices(int program, int vbo, int vao, List<Vector3> verts, Vector3 color, PrimitiveType mode, float lineWidth = 1f)
-        {
-            if (verts == null || verts.Count == 0) return;
-
-            GL.BindVertexArray(vao);
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-            GL.BufferData(BufferTarget.ArrayBuffer, verts.Count * Vector3.SizeInBytes, verts.ToArray(), BufferUsageHint.DynamicDraw);
-
-            GL.UseProgram(program);
-            int colorLoc = GL.GetUniformLocation(program, "u_color");
-            if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
-
-            if (mode == PrimitiveType.Lines || mode == PrimitiveType.LineStrip || mode == PrimitiveType.LineLoop)
-                GL.LineWidth(lineWidth);
-
-            GL.DrawArrays(mode, 0, verts.Count);
-        }
         
         public static void UpdateFPS(GameWindow window, double dt, ref int instantFrames, ref double instantTimer,
             ref int avgFrames, ref double avgTimer, string baseTitle, bool debug_mode,
@@ -314,5 +295,6 @@ void main()
 
             return path;
         }
+        public static bool AlmostEqual(float a, float b, float eps = 1e-5f) => Math.Abs(a - b) <= eps;
     }
 }
