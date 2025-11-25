@@ -12,11 +12,12 @@ namespace PhysicsSimulation.Rendering.SceneRendering
 
     public class Scene
     {
+        public float TimelineLength => _timelineOffset;
         public static Scene? CurrentScene { get; set; }
 
         public List<SceneObject> Objects { get; } = [];
         private readonly List<(float time, Action action)> _actions = [];
-        public bool Recording { get; private set; }
+        public bool Recording { get; set; }
         private float _timelineOffset;
         public float CurrentTime { get; set; }
 
@@ -35,20 +36,20 @@ namespace PhysicsSimulation.Rendering.SceneRendering
 
         public Vector3 BackgroundColor => _backgroundColor;
 
-        public Scene()
+        public Scene(bool autoStart = true)
         {
+            
+            var stack = Environment.StackTrace;
+            DebugManager.Scene($"!!! SCENE CREATED FROM:\n{stack.Split('\n')[3].Trim()}");
+            
             Recording = true;
             CurrentScene = this;
-            try
+
+            if (autoStart)
             {
-                StartSlidesBase();
+                try { StartSlidesBase(); }
+                finally { Recording = false;}
             }
-            finally
-            {
-                Recording = false;
-                CurrentScene = null;
-            }
-            DebugManager.Scene($"Initializing Scene (timeline length: {_timelineOffset:F2}s)");
         }
 
         private void AddNow(params SceneObject[] objs)

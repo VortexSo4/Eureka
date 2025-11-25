@@ -490,17 +490,23 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
     }
 
     // ------------------ PRIMITIVES ------------------
-    public class Circle(
-        float x = 0f,
-        float y = 0f,
-        float radius = 0.1f,
-        bool filled = false,
-        Vector3 color = default,
-        int segments = 80)
-        : Primitive(x, y, filled, color)
+    public class Circle : Primitive
     {
-        public float Radius { get; set; } = radius;
-        public int Segments { get; set; } = segments;
+        public float Radius { get; set; }
+        public int Segments { get; set; }
+
+        public Circle(
+            float x = 0f,
+            float y = 0f,
+            float radius = 0.1f,
+            bool filled = false,
+            Vector3 color = default,
+            int segments = 80)
+            : base(x, y, filled, color)
+        {
+            Radius = radius;
+            Segments = segments;
+        }
 
         public override List<Vector2> GetBoundaryVerts()
         {
@@ -583,13 +589,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             Vertical = vertical;
             Font = font ?? FontFamily.Arial;
 
-            string fontKey;
-            if (Font is FontFamily ff)
-                fontKey = FontManager.GetNameFromFamily(ff);
-            else if (Font is string s)
-                fontKey = s;
-            else
-                fontKey = "Arial";
+            string fontKey = Font switch
+            {
+                FontFamily ff => FontManager.GetNameFromFamily(ff),
+                string s => s,
+                _ => "Arial"
+            };
 
             _typeface = FontManager.GetTypeface(null, fontKey);
 
