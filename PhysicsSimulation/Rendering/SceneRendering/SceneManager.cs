@@ -3,11 +3,12 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using PhysicsSimulation.Base;
 
-namespace PhysicsSimulation.SceneRendering
+namespace PhysicsSimulation.Rendering.SceneRendering
 {
     public static class SceneManager
     {
         private static readonly Dictionary<string, Type> _scenes = new();
+        private static readonly Dictionary<string, Assembly?> _userSceneAssemblies = new();
         private static Scene? _current;
 
         public static Scene? Current => _current;
@@ -15,10 +16,14 @@ namespace PhysicsSimulation.SceneRendering
 
         // Core scenes (фиксированный порядок)
         private static readonly string[] CoreSceneOrder =
-        [
+        {
             "MainMenuScene",
             "EditorScene"
-        ];
+        };
+
+        // --- namespace и директории ---
+        private const string BuiltInNamespace = "PhysicsSimulation.Scenes.Built_In_Scenes";
+        private const string UserScenesNamespace = "PhysicsSimulation.Scenes.User_Scenes";
 
         static SceneManager()
         {
@@ -29,64 +34,50 @@ namespace PhysicsSimulation.SceneRendering
         {
             _scenes.Clear();
 
-            // --- 1. Core scenes ---
+            // Получаем все типы сцен один раз
+            var allTypes = Assembly.GetExecutingAssembly().GetTypes()
+                .Where(t => t.IsSubclassOf(typeof(Scene)) && !t.IsAbstract)
+                .ToList();
+
+            // --- 1. Core сцены ---
+            DebugManager.Info($"Looking for Core scenes in namespace: {BuiltInNamespace}");
             foreach (var name in CoreSceneOrder)
             {
-                var type = Assembly.GetExecutingAssembly()
-                    .GetTypes()
-                    .FirstOrDefault(t => t.IsSubclassOf(typeof(Scene)) && !t.IsAbstract && t.Name == name);
+                var type = allTypes.FirstOrDefault(t => t.Name == name && t.Namespace == BuiltInNamespace);
                 if (type != null)
                 {
                     _scenes[name] = type;
-                    DebugManager.Info($"Core-scene '{name}' is loaded");
+                    DebugManager.Info($"Core scene '{name}' loaded from assembly '{type.Assembly.GetName().Name}', namespace '{type.Namespace}'");
+                }
+                else
+                {
+                    DebugManager.Warn($"Core scene '{name}' not found in namespace '{BuiltInNamespace}'");
                 }
             }
 
-            // --- 2. Built-in сцены ---
-            var builtIn = Assembly.GetExecutingAssembly()
-                .GetTypes()
-                .Where(t => t.IsSubclassOf(typeof(Scene)) && !t.IsAbstract &&
-                            !_scenes.ContainsKey(t.Name) &&
-                            t.Namespace == "PhysicsSimulation.BuiltInScenes");
+            // --- 2. Built-in сцены (все кроме core) ---
+            DebugManager.Info($"Looking for Built-in scenes in namespace: {BuiltInNamespace}");
+            var builtIn = allTypes
+                .Where(t => !_scenes.ContainsKey(t.Name) && t.Namespace == BuiltInNamespace);
 
             foreach (var t in builtIn)
             {
                 _scenes[t.Name] = t;
-                DebugManager.Info($"Built-in scene '{t.Name}' is loaded");
+                DebugManager.Info($"Built-in scene '{t.Name}' loaded from assembly '{t.Assembly.GetName().Name}', namespace '{t.Namespace}'");
             }
 
-            // --- 3. User сцены ---
-            string userScenesPath = Path.Combine(Environment.CurrentDirectory, "UserScenes");
-            if (Directory.Exists(userScenesPath))
-            {
-                DebugManager.Info($"User scenes search started: {userScenesPath}");
+            // --- 3. User сцены (через namespace) ---
+            DebugManager.Info($"Looking for user scenes in namespace: {UserScenesNamespace}");
 
-                foreach (var file in Directory.GetFiles(userScenesPath, "*.cs"))
+            var userTypes = allTypes
+                .Where(t => t.IsSubclassOf(typeof(Scene)) && !t.IsAbstract && t.Namespace == UserScenesNamespace);
+
+            foreach (var t in userTypes)
+            {
+                if (_scenes.TryAdd(t.Name, t))
                 {
-                    try
-                    {
-                        var assembly = CompileUserScene(file);
-                        var userTypes = assembly.GetTypes()
-                            .Where(t => t.IsSubclassOf(typeof(Scene)) && !t.IsAbstract);
-
-                        foreach (var t in userTypes)
-                        {
-                            if (!_scenes.ContainsKey(t.Name))
-                            {
-                                _scenes[t.Name] = t;
-                                DebugManager.Info($"User scene '{t.Name}' is loaded from {Path.GetFileName(file)}");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        DebugManager.Error($"Scene load '{file}' is failed : {ex.Message}");
-                    }
+                    DebugManager.Info($"User scene '{t.Name}' loaded from assembly '{t.Assembly.GetName().Name}'");
                 }
-            }
-            else
-            {
-                DebugManager.Info("folder UserScenes is not found - user scenes are disabled");
             }
 
             DebugManager.Stats($"Total loaded scenes: {_scenes.Count} → {string.Join(", ", _scenes.Keys)}");
@@ -95,7 +86,7 @@ namespace PhysicsSimulation.SceneRendering
         public static Scene Load(string name)
         {
             if (!_scenes.TryGetValue(name, out var type))
-                throw new Exception($"Scene '{name}' is not found. Total: {string.Join(", ", _scenes.Keys)}");
+                throw new Exception($"Scene '{name}' not found. Total: {string.Join(", ", _scenes.Keys)}");
 
             DebugManager.Scene($"Scene Loaded: {name}");
             _current?.Dispose();
@@ -107,7 +98,7 @@ namespace PhysicsSimulation.SceneRendering
         {
             if (_scenes.Count == 0)
             {
-                DebugManager.Warn("Нет сцен для переключения");
+                DebugManager.Warn("No scenes to switch");
                 return;
             }
 
@@ -122,15 +113,15 @@ namespace PhysicsSimulation.SceneRendering
         {
             if (_current == null)
             {
-                DebugManager.Warn("Нечего перезагружать - текущая сцена null");
+                DebugManager.Warn("Nothing to reload - current scene is null");
                 return;
             }
 
-            DebugManager.Scene($"Перезагрузка текущей сцены: {_current.GetType().Name}");
-            Load(_current.GetType().Name);
+            string sceneName = _current.GetType().Name;
+            DebugManager.Scene($"Reloading current scene: {sceneName}");
+            Load(sceneName);
         }
 
-        // --- Компиляция пользовательских сцен ---
         private static Assembly CompileUserScene(string path)
         {
             var code = File.ReadAllText(path);
@@ -144,7 +135,7 @@ namespace PhysicsSimulation.SceneRendering
 
             var compilation = CSharpCompilation.Create(
                 assemblyName,
-                [syntaxTree],
+                new[] { syntaxTree },
                 references,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
             );
@@ -157,7 +148,7 @@ namespace PhysicsSimulation.SceneRendering
                 var errors = string.Join("\n", result.Diagnostics
                     .Where(d => d.Severity == DiagnosticSeverity.Error)
                     .Select(d => d.ToString()));
-                throw new Exception($"Компиляция сцены {path} провалилась:\n{errors}");
+                throw new Exception($"Compilation of scene {path} failed:\n{errors}");
             }
 
             ms.Seek(0, SeekOrigin.Begin);

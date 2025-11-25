@@ -1,8 +1,8 @@
 ﻿using OpenTK.Mathematics;
-using PhysicsSimulation.Base;
-using PhysicsSimulation.SceneRendering;
+using PhysicsSimulation.Rendering.PrimitiveRendering;
+using PhysicsSimulation.Rendering.SceneRendering;
 
-namespace PhysicsSimulation.BuiltInScenes
+namespace PhysicsSimulation.Scenes.Built_In_Scenes
 {
     public class CustomScene : Scene
     {

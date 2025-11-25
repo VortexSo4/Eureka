@@ -1,14 +1,14 @@
 ﻿using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
-using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.Common;
+using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
-namespace PhysicsSimulation.Base
+namespace PhysicsSimulation.Base.Utilities
 {
     public static class Helpers
     {
-        private static string vertexShaderSource = @"
+        private static string _vertexShaderSource = @"
 #version 430 core
 layout (location = 0) in vec3 aPosition;
 
@@ -37,7 +37,7 @@ void main()
 ";
 
         
-        private static string fragmentShaderSource = @"
+        private static string _fragmentShaderSource = @"
 #version 430 core
 in vec3 fragColor;
 out vec4 FragColor;
@@ -50,7 +50,7 @@ void main()
 
         
         // --- Инициализация окна OpenTK ---
-        public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = false, bool debug_mode = true)
+        public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = false, bool debugMode = true)
         {
             var settings = new NativeWindowSettings
             {
@@ -82,7 +82,7 @@ void main()
 
             window.UpdateFrame += e =>
             {
-                UpdateFPS(window, e.Time, ref instantFrames, ref instantTimer, ref avgFrames, ref avgTimer, baseTitle, debug_mode);
+                UpdateFps(window, e.Time, ref instantFrames, ref instantTimer, ref avgFrames, ref avgTimer, baseTitle, debugMode);
                 if (!window.KeyboardState.IsKeyPressed(Keys.F11)) return;
 
                 if (window.WindowState == WindowState.Fullscreen)
@@ -109,9 +109,9 @@ void main()
             GL.Enable(EnableCap.Blend);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
-            int vertexShader = CompileShader(ShaderType.VertexShader, vertexShaderSource);
+            int vertexShader = CompileShader(ShaderType.VertexShader, _vertexShaderSource);
 
-            int fragmentShader = CompileShader(ShaderType.FragmentShader, fragmentShaderSource);
+            int fragmentShader = CompileShader(ShaderType.FragmentShader, _fragmentShaderSource);
 
             int program = GL.CreateProgram();
             GL.AttachShader(program, vertexShader);
@@ -176,15 +176,15 @@ void main()
             var result = new List<Vector2>();
 
             // Ключевое изменение: минимум 12 точек на контур — для идеальных прямых и углов
-            const int MIN_POINTS_PER_CONTOUR = 12;
+            const int minPointsPerContour = 12;
 
             int pointsPerContour = targetTotalPoints / contours.Count;
             int extraPoints = targetTotalPoints % contours.Count;
 
             // Гарантируем минимум 12 точек на контур
-            if (pointsPerContour < MIN_POINTS_PER_CONTOUR)
+            if (pointsPerContour < minPointsPerContour)
             {
-                pointsPerContour = MIN_POINTS_PER_CONTOUR;
+                pointsPerContour = minPointsPerContour;
                 extraPoints = 0; // перераспределять не будем — и так хватит
             }
 
@@ -229,11 +229,11 @@ void main()
             return result;
         }
         
-        public static void UpdateFPS(GameWindow window, double dt, ref int instantFrames, ref double instantTimer,
-            ref int avgFrames, ref double avgTimer, string baseTitle, bool debug_mode,
+        public static void UpdateFps(GameWindow window, double dt, ref int instantFrames, ref double instantTimer,
+            ref int avgFrames, ref double avgTimer, string baseTitle, bool debugMode,
             double instantUpdateInterval = 0.5, double avgInterval = 5.0)
         {
-            if (!debug_mode) return;
+            if (!debugMode) return;
 
             instantFrames++;
             avgFrames++;
@@ -296,5 +296,19 @@ void main()
             return path;
         }
         public static bool AlmostEqual(float a, float b, float eps = 1e-5f) => Math.Abs(a - b) <= eps;
+        
+        public static void TestDebugManager()
+        {
+            DebugManager.Info("some text for testing debug output");
+            DebugManager.Warn("some text for testing debug output");
+            DebugManager.Error("some text for testing debug output");
+            DebugManager.Stats("some text for testing debug output");
+            DebugManager.Morph("some text for testing debug output");
+            DebugManager.Render("some text for testing debug output");
+            DebugManager.Memory("some text for testing debug output");
+            DebugManager.Gpu("some text for testing debug output");
+            DebugManager.Scene("some text for testing debug output");
+            DebugManager.Font("some text for testing debug output");
+        }
     }
 }

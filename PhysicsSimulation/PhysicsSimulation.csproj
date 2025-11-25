@@ -25,4 +25,8 @@
         </None>
     </ItemGroup>
 
+    <ItemGroup>
+      <Folder Include="Scenes\User-Scenes\" />
+    </ItemGroup>
+
 </Project>

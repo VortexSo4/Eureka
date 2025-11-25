@@ -3,16 +3,18 @@ using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
-using PhysicsSimulation.SceneRendering;
+using PhysicsSimulation.Base;
+using PhysicsSimulation.Base.Utilities;
+using PhysicsSimulation.Rendering.SceneRendering;
 
-namespace PhysicsSimulation.Base
+namespace PhysicsSimulation
 {
-    class Program
+    internal abstract class Program
     {
-        static void Main(string[] args)
+        private static void Main(string[] args)
         {
-            Console.WriteLine($"Current Directory: {Environment.CurrentDirectory}");
-            Console.WriteLine($"Runtime: {Environment.Version}");
+            DebugManager.Log(LogLevel.Custom, $"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "A0FF33");
+            DebugManager.Log( LogLevel.Custom, $"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
 
             string sceneName = args.Length > 0 ? args[0] : "MainMenuScene";
 
@@ -33,14 +35,14 @@ namespace PhysicsSimulation.Base
             }
 
             UpdateViewport(window);
-            window.Resize += (_) => UpdateViewport(window);
+            window.Resize += _ => UpdateViewport(window);
 
             Scene scene = SceneManager.Load(sceneName);
 
             var stopwatch = Stopwatch.StartNew();
             double lastTime = stopwatch.Elapsed.TotalSeconds;
 
-            window.RenderFrame += (_) =>
+            window.RenderFrame += _ =>
             {
                 double currentTime = stopwatch.Elapsed.TotalSeconds;
                 float dt = (float)(currentTime - lastTime);
@@ -62,16 +64,14 @@ namespace PhysicsSimulation.Base
 
             // --- переключение сцен по пробелу ---
             bool spacePressed = false;
-            window.UpdateFrame += (_) =>
+            window.UpdateFrame += _ =>
             {
                 if (window.KeyboardState.IsKeyDown(Keys.Space))
                 {
-                    if (!spacePressed)
-                    {
-                        SceneManager.Next();
-                        scene = SceneManager.Current!;
-                        spacePressed = true;
-                    }
+                    if (spacePressed) return;
+                    SceneManager.Next();
+                    scene = SceneManager.Current!;
+                    spacePressed = true;
                 }
                 else spacePressed = false;
             };
@@ -84,7 +84,7 @@ namespace PhysicsSimulation.Base
             int width = window.Size.X, height = window.Size.Y;
             if (width <= 0 || height <= 0) return;
 
-            float desiredAspect = 16f / 9f;
+            const float desiredAspect = 16f / 9f;
             float windowAspect = (float)width / height;
 
             int vpX = 0, vpY = 0, vpWidth = width, vpHeight = height;

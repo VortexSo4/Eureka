@@ -1,7 +1,8 @@
 ﻿using PhysicsSimulation.Base;
+using PhysicsSimulation.Base.Utilities;
 using SkiaSharp;
 
-namespace PhysicsSimulation.TextRendering
+namespace PhysicsSimulation.Rendering.TextRendering
 {
     public enum FontFamily
     {
@@ -145,9 +146,9 @@ namespace PhysicsSimulation.TextRendering
             }
 
             // 3) Fallback
-            string fallback_font = "Arial";
-            var fallback = SKTypeface.FromFamilyName(fallback_font) ?? SKTypeface.Default;
-            DebugManager.Font($"Using fallback font: {fallback_font}");
+            string fallbackFont = "Arial";
+            var fallback = SKTypeface.FromFamilyName(fallbackFont) ?? SKTypeface.Default;
+            DebugManager.Font($"Using fallback font: {fallbackFont}");
             Cache[key] = fallback;
             return fallback;
         }

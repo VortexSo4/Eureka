@@ -2,7 +2,7 @@
 using OpenTK.Mathematics;
 using SkiaSharp;
 
-namespace PhysicsSimulation.TextRendering
+namespace PhysicsSimulation.Rendering.TextRendering
 {
     public static class CharMap
     {
@@ -19,13 +19,13 @@ namespace PhysicsSimulation.TextRendering
             $"{c}|{face?.FamilyName ?? "Default"}|{size:F4}";
 
         // ThreadLocal caches для SKFont (это новый корректный подход)
-        private static readonly ThreadLocal<Dictionary<string, SKFont>> _threadFonts =
+        private static readonly ThreadLocal<Dictionary<string, SKFont>> ThreadFonts =
             new(() => new Dictionary<string, SKFont>(StringComparer.OrdinalIgnoreCase));
 
         private static SKFont GetThreadFont(SKTypeface face, float size)
         {
             string k = $"{face.FamilyName ?? "default"}|{size:F4}";
-            var d = _threadFonts.Value!;
+            var d = ThreadFonts.Value!;
             if (!d.TryGetValue(k, out var font))
             {
                 font = new SKFont(face, size)

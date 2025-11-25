@@ -1,7 +1,8 @@
 ﻿using OpenTK.Mathematics;
 using PhysicsSimulation.Base;
+using PhysicsSimulation.Rendering.PrimitiveRendering;
 
-namespace PhysicsSimulation.SceneRendering
+namespace PhysicsSimulation.Rendering.SceneRendering
 {
     public abstract class SceneObject
     {

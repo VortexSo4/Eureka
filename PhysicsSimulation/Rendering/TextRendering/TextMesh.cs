@@ -1,10 +1,11 @@
-﻿using OpenTK.Graphics.OpenGL4;
+﻿using LibTessDotNet;
+using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using PhysicsSimulation.Base;
+using PhysicsSimulation.Rendering.PrimitiveRendering;
 using SkiaSharp;
-using LibTessDotNet;
 
-namespace PhysicsSimulation.TextRendering
+namespace PhysicsSimulation.Rendering.TextRendering
 {
     public sealed class TextMesh : IDisposable
     {

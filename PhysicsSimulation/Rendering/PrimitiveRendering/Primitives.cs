@@ -1,10 +1,11 @@
 ﻿using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
-using PhysicsSimulation.SceneRendering;
-using PhysicsSimulation.TextRendering;
+using PhysicsSimulation.Base.Utilities;
+using PhysicsSimulation.Rendering.SceneRendering;
+using PhysicsSimulation.Rendering.TextRendering;
 using SkiaSharp;
 
-namespace PhysicsSimulation.Base
+namespace PhysicsSimulation.Rendering.PrimitiveRendering
 {
     // ------------------ EASING ------------------
     public enum EaseType { Linear, EaseIn, EaseOut, EaseInOut }
@@ -141,23 +142,23 @@ namespace PhysicsSimulation.Base
 
     // --- Предварительно узнаем, поддерживает ли шейдер uniform-трансформации ---
     GL.UseProgram(program);
-    int loc_u_translate = GL.GetUniformLocation(program, "u_translate");
-    int loc_u_cos = GL.GetUniformLocation(program, "u_cos");
-    int loc_u_sin = GL.GetUniformLocation(program, "u_sin");
-    int loc_u_scale = GL.GetUniformLocation(program, "u_scale");
-    int loc_aspect = GL.GetUniformLocation(program, "aspectRatio");
+    int locUTranslate = GL.GetUniformLocation(program, "u_translate");
+    int locUCos = GL.GetUniformLocation(program, "u_cos");
+    int locUSin = GL.GetUniformLocation(program, "u_sin");
+    int locUScale = GL.GetUniformLocation(program, "u_scale");
+    int locAspect = GL.GetUniformLocation(program, "aspectRatio");
 
-    bool shaderHasTransform = loc_u_translate >= 0 && loc_u_cos >= 0 && loc_u_sin >= 0 && loc_u_scale >= 0;
+    bool shaderHasTransform = locUTranslate >= 0 && locUCos >= 0 && locUSin >= 0 && locUScale >= 0;
 
     // если шейдер ожидает aspectRatio — посчитаем и установим
-    if (loc_aspect >= 0)
+    if (locAspect >= 0)
     {
         // Получаем текущий вьюпорт (x,y,w,h)
         var vp = new int[4];
         GL.GetInteger(GetPName.Viewport, vp);
         float aspect = 1f;
         if (vp[2] != 0) aspect = vp[3] / (float)vp[2]; // height / width — так, как ты использовал раньше
-        GL.Uniform1(loc_aspect, aspect);
+        GL.Uniform1(locAspect, aspect);
     }
 
     foreach (var seg in segments)
@@ -174,13 +175,13 @@ namespace PhysicsSimulation.Base
 
             // 2) установим униформы трансформации для этого примитива
             // translate = (X, Y)
-            GL.Uniform2(loc_u_translate, X, Y);
+            GL.Uniform2(locUTranslate, X, Y);
             // cos, sin от Rotation и Scale
             float c = MathF.Cos(Rotation);
             float s = MathF.Sin(Rotation);
-            GL.Uniform1(loc_u_cos, c);
-            GL.Uniform1(loc_u_sin, s);
-            GL.Uniform1(loc_u_scale, Scale);
+            GL.Uniform1(locUCos, c);
+            GL.Uniform1(locUSin, s);
+            GL.Uniform1(locUScale, Scale);
 
             // 3) подготовим drawVerts (GPU применит трансформацию)
             drawVerts = PrepareDrawVerts(raw, Filled);
@@ -339,7 +340,7 @@ namespace PhysicsSimulation.Base
             return this;
         }
 
-        public Primitive SetFilled(bool filled, float _duration = 0f) { Filled = filled; return this; }
+        public Primitive SetFilled(bool filled, float duration = 0f) { Filled = filled; return this; }
 
         public Primitive Draw(float duration = 1f, EaseType ease = EaseType.EaseInOut)
         {

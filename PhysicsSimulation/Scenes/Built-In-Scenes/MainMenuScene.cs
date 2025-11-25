@@ -1,9 +1,10 @@
 ﻿using OpenTK.Mathematics;
 using PhysicsSimulation.Base;
-using PhysicsSimulation.SceneRendering;
-using PhysicsSimulation.TextRendering;
+using PhysicsSimulation.Rendering.PrimitiveRendering;
+using PhysicsSimulation.Rendering.SceneRendering;
+using PhysicsSimulation.Rendering.TextRendering;
 
-namespace PhysicsSimulation.BuiltInScenes
+namespace PhysicsSimulation.Scenes.Built_In_Scenes
 {
     public class MainMenuScene : Scene
     {
@@ -22,12 +23,12 @@ namespace PhysicsSimulation.BuiltInScenes
                 font: FontFamily.QuanticoBold
             );
 
-            int N = 50;
-            int M = 100;
+            int n = 50;
+            int m = 100;
 
             string longText = string.Join("\n",
-                Enumerable.Range(0, N)
-                    .Select(_ => new string('o', M))
+                Enumerable.Range(0, n)
+                    .Select(_ => new string('o', m))
             );
             
             var text = new Text(
