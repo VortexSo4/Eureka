@@ -44,8 +44,9 @@ namespace PhysicsSimulation
 
             bgColor([0.05, 0.05, 0.08], 1)
 
+            xsd = <and welcome>
             title = text {
-                text: <Eureka>,
+                text: $<Eureka {xsd}>,
                 x: 1.5,
                 y: -1,
                 fontSize: 0.2,

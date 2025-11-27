@@ -278,9 +278,20 @@ namespace EurekaDSL
         public override Value Eval(Runtime rt) => rt.Construct(TypeName, Args, Props);
     }
 
-    public record InterpExpr(string Raw, int Line, int Col) : Expr(Line, Col)
+    public record InterpExpr(List<object> Parts, int Line, int Col) : Expr(Line, Col)
     {
-        public override Value Eval(Runtime rt) => new Value(Raw); // Упрощённая версия — полная потом
+        public override Value Eval(Runtime rt)
+        {
+            var result = new StringBuilder();
+            foreach (var part in Parts)
+            {
+                if (part is string s)
+                    result.Append(s);
+                else if (part is Expr expr)
+                    result.Append(expr.Eval(rt));
+            }
+            return new Value(result.ToString());
+        }
     }
 
     #endregion
@@ -1172,8 +1183,7 @@ namespace EurekaDSL
                 case TokenType.False: Eat(); return new BoolExpr(false, curr.Line, curr.Col);
                 case TokenType.StringLit:
                 case TokenType.AmpInterp: return new StringExpr(Eat().Text, curr.Line, curr.Col);
-
-                case TokenType.DollarInterp: return new InterpExpr(Eat().Text, curr.Line, curr.Col);
+                case TokenType.DollarInterp: return ParseDollarInterpolation(Eat().Text, curr.Line, curr.Col);
                 case TokenType.Ident: 
                     var baseExpr = new IdentExpr(Eat().Text, curr.Line, curr.Col);
                     return ParsePostfix(baseExpr);
@@ -1186,6 +1196,76 @@ namespace EurekaDSL
                     return ParsePostfix(expr);  // Поддержка (expr).method()
                 default: Abort($"Unexpected token {curr}"); return new StringExpr("", curr.Line, curr.Col);
             }
+        }
+
+        private Expr ParseDollarInterpolation(string raw, int line, int col)
+        {
+            var parts = new List<object>();
+            var sb = new StringBuilder();
+            int i = 0;
+
+            while (i < raw.Length)
+            {
+                char c = raw[i];
+
+                if (c == '{' && (i == 0 || raw[i - 1] != '\\'))
+                {
+                    if (sb.Length > 0)
+                    {
+                        parts.Add(sb.ToString());
+                        sb.Clear();
+                    }
+
+                    i++; // пропускаем {
+                    int start = i;
+                    int braceCount = 1;
+
+                    while (i < raw.Length && braceCount > 0)
+                    {
+                        c = raw[i];
+                        if (c == '{') braceCount++;
+                        if (c == '}') braceCount--;
+                        i++;
+                    }
+
+                    if (braceCount != 0)
+                    {
+                        Abort("Unclosed '{' in interpolated string");
+                        return new StringExpr(raw, line, col);
+                    }
+
+                    // Теперь i указывает сразу за }
+                    string exprText = raw.Substring(start, i - start - 1);
+
+                    var subLexer = new Lexer(exprText);
+                    var subTokens = new List<Token>();
+                    Token t;
+                    while ((t = subLexer.NextToken()).Type != TokenType.EOF)
+                        subTokens.Add(t);
+
+                    var subParser = new Parser(subTokens);
+                    var expr = subParser.ParseExpression();
+
+                    parts.Add(expr);
+                }
+                else
+                {
+                    if (c == '\\' && i + 1 < raw.Length && (raw[i + 1] == '{' || raw[i + 1] == '}'))
+                    {
+                        sb.Append(raw[++i]);
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                    i++;
+                }
+            }
+
+            if (sb.Length > 0)
+                parts.Add(sb.ToString());
+
+            return new InterpExpr(parts, line, col);
         }
 
         private Expr ParseIdentOrCallOrCtor()
