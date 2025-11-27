@@ -432,7 +432,7 @@ namespace EurekaDSL
     {
         public Dictionary<string, Value> Vars { get; } = new();
         public Stack<Dictionary<string, Value>> ScopeStack { get; } = new();
-        public List<RuntimeObject> Objects { get; } = new();
+        public List<RuntimeObject> Objects { get; } = [];
         public CommandRegistry Cmds { get; }
 
         public Runtime(CommandRegistry cmds)
@@ -546,7 +546,7 @@ namespace EurekaDSL
                     break;
 
                 case WaitStmt ws:
-                    Cmds.InvokeGlobal(this, "wait", new() { (null, ws.Duration) });
+                    Cmds.InvokeGlobal(this, "wait", [(null, ws.Duration)]);
                     break;
 
                 case RepeatStmt rs:
@@ -568,14 +568,6 @@ namespace EurekaDSL
     #region CommandRegistry & ValueConversions (полные и рабочие)
 
     // ... (оставляю полностью рабочие версии из предыдущего ответа, они не сломаны)
-
-    public enum EaseType
-    {
-        Linear,
-        In,
-        Out,
-        InOut
-    }
 
     public class CommandRegistry
     {
@@ -713,8 +705,8 @@ namespace EurekaDSL
 
             Type? targetType = robj.TypeName.ToLowerInvariant() switch
             {
-                "circle" or "circ" => typeof(Circle),
-                "rect" or "rectangle" => typeof(Rectangle),
+                "circle" => typeof(Circle),
+                "rect" => typeof(Rectangle),
                 "text" => typeof(Text),
                 _ => null
             };
@@ -777,6 +769,24 @@ namespace EurekaDSL
             {
                 DebugManager.Scene($"[DSL ERROR] Constructor failed: {ex.Message}");
             }
+        }
+    }
+    
+    public static class CommandRegistryExtensions
+    {
+        public static void RegisterCtor(this CommandRegistry reg, params string[] typeNames)
+        {
+            foreach (var name in typeNames)
+                reg.RegisterCtor(name.ToLowerInvariant(), (_, _, __, ___) => { });
+        }
+
+        public static void RegisterMethodFor(this CommandRegistry reg, 
+            string[] typeNames, 
+            string methodName, 
+            CommandRegistry.MethodHandler handler)
+        {
+            foreach (var name in typeNames)
+                reg.RegisterMethod(name.ToLowerInvariant(), methodName, handler);
         }
     }
 
@@ -953,7 +963,7 @@ namespace EurekaDSL
                     var arrayExpr = new ArrayExpr(items, ident.Line, ident.Col);
                     var callExpr = new CallExpr(
                         new IdentExpr("Add", ident.Line, ident.Col),
-                        new() { (null, arrayExpr) },
+                        [(null, arrayExpr)],
                         ident.Line, ident.Col);
 
                     return new ExprStmt(callExpr, ident.Line, ident.Col);
@@ -996,9 +1006,7 @@ namespace EurekaDSL
                     var val = Curr.Type != TokenType.RBrace && Curr.Type != TokenType.EOF ? ParseExpression() : null;
                     return new ReturnStmt(val, ident.Line, ident.Col);
                 }
-
-                lhs = new IdentExpr(ident.Text, ident.Line, ident.Col);
-
+                
                 lhs = new IdentExpr(ident.Text, ident.Line, ident.Col);
 
 // Поддержка цепочек: c.color, c.transform.position и т.д.
@@ -1268,68 +1276,6 @@ namespace EurekaDSL
             return new InterpExpr(parts, line, col);
         }
 
-        private Expr ParseIdentOrCallOrCtor()
-        {
-            var id = Eat();
-
-            // obj.method(...)
-            if (Curr.Type == TokenType.Dot)
-            {
-                Eat();
-                var member = Eat();
-                if (Curr.Type == TokenType.LParen)
-                {
-                    var args = ParseArgList();
-                    return new CallExpr(new MemberExpr(new IdentExpr(id.Text, id.Line, id.Col), member.Text, member.Line, member.Col), args, id.Line, id.Col);
-                }
-                return new MemberExpr(new IdentExpr(id.Text, id.Line, id.Col), member.Text, id.Line, id.Col);
-            }
-
-            // func(...) or type(args) { props }
-            if (Curr.Type == TokenType.LParen)
-            {
-                var args = ParseArgList();
-
-                // ctor with props: Type(...) { ... }
-                var props = new List<(string, Expr)>();
-                if (Curr.Type == TokenType.LBrace)
-                {
-                    Eat();
-                    while (!Match(TokenType.RBrace))
-                    {
-                        var key = Eat();
-                        if (key.Type != TokenType.Ident) { Abort("Prop key expected"); break; }
-                        Match(TokenType.Colon);
-                        var val = ParseExpression();
-                        props.Add((key.Text, val));
-                        Match(TokenType.Comma);
-                    }
-                }
-
-                return new ObjectConstructorExpr(id.Text, args, props, id.Line, id.Col);
-            }
-
-            // ctor without args: type { props }
-            if (Curr.Type == TokenType.LBrace)
-            {
-                var args = new List<(string? Name, Expr Expr)>();
-                var props = new List<(string Name, Expr Expr)>();
-                Eat(); // {
-                while (!Match(TokenType.RBrace))
-                {
-                    var key = Eat();
-                    if (key.Type != TokenType.Ident) { Abort("Prop key expected"); break; }
-                    Match(TokenType.Colon);
-                    var val = ParseExpression();
-                    props.Add((key.Text, val));
-                    Match(TokenType.Comma);
-                }
-                return new ObjectConstructorExpr(id.Text, args, props, id.Line, id.Col);
-            }
-
-            return new IdentExpr(id.Text, id.Line, id.Col);
-        }
-
         private List<(string? Name, Expr)> ParseArgList()
         {
             var list = new List<(string?, Expr)>();
@@ -1376,50 +1322,20 @@ namespace EurekaDSL
     {
         public static void RegisterBuiltins(CommandRegistry reg)
         {
-            reg.RegisterCtor("circle", (_, __, ___, ____) => { });
-            reg.RegisterCtor("rect", (_, __, ___, ____) => { });
-            reg.RegisterCtor("text", (_, __, ___, ____) => { });
+            reg.RegisterCtor("circle", "rect", "text");
 
-            reg.RegisterGlobal("Add", (rt, pos, named) =>
+            reg.RegisterGlobal("Add", (rt, pos, _) =>
             {
-                DebugManager.Scene($"[Add] Called with {pos.Count} arguments");
-
                 foreach (var v in pos)
                 {
-                    if (v.Type == VType.Array && v.Array != null)
-                    {
-                        foreach (var item in v.Array)
-                        {
-                            var native = item.Obj?.NativeInstance;
-                            DebugManager.Scene(
-                                $"  [Add] Array item → NativeInstance: {(native != null ? native.GetType().Name : "NULL")}");
-                            if (native is SceneObject so)
-                            {
-                                Scene.CurrentScene?.Add(so);
-                                DebugManager.Scene($"    ADDED to scene: {so.GetType().Name}");
-                            }
-                        }
-                    }
-                    else
-                    {
-                        var native = v.Obj?.NativeInstance;
-                        DebugManager.Scene(
-                            $"  [Add] Direct → NativeInstance: {(native != null ? native.GetType().Name : "NULL")}");
-                        if (native is SceneObject so)
-                        {
+                    if (v.Type != VType.Array || v.Array == null) continue;
+                    foreach (var item in v.Array)
+                        if (item.Obj?.NativeInstance is SceneObject so)
                             Scene.CurrentScene?.Add(so);
-                            DebugManager.Scene($"    ADDED to scene: {so.GetType().Name}");
-                        }
-                        else
-                        {
-                            DebugManager.Scene($"    NOT ADDED — not a SceneObject or null");
-                        }
-                    }
                 }
-
                 return Value.Null;
             });
-
+            
             reg.RegisterGlobal("wait", (rt, pos, _) =>
             {
                 float d = pos.Count > 0 ? (float)pos[0].AsNumber() : 1f;
@@ -1445,72 +1361,115 @@ namespace EurekaDSL
 
                 return Value.Null;
             });
-
-            reg.RegisterMethod("circle", "draw", (rt, obj, pos, _) =>
+            
+            reg.RegisterMethodFor(["circle", "rect", "text"], "draw", (rt, obj, pos, _) =>
             {
-                if (obj.NativeInstance is Circle c)
-                    c.Draw(pos.Count > 0 ? (float)pos[0].AsNumber() : 1f);
+                    if (obj.NativeInstance is Primitive so)
+                        so.Draw(pos.Count > 0 ? (float)pos[0].AsNumber() : 1f);
+                    return new Value { Type = VType.Object, Obj = obj };
+                });
+            
+            reg.RegisterMethodFor(["circle", "rect", "text"], "move", (rt, obj, pos, named) =>
+            {
+                if (obj.NativeInstance is not Primitive p) return new Value { Type = VType.Object, Obj = obj };
+
+                float x = pos.Count > 0 ? (float)pos[0].AsNumber() : p.X;
+                float y = pos.Count > 1 ? (float)pos[1].AsNumber() : p.Y;
+                float dur = pos.Count > 2 ? (float)pos[2].AsNumber() : 1f;
+                EaseType ease = EaseType.EaseInOut;
+
+                if (pos.Count > 3 && pos[3].Str != null)
+                    ease = ParseEase(pos[3].Str);
+
+                p.MoveTo(x, y, dur, ease);
                 return new Value { Type = VType.Object, Obj = obj };
             });
 
-            reg.RegisterMethod("circle", "move", (rt, obj, pos, _) =>
+            reg.RegisterMethodFor(["circle", "rect"], "scale", (rt, obj, pos, named) =>
             {
-                if (obj.NativeInstance is Circle c)
-                {
-                    float duration = pos.Count > 0 ? (float)pos[0].AsNumber() : 1f;
-                    float x = pos.Count > 1 ? (float)pos[1].AsNumber() : c.X;
-                    float y = pos.Count > 2 ? (float)pos[2].AsNumber() : c.Y;
+                if (obj.NativeInstance is not Primitive p || pos.Count == 0)
+                    return new Value { Type = VType.Object, Obj = obj };
 
-                    DebugManager.Scene($"[DSL] circle.move({duration}, {x}, {y}) → STARTED");
-                    c.MoveTo(x, y, duration);
-                    DebugManager.Scene($"[DSL] circle.move → SUCCESS");
-                }
+                float s = (float)pos[0].AsNumber();
+                float dur = pos.Count > 1 ? (float)pos[1].AsNumber() : 1f;
+                EaseType ease = EaseType.EaseInOut;
+
+                if (pos.Count > 2 && pos[2].Str != null)
+                    ease = ParseEase(pos[2].Str);
+
+                p.Resize(s, dur, ease);
                 return new Value { Type = VType.Object, Obj = obj };
             });
 
-            reg.RegisterMethod("circle", "scale", (rt, obj, pos, _) =>
+            reg.RegisterMethodFor(["circle", "rect", "text"], "color", (rt, obj, pos, named) =>
             {
-                if (obj.NativeInstance is Circle c)
-                {
-                    float duration = pos.Count > 0 ? (float)pos[0].AsNumber() : 1f;
-                    float s = pos.Count > 1 ? (float)pos[1].AsNumber() : 1f;
+                if (obj.NativeInstance is not Primitive p || pos.Count == 0)
+                    return new Value { Type = VType.Object, Obj = obj };
 
-                    DebugManager.Scene($"[DSL] circle.scale({duration}, {s}) → STARTED");
-                    c.Resize(s, duration);
-                    DebugManager.Scene($"[DSL] circle.scale → SUCCESS");
-                }
+                var color = ValueConversions.ToVector3(pos[0]);
+                float dur = pos.Count > 1 ? (float)pos[1].AsNumber() : 0f;
+                EaseType ease = EaseType.Linear;
+
+                if (pos.Count > 2 && pos[2].Str != null)
+                    ease = ParseEase(pos[2].Str);
+
+                p.AnimateColor(color, dur, ease);
                 return new Value { Type = VType.Object, Obj = obj };
             });
-
-            reg.RegisterMethod("circle", "color", (rt, obj, pos, _) =>
+            
+            reg.RegisterMethodFor(["circle", "rect", "text"], "morph", (rt, obj, pos, named) =>
             {
-                if (obj.NativeInstance is Circle c && pos.Count > 0)
-                {
-                    var color = ValueConversions.ToVector3(pos[0]);
-                    float duration = pos.Count > 1 ? (float)pos[1].AsNumber() : 0f;
+                    if (obj.NativeInstance is not Primitive source || pos.Count == 0)
+                        return new Value { Type = VType.Object, Obj = obj };
 
-                    DebugManager.Scene($"[DSL] circle.color({color}, {duration}) → STARTED");
-                    c.AnimateColor(color, duration);
-                    DebugManager.Scene($"[DSL] circle.color → SUCCESS");
-                }
-                return new Value { Type = VType.Object, Obj = obj };
-            });
+                    if (pos[0].Obj?.NativeInstance is not Primitive target)
+                        return new Value { Type = VType.Object, Obj = obj };
 
-            reg.RegisterMethod("text", "draw", (rt, obj, pos, _) =>
+                    float duration = pos.Count > 1 ? (float)pos[1].AsNumber() : 2f;
+
+                    EaseType ease = EaseType.EaseInOut; // ← теперь берётся из рендера!
+                    if (pos.Count > 2 && pos[2].Str != null)
+                    {
+                        ease = pos[2].Str.Trim().ToLowerInvariant() switch
+                        {
+                            "linear"    => EaseType.Linear,
+                            "in"        => EaseType.EaseIn,
+                            "out"       => EaseType.EaseOut,
+                            _           => EaseType.EaseInOut
+                        };
+                    }
+
+                    bool hideTarget = named.TryGetValue("hideTarget", out var hv) && hv.AsBool();
+
+                    source.MorphTo(target, duration, ease, hideTarget);
+
+                    DebugManager.Scene($"[DSL] {source.GetType().Name}.morph() → {target.GetType().Name} ({duration}s, {ease})");
+                    return new Value { Type = VType.Object, Obj = obj };
+                });
+            
+            reg.RegisterMethodFor(["circle", "rect", "text"], "rotate", (rt, obj, pos, named) =>
             {
-                if (obj.NativeInstance is Text t)
-                    t.Draw(pos.Count > 0 ? (float)pos[0].AsNumber() : 1f);
-                return new Value { Type = VType.Object, Obj = obj };
-            });
+                    if (obj.NativeInstance is not Primitive p || pos.Count == 0)
+                        return new Value { Type = VType.Object, Obj = obj };
 
-            reg.RegisterMethod("rect", "draw", (rt, obj, pos, _) =>
-            {
-                if (obj.NativeInstance is Rectangle r)
-                    r.Draw(pos.Count > 0 ? (float)pos[0].AsNumber() : 1f);
-                return new Value { Type = VType.Object, Obj = obj };
-            });
+                    float angle = (float)pos[0].AsNumber();
+                    float duration = pos.Count > 1 ? (float)pos[1].AsNumber() : 1f;
+                    EaseType ease = EaseType.EaseInOut;
 
-            // Добавь остальные методы по аналогии
+                    if (pos.Count > 2 && pos[2].Str != null)
+                    {
+                        ease = pos[2].Str.Trim().ToLowerInvariant() switch
+                        {
+                            "linear" => EaseType.Linear,
+                            "in"     => EaseType.EaseIn,
+                            "out"    => EaseType.EaseOut,
+                            _        => EaseType.EaseInOut
+                        };
+                    }
+
+                    p.RotateTo(angle, duration, ease);
+                    return new Value { Type = VType.Object, Obj = obj };
+                });
         }
 
         public static void RunScript(string source)
@@ -1536,6 +1495,17 @@ namespace EurekaDSL
             {
                 DebugManager.Scene($"Initializing Scene (timeline length: {Scene.CurrentScene.TimelineLength:F2}s)");
             }
+        }
+        
+        public static EaseType ParseEase(string? str)
+        {
+            return str?.Trim().ToLowerInvariant() switch
+            {
+                "linear" => EaseType.Linear,
+                "in"     => EaseType.EaseIn,
+                "out"    => EaseType.EaseOut,
+                _        => EaseType.EaseInOut
+            };
         }
     }
 

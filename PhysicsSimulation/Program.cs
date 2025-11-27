@@ -44,7 +44,7 @@ namespace PhysicsSimulation
 
             bgColor([0.05, 0.05, 0.08], 1)
 
-            xsd = <and welcome>
+            xsd = 5/3
             title = text {
                 text: $<Eureka {xsd}>,
                 x: 1.5,
@@ -72,20 +72,26 @@ namespace PhysicsSimulation
             }
 
             Add {
-                title.draw(1.5),
                 c.draw(1.2),
+                title.draw(1.5),
                 r.draw(1.9)
             }
 
             wait(2)
 
-            c.draw(1)
-            wait(2)
             c.move(2, 0.8, 0)
+            title.move(1, 0.5, 0)
+            r.move(2, -0.5, -0.5)
             wait(2)
             c.scale(1.5, 1.8)
+            r.scale(1.5, 1.8)
             wait(2)
+            r.morph(c, 2)
+            wait(3)
             c.color([0, 0, 0], 2)
+            r.color([0, 0, 0], 2)
+            title.color([0, 0, 0], 2)
+            title.x = 10
 
             wait(3)
             ";

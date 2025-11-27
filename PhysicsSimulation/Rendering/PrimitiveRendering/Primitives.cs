@@ -411,13 +411,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
 
                 // BoundaryVerts держим в локальных координатах — TransformVerts прибавит X/Y/Scale/Rotation
                 BoundaryVerts = normalizedStart;
-
-                // Анимируем трансформ/цветы исходного объекта к параметрам target (одновременно)
-                AnimateColor(target.Color, duration, ease);
-                MoveTo(target.X, target.Y, duration, ease);
-                Resize(target.Scale == 0f ? 1f : target.Scale, duration, ease);
-                RotateTo(target.Rotation, duration, ease);
-                SetLineWidth(target.LineWidth, duration, ease);
             });
 
             return this;
