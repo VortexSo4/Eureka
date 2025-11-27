@@ -13,7 +13,7 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             DebugManager.Info("Composite Test Scene Started");
             AnimateBackgroundColor(new Vector3(0.05f, 0.05f, 0.07f), 1f);
 
-            // --- COMPOSITE #1: простой --- 
+            // --- COMPOSITE #1: простой ---
             var comp1 = new CompositePrimitive(x: -0.6f, y: 0.0f);
 
             var c1 = new Circle(0, 0, 0.12f, color: new Vector3(0.3f, 0.8f, 1f));
@@ -31,7 +31,6 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             comp1.MoveTo(-0.3f, 0.3f, 2f);
             Wait(2.5f);
 
-            // Проверка локального движения ребёнка (двигается «внутри» повернутого композита)
             r1.MoveTo(0.4f, 0.2f, 2f);
             Wait(1.5f);
 
@@ -47,7 +46,6 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             Add(comp2.Draw());
             Wait(1f);
 
-            // Двигаем ребёнка — он двигается в локальных координатах после скейла
             innerCircle.MoveTo(-0.15f, 0.1f, 2f);
             Wait(2f);
 
@@ -55,7 +53,6 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             var comp3 = new CompositePrimitive(x: 0.0f, y: 0.5f);
 
             var arrowBody = new Rectangle(0, 0, 0.4f, 0.05f, color: new Vector3(0.3f, 0.7f, 1f));
-            
             var arrowText = new Text("GLOBAL", 0.1f, -0.15f, fontSize: 0.07f);
 
             comp3.Add(arrowBody);
@@ -64,15 +61,52 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             Add(comp3.Draw());
             Wait(0.8f);
 
-            // Вращаем композит
             comp3.RotateTo(90, 2f);
-
-            // Но текст должен игнорировать локальный поворот
             comp3.SetChildGlobalRotationOverride(arrowText, 0);
-
             Wait(2.5f);
-            
-            // Конец
+
+            // --- БЕНЧМАРК: VectorPrimitive с динамическим текстом ---
+            var vec = new VectorPrimitive(-0.5f, 0.0f, 0.4f, 0.3f, color: new Vector3(1f, 0.8f, 0.2f), showMagnitude: true);
+            Add(vec.Draw());
+            Wait(1.5f);
+
+            vec.SetEnd(0.2f, 0.5f);
+            Wait(1.5f);
+
+            // --- БЕНЧМАРК: GraphPrimitive через фабрику ---
+            var (graphComposite, plot) = GraphPrimitiveFactory.CreateGraph(
+                f: x => 0.3f * MathF.Sin(8f * x),
+                xMin: -1f,
+                xMax: 1f,
+                resolution: 200,
+                axisLength: 0.8f,
+                axisAmount: 1,
+                showGrid: true);
+
+            graphComposite.X = 0.6f;
+            graphComposite.Y = -0.4f;
+            Add(graphComposite.Draw());
+            Wait(1.5f);
+
+            // Сделать график пунктирным
+            plot.Dashed = true;
+            plot.DashLength = 0.02f;
+            plot.GapLength = 0.01f;
+            Wait(1.5f);
+
+            // --- БЕНЧМАРК: несколько текстов с динамическим обновлением ---
+            var dynamicText = new Text("Counter: 0", 0f, 0f, 0.08f);
+            int counter = 0;
+            dynamicText.SetDynamicText(() => $"Counter: {counter}");
+            Add(dynamicText.Draw());
+
+            for (int i = 1; i <= 5; i++)
+            {
+                counter = i;
+                Wait(0.5f);
+            }
+
+            // --- Конец сцены ---
             AnimateBackgroundColor(new Vector3(0, 0, 0), 1.5f);
             Wait(2f);
         }

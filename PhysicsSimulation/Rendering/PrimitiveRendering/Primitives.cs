@@ -519,8 +519,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         float width = 0.2f,
         float height = 0.2f,
         bool filled = false,
-        Vector3 color = default)
-        : Primitive(x, y, filled, color)
+        Vector3 color = default) : Primitive(x, y, filled, color)
     {
         public float Width { get; set; } = width;
         public float Height { get; set; } = height;
@@ -558,6 +557,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         public float Width { get; private set; }
         public float Height { get; private set; }
 
+        public string TextContent => _textContent;
+        
+        private Func<string>? _dynamicTextFunc;
+        private string? _lastRenderedText;
+
         private readonly SKTypeface _typeface;
 
         // caches
@@ -570,10 +574,18 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             float verticalPadding = 0.1f, Vector3 color = default,
             HorizontalAlignment horizontal = HorizontalAlignment.Center,
             VerticalAlignment vertical = VerticalAlignment.Center, bool filled = false,
-            object? font = null)
+            object? font = null, Func<string>? dynamicTextFunc = null)
             : base(x, y, filled, color)
         {
-            _textContent = text;
+            if (dynamicTextFunc != null)
+            {
+                _dynamicTextFunc = dynamicTextFunc;
+                _textContent = _dynamicTextFunc();
+            }
+            else
+            {
+                _textContent = text ?? "Empty text";
+            }
 
             FontSize = fontSize;
             LetterPadding = letterPadding;
@@ -591,7 +603,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
 
             _typeface = FontManager.GetTypeface(null, fontKey);
 
-            // compute sizes and build mesh now that _typeface is available
             RecalculateWidthHeight();
             _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
         }
@@ -742,6 +753,32 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
                     globalCharIndex++;
                 }
             }
+        }
+        
+        public override void Update(float dt)
+        {
+            base.Update(dt);
+            if (_dynamicTextFunc == null) return;
+
+            string newText = _dynamicTextFunc();
+            if (newText == _lastRenderedText) return;
+
+            _textContent = newText;
+            _lastRenderedText = newText;
+
+            RecalculateWidthHeight();
+            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
+            _charCache.Clear();
+        }
+        
+        public void SetDynamicText(Func<string> dynamicTextFunc)
+        {
+            _dynamicTextFunc = dynamicTextFunc;
+            _textContent = _dynamicTextFunc();
+            _lastRenderedText = _textContent;
+            RecalculateWidthHeight();
+            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
+            _charCache.Clear();
         }
 
         public override List<Vector2> GetBoundaryVerts()
@@ -1032,6 +1069,190 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         public void SetChildGlobalScaleOverride(Primitive child, float? scale)
         {
             GetSettingsFor(child).GlobalScaleOverride = scale;
+        }
+    }
+    
+    public class Line : Primitive
+    {
+        public float EndX { get; set; }
+        public float EndY { get; set; }
+        public bool Dashed { get; set; }
+        public float DashLength { get; set; } = 0.05f;
+        public float GapLength { get; set; } = 0.03f;
+
+        public Line(float x = 0, float y = 0, float endX = 0.2f, float endY = 0, bool dashed = false,
+            Vector3 color = default)
+            : base(x, y, false, color)
+        {
+            EndX = endX;
+            EndY = endY;
+            Dashed = dashed;
+        }
+
+        public override List<Vector2> GetBoundaryVerts()
+        {
+            var pts = new List<Vector2> { new Vector2(0f, 0f), new Vector2(EndX, EndY) };
+            if (!Dashed) return pts;
+
+            // build dashed segments along the line
+            return BuildDashedPolyline(pts, DashLength, GapLength);
+        }
+
+        private static List<Vector2> BuildDashedPolyline(List<Vector2> poly, float dashLen, float gapLen)
+        {
+            // only single segment here, but generalize to polyline
+            var res = new List<Vector2>();
+            for (int i = 0; i < poly.Count - 1; i++)
+            {
+                var a = poly[i];
+                var b = poly[i + 1];
+                var seg = BuildDashesForSegment(a, b, dashLen, gapLen);
+                if (res.Count > 0 && seg.Count > 0)
+                {
+                    // if last point of res equals first of seg, drop duplicate
+                    if (res[^1] == seg[0]) seg.RemoveAt(0);
+                }
+
+                res.AddRange(seg);
+            }
+
+            return res;
+        }
+
+        private static List<Vector2> BuildDashesForSegment(Vector2 a, Vector2 b, float dashLen, float gapLen)
+        {
+            var dir = b - a;
+            float full = dir.Length;
+            if (full <= 1e-6f) return new List<Vector2> { a, b };
+
+            var ndir = dir / full;
+            var res = new List<Vector2>();
+            float pos = 0f;
+            bool draw = true;
+            while (pos < full)
+            {
+                float len = draw ? MathF.Min(dashLen, full - pos) : MathF.Min(gapLen, full - pos);
+                var p0 = a + ndir * pos;
+                var p1 = a + ndir * (pos + len);
+
+                if (draw)
+                {
+                    // add segment [p0, p1], then insert NaN separator (so renderer treats each dash as a separate segment)
+                    res.Add(p0);
+                    res.Add(p1);
+                    // NaN sentinel:
+                    res.Add(new Vector2(float.NaN, float.NaN));
+                }
+
+                pos += len;
+                draw = !draw;
+            }
+
+            // remove trailing NaN if any
+            if (res.Count > 0 && float.IsNaN(res[^1].X)) res.RemoveAt(res.Count - 1);
+
+            // ensure at least two points if not dashed
+            if (res.Count == 1) res.Add(res[0]);
+            return res;
+        }
+    }
+
+    public class Triangle : Primitive
+    {
+        public Vector2 A { get; set; }
+        public Vector2 B { get; set; }
+        public Vector2 C { get; set; }
+        public bool FilledTriangle { get; set; } = true;
+
+        public Triangle(float x = 0, float y = 0, Vector2? a = null, Vector2? b = null, Vector2? c = null,
+            Vector3 color = default)
+            : base(x, y, true, color)
+        {
+            A = a ?? new Vector2(-0.01f, -0.01f);
+            B = b ?? new Vector2(0.01f, -0.01f);
+            C = c ?? new Vector2(0f, 0.02f);
+            Filled = FilledTriangle;
+        }
+
+        public override List<Vector2> GetBoundaryVerts()
+        {
+            return new List<Vector2> { A, B, C };
+        }
+    }
+
+    public class Plot : Primitive
+    {
+        public Func<float, float> Func { get; set; }
+        public float XMin { get; set; }
+        public float XMax { get; set; }
+        public int Resolution { get; set; } = 300;
+        public bool Dashed { get; set; } = false;
+        public float DashLength { get; set; } = 0.05f;
+        public float GapLength { get; set; } = 0.03f;
+
+        public Plot(Func<float, float> func, float xMin = -1f, float xMax = 1f, int resolution = 300,
+            Vector3 color = default)
+            : base(0, 0, false, color)
+        {
+            Func = func ?? throw new ArgumentNullException(nameof(func));
+            XMin = xMin;
+            XMax = xMax;
+            Resolution = Math.Max(2, resolution);
+        }
+
+        public override List<Vector2> GetBoundaryVerts()
+        {
+            var pts = new List<Vector2>(Resolution + 1);
+            for (int i = 0; i <= Resolution; i++)
+            {
+                float t = i / (float)Resolution;
+                float x = MathHelper.Lerp(XMin, XMax, t);
+                float y = Func(x);
+                pts.Add(new Vector2(x, y));
+            }
+
+            if (!Dashed) return pts;
+            return BuildDashedPolyline(pts, DashLength, GapLength);
+        }
+
+        // reuse the same dash builder used in Line
+        private static List<Vector2> BuildDashedPolyline(List<Vector2> poly, float dashLen, float gapLen)
+        {
+            var res = new List<Vector2>();
+            for (int i = 0; i < poly.Count - 1; i++)
+            {
+                var a = poly[i];
+                var b = poly[i + 1];
+                float segLen = (b - a).Length;
+                if (segLen < 1e-6f)
+                {
+                    // degenerate
+                    res.Add(a);
+                    continue;
+                }
+
+                var dir = (b - a) / segLen;
+                float pos = 0f;
+                bool draw = true;
+                while (pos < segLen)
+                {
+                    float len = draw ? MathF.Min(dashLen, segLen - pos) : MathF.Min(gapLen, segLen - pos);
+                    if (draw)
+                    {
+                        var p0 = a + dir * pos;
+                        var p1 = a + dir * (pos + len);
+                        res.Add(p0);
+                        res.Add(p1);
+                        res.Add(new Vector2(float.NaN, float.NaN));
+                    }
+
+                    pos += len;
+                    draw = !draw;
+                }
+            }
+
+            if (res.Count > 0 && float.IsNaN(res[^1].X)) res.RemoveAt(res.Count - 1);
+            return res;
         }
     }
 }
