@@ -794,4 +794,244 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             return all2;
         }
     }
+    
+    // ------------------ COMPOSITE PRIMITIVE ------------------
+    public class CompositePrimitive : Primitive
+    {
+        // Настройки отдельного ребёнка (персональные overrides)
+        public class ChildSettings
+        {
+            // если true — позиция ребёнка интерпретируется как глобальная (не умножается/не поворачивается композитом)
+            public bool UseGlobalPosition = false;
+
+            // если true — вращение ребёнка интерпретируется как глобальное (не прибавляется rotation композита)
+            public bool UseGlobalRotation = false;
+
+            // если true — масштаб ребёнка интерпретируется как глобальный (не умножается на Scale композита)
+            public bool UseGlobalScale = false;
+
+            // явные override'ы (если заданы, имеют приоритет)
+            public Vector2? GlobalPositionOverride = null;
+            public float? GlobalRotationOverride = null; // radians
+            public float? GlobalScaleOverride = null;
+        }
+
+        private readonly List<Primitive> _children = new List<Primitive>();
+        private readonly List<ChildSettings> _settings = new List<ChildSettings>();
+
+        public IReadOnlyList<Primitive> Children => _children.AsReadOnly();
+
+        public CompositePrimitive(float x = 0f, float y = 0f, bool filled = false, Vector3 color = default)
+            : base(x, y, filled, color)
+        {
+        }
+
+        // Добавление ребёнка (запрет на вложенные CompositePrimitive)
+        public CompositePrimitive Add(Primitive child, ChildSettings? settings = null)
+        {
+            if (child == null) throw new ArgumentNullException(nameof(child));
+            if (child is CompositePrimitive)
+                throw new InvalidOperationException("CompositePrimitive cannot contain another CompositePrimitive.");
+
+            _children.Add(child);
+            _settings.Add(settings ?? new ChildSettings());
+            return this;
+        }
+
+        public bool Remove(Primitive child)
+        {
+            int idx = _children.IndexOf(child);
+            if (idx < 0) return false;
+            _children.RemoveAt(idx);
+            _settings.RemoveAt(idx);
+            return true;
+        }
+
+        public ChildSettings GetSettingsFor(Primitive child)
+        {
+            int idx = _children.IndexOf(child);
+            if (idx < 0) throw new ArgumentException("Child not found in this composite.", nameof(child));
+            return _settings[idx];
+        }
+
+        public void SetSettingsFor(Primitive child, ChildSettings settings)
+        {
+            int idx = _children.IndexOf(child);
+            if (idx < 0) throw new ArgumentException("Child not found in this composite.", nameof(child));
+            _settings[idx] = settings ?? new ChildSettings();
+        }
+
+        // Обновляем composite (его собственные анимации/физику) и детей (их локальные анимации/физику)
+        public override void Update(float dt)
+        {
+            base.Update(dt); // обновит X/Y по Vx/Vy и property-анимации composite'а
+            // обновляем детей — их X/Y находятся в локальных координатах composite
+            foreach (var ch in _children)
+                ch.Update(dt);
+        }
+
+        // GetBoundaryVerts — flatten всех детей в локальные координаты composite,
+        // разделяя каждый примитив NaN-сепаратором (как у базовых примитивов).
+        public override List<Vector2> GetBoundaryVerts()
+        {
+            var all = new List<Vector2>();
+            for (int i = 0; i < _children.Count; i++)
+            {
+                var child = _children[i];
+                var verts = child.GetBoundaryVerts();
+                if (verts == null || verts.Count == 0) continue;
+
+                // Преобразуем вершины ребенка из его локального пространства в composite-local
+                // (аналог Primitive.TransformVerts, но на месте)
+                float cos = MathF.Cos(child.Rotation) * child.Scale;
+                float sin = MathF.Sin(child.Rotation) * child.Scale;
+
+                foreach (var v in verts)
+                {
+                    if (float.IsNaN(v.X) || float.IsNaN(v.Y))
+                    {
+                        all.Add(new Vector2(float.NaN, float.NaN));
+                        continue;
+                    }
+
+                    float tx = v.X * cos - v.Y * sin + child.X;
+                    float ty = v.X * sin + v.Y * cos + child.Y;
+                    all.Add(new Vector2(tx, ty));
+                }
+
+                // разделитель между примитивами (если не последний)
+                if (i < _children.Count - 1)
+                    all.Add(new Vector2(float.NaN, float.NaN));
+            }
+
+            // Если пусто — вернуть пустой список
+            return all;
+        }
+
+        // Render: если морф или custom boundary — используем базовый Render (отрисовка одного контурa).
+        // Иначе — рендерим детей, временно подменяя у них X/Y/Scale/Rotation на "финальные" глобальные,
+        // затем восстанавливаем локальные значения.
+        public override void Render(int program, int vbo, int vao)
+        {
+            // если composite в состоянии морфинга — отрисуем единый контур (base.Render использует this.GetBoundaryVerts())
+            if (ShapeAnim != null || CustomBoundary != null)
+            {
+                base.Render(program, vbo, vao);
+                return;
+            }
+
+            // предварительно вычислим cos/sin композита и масштаб — пригодится
+            float cC = MathF.Cos(Rotation);
+            float sC = MathF.Sin(Rotation);
+            float sScale = Scale;
+
+            for (int i = 0; i < _children.Count; i++)
+            {
+                var child = _children[i];
+                var set = _settings[i];
+
+                // сохранение оригинальных локальных значений
+                float origX = child.X, origY = child.Y, origScale = child.Scale, origRot = child.Rotation;
+
+                // вычисляем финальные значения (глобальные) для передачи в child.Render
+                float finalX, finalY, finalScale, finalRot;
+
+                // --- Позиция ---
+                if (set.GlobalPositionOverride.HasValue)
+                {
+                    var p = set.GlobalPositionOverride.Value;
+                    finalX = p.X;
+                    finalY = p.Y;
+                }
+                else if (set.UseGlobalPosition)
+                {
+                    // child.X/Y уже заданы в глобальном пространстве — не участвуют в transform композита
+                    finalX = child.X;
+                    finalY = child.Y;
+                }
+                else
+                {
+                    // обычная композиция: сначала scale child local position, затем rotate composite, затем translate composite
+                    float lx = child.X * sScale;
+                    float ly = child.Y * sScale;
+                    finalX = lx * cC - ly * sC + X;
+                    finalY = lx * sC + ly * cC + Y;
+                }
+
+                // --- Rotation ---
+                if (set.GlobalRotationOverride.HasValue)
+                {
+                    finalRot = set.GlobalRotationOverride.Value;
+                }
+                else if (set.UseGlobalRotation)
+                {
+                    finalRot = child.Rotation;
+                }
+                else
+                {
+                    finalRot = child.Rotation + Rotation;
+                }
+
+                // --- Scale ---
+                if (set.GlobalScaleOverride.HasValue)
+                {
+                    finalScale = set.GlobalScaleOverride.Value;
+                }
+                else if (set.UseGlobalScale)
+                {
+                    finalScale = child.Scale;
+                }
+                else
+                {
+                    finalScale = child.Scale * Scale;
+                }
+
+                // подменяем временно значения (локальные в коде остаются прежними после восстановления)
+                child.X = finalX;
+                child.Y = finalY;
+                child.Scale = finalScale;
+                child.Rotation = finalRot;
+
+                // рендерим ребёнка (он сам проверит шейдерные униформы и отрисует всё корректно)
+                child.Render(program, vbo, vao);
+
+                // восстанавливаем
+                child.X = origX;
+                child.Y = origY;
+                child.Scale = origScale;
+                child.Rotation = origRot;
+            }
+        }
+
+        // Простейшие вспомогательные методы для удобства
+        public void SetChildUseGlobalRotation(Primitive child, bool useGlobal)
+        {
+            GetSettingsFor(child).UseGlobalRotation = useGlobal;
+        }
+
+        public void SetChildUseGlobalPosition(Primitive child, bool useGlobal)
+        {
+            GetSettingsFor(child).UseGlobalPosition = useGlobal;
+        }
+
+        public void SetChildUseGlobalScale(Primitive child, bool useGlobal)
+        {
+            GetSettingsFor(child).UseGlobalScale = useGlobal;
+        }
+
+        public void SetChildGlobalRotationOverride(Primitive child, float? radians)
+        {
+            GetSettingsFor(child).GlobalRotationOverride = radians;
+        }
+
+        public void SetChildGlobalPositionOverride(Primitive child, Vector2? pos)
+        {
+            GetSettingsFor(child).GlobalPositionOverride = pos;
+        }
+
+        public void SetChildGlobalScaleOverride(Primitive child, float? scale)
+        {
+            GetSettingsFor(child).GlobalScaleOverride = scale;
+        }
+    }
 }
