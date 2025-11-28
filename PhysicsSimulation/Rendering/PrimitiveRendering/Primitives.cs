@@ -513,6 +513,116 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         }
     }
 
+    public class Polygon : Primitive
+    {
+        public List<Vector2> Points { get; private set; } = new();
+        public bool Closed { get; set; } = true;
+
+        // --- Dash parameters ---
+        public bool DashEnabled { get; set; } = false;
+        public float DashOn { get; private set; } = 0.05f; // длина штриха
+        public float DashOff { get; private set; } = 0.03f; // длина промежутка
+        public float DashPhase { get; set; } = 0f; // смещение для анимации
+
+        public Polygon(IEnumerable<Vector2>? points = null, bool closed = true, bool filled = false, Vector3 color = default)
+            : base(0f, 0f, filled, color)
+        {
+            if (points != null) Points.AddRange(points);
+            Closed = closed;
+        }
+
+        public void SetPoints(IEnumerable<Vector2> points)
+        {
+            Points.Clear();
+            Points.AddRange(points);
+        }
+
+        public override List<Vector2> GetBoundaryVerts()
+        {
+            if (!DashEnabled) return Closed ? new List<Vector2>(Points) : new List<Vector2>(Points);
+
+            return BuildDashedPolygon();
+        }
+
+        private List<Vector2> BuildDashedPolygon()
+        {
+            var result = new List<Vector2>();
+            int count = Points.Count;
+            if (count < 2) return result;
+
+            for (int i = 0; i < count; i++)
+            {
+                Vector2 start = Points[i];
+                Vector2 end = Points[(i + 1) % count];
+                if (!Closed && i == count - 1) break;
+
+                var segment = BuildDashesForSegment(start, end, DashOn, DashOff, DashPhase);
+                if (result.Count > 0 && segment.Count > 0 && result[^1] == segment[0])
+                    segment.RemoveAt(0);
+
+                result.AddRange(segment);
+            }
+
+            return result;
+        }
+
+        private static List<Vector2> BuildDashesForSegment(Vector2 a, Vector2 b, float dashOn, float dashOff,
+            float phase)
+        {
+            var res = new List<Vector2>();
+            var dir = b - a;
+            float segLen = dir.Length;
+            if (segLen < 1e-6f) return new List<Vector2> { a, b };
+
+            var ndir = dir / segLen;
+            float pos = -phase;
+            bool draw = true;
+
+            while (pos < segLen)
+            {
+                float len = draw ? dashOn : dashOff;
+                if (pos + len > segLen) len = segLen - pos;
+
+                if (len > 1e-6f && draw)
+                {
+                    var p0 = a + ndir * MathF.Max(pos, 0f);
+                    var p1 = a + ndir * MathF.Min(pos + len, segLen);
+                    res.Add(p0);
+                    res.Add(p1);
+                    res.Add(new Vector2(float.NaN, float.NaN)); // NaN разделитель
+                }
+
+                pos += len;
+                draw = !draw;
+            }
+
+            if (res.Count > 0 && float.IsNaN(res[^1].X)) res.RemoveAt(res.Count - 1);
+
+            return res;
+        }
+
+        public Primitive AnimateDash(bool enable, float targetDashOn = 0.05f, float targetDashOff = 0.03f,
+            float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            ScheduleOrExecute(() =>
+            {
+                DashEnabled = true;
+                if (enable)
+                {
+                    Animate(() => DashOn, v => DashOn = v, targetDashOn, duration, ease);
+                    Animate(() => DashOff, v => DashOff = v, targetDashOff, duration, ease);
+                }
+                else
+                {
+                    Animate(() => DashOn, v => DashOn = v, 0f, duration, ease);
+                    Animate(() => DashOff, v => DashOff = v, 0f, duration, ease);
+                    Animate(_ => { DashEnabled = false; }, 0f, 0f, 0f);
+                }
+            });
+            return this;
+        }
+    }
+
     public class Rectangle(
         float x = 0f,
         float y = 0f,
