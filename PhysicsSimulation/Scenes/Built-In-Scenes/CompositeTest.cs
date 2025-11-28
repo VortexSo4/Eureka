@@ -88,12 +88,6 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             Add(graphComposite.Draw());
             Wait(1.5f);
 
-            // Сделать график пунктирным
-            plot.Dashed = true;
-            plot.DashLength = 0.02f;
-            plot.GapLength = 0.01f;
-            Wait(1.5f);
-
             // --- БЕНЧМАРК: несколько текстов с динамическим обновлением ---
             var dynamicText = new Text("Counter: 0", 0f, 0f, 0.08f);
             int counter = 0;

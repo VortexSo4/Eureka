@@ -12,11 +12,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
 
         /// <param name="endX">локальный end x (от начала в локальных координатах)</param>
         public VectorPrimitive(float x = 0f, float y = 0f, float endX = 0.3f, float endY = 0f,
-            Vector3? color = null, bool dashed = false, bool showMagnitude = false, float arrowSize = 0.04f)
+            Vector3? color = null, bool showMagnitude = false, float arrowSize = 0.04f)
             : base(x, y)
         {
             var c = color ?? Vector3.One;
-            Shaft = new Line(0, 0, endX, endY, dashed, c) { LineWidth = 2f };
+            Shaft = new Line(x1: endX, y1: endY, color: c) { LineWidth = 2f };
             Add(Shaft);
 
             // arrowhead: small triangle positioned at end, pointing along shaft
@@ -43,22 +43,20 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             var b = new Vector2(-size, size * 0.6f);
             var c = new Vector2(-size, -size * 0.6f);
 
-            var tri = new Triangle(endX, endY, a, b, c, color) { Filled = true };
+            var tri = new Triangle(endX, endY, a, b, c, color: color)
+            {
+                Filled = true,
+                Rotation = ang
+            };
 
-            // rotate triangle around its local origin by ang — easiest: set triangle.Rotation (inherited)
-            tri.Rotation = ang;
             return tri;
         }
 
         /// <summary>
         /// Update the vector end position — reconfigure shaft and arrowhead (and label position).
         /// </summary>
-        public void SetEnd(float endX, float endY, bool dashed = false)
+        public void SetEnd(float endX, float endY)
         {
-            Shaft.EndX = endX;
-            Shaft.EndY = endY;
-            Shaft.Dashed = dashed;
-
             // reposition arrow
             ArrowHead.X = endX;
             ArrowHead.Y = endY;
@@ -100,19 +98,19 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         private void BuildAxes()
         {
             // X axis
-            var xAxis = new Line(0, 0, Length, 0, false, ColorAxis) { LineWidth = 2f };
+            var xAxis = new Line(0, 0, Length, 0, ColorAxis) { LineWidth = 2f };
             Add(xAxis);
 
             // ticks along X
             for (float t = -Length; t <= Length; t += TickSpacing)
             {
                 // skip origin tick heavy (we'll keep it)
-                var tick = new Line(t, 0, t, 0.04f, false, ColorAxis) { LineWidth = 1f };
+                var tick = new Line(t, 0, t, 0.04f, ColorAxis) { LineWidth = 1f };
                 Add(tick);
 
                 if (ShowGrid)
                 {
-                    var gl = new Line(t, -Length, t, Length, false, new Vector3(0.85f, 0.85f, 0.85f))
+                    var gl = new Line(t, -Length, t, Length, new Vector3(0.85f, 0.85f, 0.85f))
                         { LineWidth = 1f };
                     gridLines.Add(gl);
                     Add(gl);
@@ -126,17 +124,17 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             if (AxisAmount >= 2)
             {
                 // Y axis
-                var yAxis = new Line(0, 0, 0, Length, false, ColorAxis) { LineWidth = 2f };
+                var yAxis = new Line(0, 0, 0, Length, ColorAxis) { LineWidth = 2f };
                 Add(yAxis);
 
                 for (float t = -Length; t <= Length; t += TickSpacing)
                 {
-                    var tick = new Line(0, t, 0.04f, t, false, ColorAxis) { LineWidth = 1f };
+                    var tick = new Line(0, t, 0.04f, t, ColorAxis) { LineWidth = 1f };
                     Add(tick);
 
                     if (ShowGrid)
                     {
-                        var gl = new Line(-Length, t, Length, t, false, new Vector3(0.85f, 0.85f, 0.85f))
+                        var gl = new Line(-Length, t, Length, t, new Vector3(0.85f, 0.85f, 0.85f))
                             { LineWidth = 1f };
                         gridLines.Add(gl);
                         Add(gl);
@@ -145,18 +143,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
                     var label = new Text($"{t:F1}", -0.06f, t, 0.06f, color: ColorAxis);
                     Add(label);
                 }
-            }
-        }
-
-        public void SetDashed(bool dashed, float dashLen = 0.05f, float gapLen = 0.03f)
-        {
-            Dashed = dashed;
-            // set dashed on all child Line elements
-            foreach (var child in Children.OfType<Line>())
-            {
-                child.Dashed = dashed;
-                child.DashLength = dashLen;
-                child.GapLength = gapLen;
             }
         }
     }
@@ -181,19 +167,19 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             var comp = new CompositePrimitive(0f, 0f);
 
             // X axis line (centered at composite origin)
-            var xAxis = new Line(0f, 0f, axisLength, 0f, false, axisColor) { LineWidth = 2f };
+            var xAxis = new Line(0f, 0f, axisLength, 0f, axisColor) { LineWidth = 2f };
             comp.Add(xAxis);
 
             // X ticks, labels and optional vertical grid lines
             for (float t = -axisLength; t <= axisLength + 1e-6f; t += tickSpacing)
             {
                 // tick: we create a small vertical tick at x = t
-                var tick = new Line(t, 0f, t, 0.04f, false, axisColor) { LineWidth = 1f };
+                var tick = new Line(t, 0f, t, 0.04f, axisColor) { LineWidth = 1f };
                 comp.Add(tick);
 
                 if (showGrid)
                 {
-                    var gl = new Line(t, -axisLength, t, axisLength, false, gridColor) { LineWidth = 1f };
+                    var gl = new Line(t, -axisLength, t, axisLength, gridColor) { LineWidth = 1f };
                     comp.Add(gl);
                 }
 
@@ -204,18 +190,18 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             if (axisAmount >= 2)
             {
                 // Y axis line
-                var yAxis = new Line(0f, 0f, 0f, axisLength, false, axisColor) { LineWidth = 2f };
+                var yAxis = new Line(0f, 0f, 0f, axisLength, axisColor) { LineWidth = 2f };
                 comp.Add(yAxis);
 
                 // Y ticks, labels and optional horizontal grid lines
                 for (float t = -axisLength; t <= axisLength + 1e-6f; t += tickSpacing)
                 {
-                    var tick = new Line(0f, t, 0.04f, t, false, axisColor) { LineWidth = 1f };
+                    var tick = new Line(0f, t, 0.04f, t, axisColor) { LineWidth = 1f };
                     comp.Add(tick);
 
                     if (showGrid)
                     {
-                        var gl = new Line(-axisLength, t, axisLength, t, false, gridColor) { LineWidth = 1f };
+                        var gl = new Line(-axisLength, t, axisLength, t, gridColor) { LineWidth = 1f };
                         comp.Add(gl);
                     }
 

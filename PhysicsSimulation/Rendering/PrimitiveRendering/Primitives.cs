@@ -40,6 +40,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         public Vector3 Color { get; set; } = color == default ? Vector3.One : color;
         public float LineWidth { get; set; } = 1f;
         public bool Filled { get; set; } = filled;
+        public bool Closed { get; set; } = true;
 
         // simple physics
         public float Vx { get; set; } = vx;
@@ -59,7 +60,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         public override void Update(float dt)
         {
             // physics
-            X += Vx * dt; Y += Vy * dt;
+            X += Vx * dt;
+            Y += Vy * dt;
             if (Math.Abs(X) > 1f) Vx = -Vx;
             if (Math.Abs(Y) > 1f) Vy = -Vy;
 
@@ -115,91 +117,92 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         }
 
         public override void Render(int program, int vbo, int vao)
-{
-    var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
-    if (source == null || source.Count == 0) return;
-
-    // Разбиваем source на сегменты по разделителю (NaN, NaN).
-    var segments = new List<List<Vector2>>();
-    var current = new List<Vector2>();
-    foreach (var p in source)
-    {
-        if (float.IsNaN(p.X) || float.IsNaN(p.Y))
         {
-            if (current.Count > 0)
+            var source = ShapeAnim != null ? BoundaryVerts : CustomBoundary ?? GetBoundaryVerts();
+            if (source == null || source.Count == 0) return;
+
+            // Разбиваем source на сегменты по разделителю (NaN, NaN).
+            var segments = new List<List<Vector2>>();
+            var current = new List<Vector2>();
+            foreach (var p in source)
             {
-                segments.Add(current);
-                current = [];
+                if (float.IsNaN(p.X) || float.IsNaN(p.Y))
+                {
+                    if (current.Count > 0)
+                    {
+                        segments.Add(current);
+                        current = [];
+                    }
+                    // пропускаем разделитель
+                }
+                else
+                {
+                    current.Add(p);
+                }
             }
-            // пропускаем разделитель
+
+            if (current.Count > 0) segments.Add(current);
+
+            // --- Предварительно узнаем, поддерживает ли шейдер uniform-трансформации ---
+            GL.UseProgram(program);
+            int locUTranslate = GL.GetUniformLocation(program, "u_translate");
+            int locUCos = GL.GetUniformLocation(program, "u_cos");
+            int locUSin = GL.GetUniformLocation(program, "u_sin");
+            int locUScale = GL.GetUniformLocation(program, "u_scale");
+            int locAspect = GL.GetUniformLocation(program, "aspectRatio");
+
+            bool shaderHasTransform = locUTranslate >= 0 && locUCos >= 0 && locUSin >= 0 && locUScale >= 0;
+
+            // если шейдер ожидает aspectRatio — посчитаем и установим
+            if (locAspect >= 0)
+            {
+                // Получаем текущий вьюпорт (x,y,w,h)
+                var vp = new int[4];
+                GL.GetInteger(GetPName.Viewport, vp);
+                float aspect = 1f;
+                if (vp[2] != 0) aspect = vp[3] / (float)vp[2]; // height / width — так, как ты использовал раньше
+                GL.Uniform1(locAspect, aspect);
+            }
+
+            foreach (var seg in segments)
+            {
+                if (seg.Count == 0) continue;
+
+                List<Vector3> drawVerts;
+
+                if (shaderHasTransform)
+                {
+                    // Отправляем локальные вершины (без CPU-transform), и устанавливаем униформы для трансформации
+                    // 1) подготовим verts как Vector3 (z = 0)
+                    var raw = seg.Select(v => new Vector3(v.X, v.Y, 0f)).ToList();
+
+                    // 2) установим униформы трансформации для этого примитива
+                    // translate = (X, Y)
+                    GL.Uniform2(locUTranslate, X, Y);
+                    // cos, sin от Rotation и Scale
+                    float c = MathF.Cos(Rotation);
+                    float s = MathF.Sin(Rotation);
+                    GL.Uniform1(locUCos, c);
+                    GL.Uniform1(locUSin, s);
+                    GL.Uniform1(locUScale, Scale);
+
+                    // 3) подготовим drawVerts (GPU применит трансформацию)
+                    drawVerts = PrepareDrawVerts(raw);
+                }
+                else
+                {
+                    // Старый путь — применяем трансформы на CPU
+                    var transformed = TransformVerts(seg);
+                    drawVerts = PrepareDrawVerts(transformed);
+                }
+
+                // И наконец рендерим (RenderVerts сам загружает VBO/VAO и отрисовывает)
+                RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
+            }
+
+            // отвязываемся от программы (чтобы не влиял на следующий draw)
+            GL.UseProgram(0);
         }
-        else
-        {
-            current.Add(p);
-        }
-    }
-    if (current.Count > 0) segments.Add(current);
-
-    // --- Предварительно узнаем, поддерживает ли шейдер uniform-трансформации ---
-    GL.UseProgram(program);
-    int locUTranslate = GL.GetUniformLocation(program, "u_translate");
-    int locUCos = GL.GetUniformLocation(program, "u_cos");
-    int locUSin = GL.GetUniformLocation(program, "u_sin");
-    int locUScale = GL.GetUniformLocation(program, "u_scale");
-    int locAspect = GL.GetUniformLocation(program, "aspectRatio");
-
-    bool shaderHasTransform = locUTranslate >= 0 && locUCos >= 0 && locUSin >= 0 && locUScale >= 0;
-
-    // если шейдер ожидает aspectRatio — посчитаем и установим
-    if (locAspect >= 0)
-    {
-        // Получаем текущий вьюпорт (x,y,w,h)
-        var vp = new int[4];
-        GL.GetInteger(GetPName.Viewport, vp);
-        float aspect = 1f;
-        if (vp[2] != 0) aspect = vp[3] / (float)vp[2]; // height / width — так, как ты использовал раньше
-        GL.Uniform1(locAspect, aspect);
-    }
-
-    foreach (var seg in segments)
-    {
-        if (seg.Count == 0) continue;
-
-        List<Vector3> drawVerts;
-
-        if (shaderHasTransform)
-        {
-            // Отправляем локальные вершины (без CPU-transform), и устанавливаем униформы для трансформации
-            // 1) подготовим verts как Vector3 (z = 0)
-            var raw = seg.Select(v => new Vector3(v.X, v.Y, 0f)).ToList();
-
-            // 2) установим униформы трансформации для этого примитива
-            // translate = (X, Y)
-            GL.Uniform2(locUTranslate, X, Y);
-            // cos, sin от Rotation и Scale
-            float c = MathF.Cos(Rotation);
-            float s = MathF.Sin(Rotation);
-            GL.Uniform1(locUCos, c);
-            GL.Uniform1(locUSin, s);
-            GL.Uniform1(locUScale, Scale);
-
-            // 3) подготовим drawVerts (GPU применит трансформацию)
-            drawVerts = PrepareDrawVerts(raw, Filled);
-        }
-        else
-        {
-            // Старый путь — применяем трансформы на CPU
-            var transformed = TransformVerts(seg);
-            drawVerts = PrepareDrawVerts(transformed, Filled);
-        }
-
-        // И наконец рендерим (RenderVerts сам загружает VBO/VAO и отрисовывает)
-        RenderVerts(drawVerts, Filled, program, vbo, Color, LineWidth);
-    }
-
-    // отвязываемся от программы (чтобы не влиял на следующий draw)
-    GL.UseProgram(0);
-}
 
 
         protected virtual List<Vector3> TransformVerts(List<Vector2> verts)
@@ -212,13 +215,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             return outv;
         }
 
-        protected static List<Vector3> PrepareDrawVerts(List<Vector3> verts, bool filled)
+        protected List<Vector3> PrepareDrawVerts(List<Vector3> verts)
         {
             if (verts.Count < 2) return [];
 
             // Ensure the contour is closed
             var closedVerts = new List<Vector3>(verts);
-            if (verts[0] != verts[^1])
+            if (Closed && verts[0] != verts[^1])
                 closedVerts.Add(verts[0]);
 
             if (filled)
@@ -229,16 +232,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
                 fan.AddRange(closedVerts);
                 return fan;
             }
-            else
-            {
-                return closedVerts;
-            }
+            return closedVerts;
         }
 
         // reuse VAO per VBO
         private static readonly Dictionary<int, int> VboToVao = new();
 
-        protected static void RenderVerts(List<Vector3> verts, bool filled, int program, int vbo, Vector3 color, float lineWidth)
+        protected static void RenderVerts(List<Vector3> verts, bool filled, int program, int vbo, Vector3 color,
+            float lineWidth)
         {
             if (verts.Count == 0) return;
 
@@ -269,7 +270,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         }
 
         // --- Convenience animation helpers (delegate-based) ---
-        public Primitive Animate(Action<float> setter, float start, float target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        public Primitive Animate(Action<float> setter, float start, float target, float duration = 1f,
+            EaseType ease = EaseType.EaseInOut)
         {
             ScheduleOrExecute(() =>
             {
@@ -282,9 +284,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             });
             return this;
         }
-        
+
         // New: lazy-start overload — computes start value when scheduled/executed
-        public Primitive Animate(Func<float> startGetter, Action<float> setter, float target, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        public Primitive Animate(Func<float> startGetter, Action<float> setter, float target, float duration = 1f,
+            EaseType ease = EaseType.EaseInOut)
         {
             ScheduleOrExecute(() =>
             {
@@ -340,7 +343,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             return this;
         }
 
-        public Primitive SetFilled(bool filled, float duration = 0f) { Filled = filled; return this; }
+        public Primitive SetFilled(bool filled, float duration = 0f)
+        {
+            Filled = filled;
+            return this;
+        }
 
         public Primitive Draw(float duration = 1f, EaseType ease = EaseType.EaseInOut)
         {
@@ -482,467 +489,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         }
     }
 
-    // ------------------ PRIMITIVES ------------------
-    public class Circle : Primitive
-    {
-        public float Radius { get; set; }
-        public int Segments { get; set; }
-
-        public Circle(
-            float x = 0f,
-            float y = 0f,
-            float radius = 0.1f,
-            bool filled = false,
-            Vector3 color = default,
-            int segments = 80)
-            : base(x, y, filled, color)
-        {
-            Radius = radius;
-            Segments = segments;
-        }
-
-        public override List<Vector2> GetBoundaryVerts()
-        {
-            var list = new List<Vector2>(Segments);
-            for (int i = 0; i < Segments; i++)
-            {
-                float a = 2 * MathF.PI * i / Segments;
-                list.Add(new Vector2(Radius * MathF.Cos(a), Radius * MathF.Sin(a)));
-            }
-            return list;
-        }
-    }
-
-    public class Polygon : Primitive
-    {
-        public List<Vector2> Points { get; private set; } = new();
-        public bool Closed { get; set; } = true;
-
-        // --- Dash parameters ---
-        public bool DashEnabled { get; set; } = false;
-        public float DashOn { get; private set; } = 0.05f; // длина штриха
-        public float DashOff { get; private set; } = 0.03f; // длина промежутка
-        public float DashPhase { get; set; } = 0f; // смещение для анимации
-
-        public Polygon(IEnumerable<Vector2>? points = null, bool closed = true, bool filled = false, Vector3 color = default)
-            : base(0f, 0f, filled, color)
-        {
-            if (points != null) Points.AddRange(points);
-            Closed = closed;
-        }
-
-        public void SetPoints(IEnumerable<Vector2> points)
-        {
-            Points.Clear();
-            Points.AddRange(points);
-        }
-
-        public override List<Vector2> GetBoundaryVerts()
-        {
-            if (!DashEnabled) return Closed ? new List<Vector2>(Points) : new List<Vector2>(Points);
-
-            return BuildDashedPolygon();
-        }
-
-        private List<Vector2> BuildDashedPolygon()
-        {
-            var result = new List<Vector2>();
-            int count = Points.Count;
-            if (count < 2) return result;
-
-            for (int i = 0; i < count; i++)
-            {
-                Vector2 start = Points[i];
-                Vector2 end = Points[(i + 1) % count];
-                if (!Closed && i == count - 1) break;
-
-                var segment = BuildDashesForSegment(start, end, DashOn, DashOff, DashPhase);
-                if (result.Count > 0 && segment.Count > 0 && result[^1] == segment[0])
-                    segment.RemoveAt(0);
-
-                result.AddRange(segment);
-            }
-
-            return result;
-        }
-
-        private static List<Vector2> BuildDashesForSegment(Vector2 a, Vector2 b, float dashOn, float dashOff,
-            float phase)
-        {
-            var res = new List<Vector2>();
-            var dir = b - a;
-            float segLen = dir.Length;
-            if (segLen < 1e-6f) return new List<Vector2> { a, b };
-
-            var ndir = dir / segLen;
-            float pos = -phase;
-            bool draw = true;
-
-            while (pos < segLen)
-            {
-                float len = draw ? dashOn : dashOff;
-                if (pos + len > segLen) len = segLen - pos;
-
-                if (len > 1e-6f && draw)
-                {
-                    var p0 = a + ndir * MathF.Max(pos, 0f);
-                    var p1 = a + ndir * MathF.Min(pos + len, segLen);
-                    res.Add(p0);
-                    res.Add(p1);
-                    res.Add(new Vector2(float.NaN, float.NaN)); // NaN разделитель
-                }
-
-                pos += len;
-                draw = !draw;
-            }
-
-            if (res.Count > 0 && float.IsNaN(res[^1].X)) res.RemoveAt(res.Count - 1);
-
-            return res;
-        }
-
-        public Primitive AnimateDash(bool enable, float targetDashOn = 0.05f, float targetDashOff = 0.03f,
-            float duration = 1f, EaseType ease = EaseType.EaseInOut)
-        {
-            ScheduleOrExecute(() =>
-            {
-                DashEnabled = true;
-                if (enable)
-                {
-                    Animate(() => DashOn, v => DashOn = v, targetDashOn, duration, ease);
-                    Animate(() => DashOff, v => DashOff = v, targetDashOff, duration, ease);
-                }
-                else
-                {
-                    Animate(() => DashOn, v => DashOn = v, 0f, duration, ease);
-                    Animate(() => DashOff, v => DashOff = v, 0f, duration, ease);
-                    Animate(_ => { DashEnabled = false; }, 0f, 0f, 0f);
-                }
-            });
-            return this;
-        }
-    }
-
-    public class Rectangle(
-        float x = 0f,
-        float y = 0f,
-        float width = 0.2f,
-        float height = 0.2f,
-        bool filled = false,
-        Vector3 color = default) : Primitive(x, y, filled, color)
-    {
-        public float Width { get; set; } = width;
-        public float Height { get; set; } = height;
-
-        public override List<Vector2> GetBoundaryVerts()
-        {
-            float hw = Width / 2, hh = Height / 2;
-            return
-            [
-                new Vector2(-hw, -hh),
-                new Vector2(hw, -hh),
-                new Vector2(hw, hh),
-                new Vector2(-hw, hh)
-            ];
-        }
-    }
-
-    // ------------------ TEXT (with per-char caching) ------------------
-    public class Text : Primitive
-    {
-        public object? Font { get; set; }
-        public enum HorizontalAlignment { Left, Center, Right }
-        public enum VerticalAlignment { Top, Center, Bottom }
-
-        private string _textContent;
-
-        public float FontSize { get; set; }
-
-        public float LetterPadding { get; set; }
-        public float VerticalPadding { get; set; }
-
-        public HorizontalAlignment Horizontal { get; set; }
-        public VerticalAlignment Vertical { get; set; }
-
-        public float Width { get; private set; }
-        public float Height { get; private set; }
-
-        public string TextContent => _textContent;
-        
-        private Func<string>? _dynamicTextFunc;
-        private string? _lastRenderedText;
-
-        private readonly SKTypeface _typeface;
-
-        // caches
-        private readonly Dictionary<int, CachedChar> _charCache = new();
-
-        // NEW: mesh
-        private TextMesh? _mesh;
-
-        public Text(string text = "Empty text", float x = 0f, float y = 0f, float fontSize = 0.1f, float letterPadding = 0.05f,
-            float verticalPadding = 0.1f, Vector3 color = default,
-            HorizontalAlignment horizontal = HorizontalAlignment.Center,
-            VerticalAlignment vertical = VerticalAlignment.Center, bool filled = false,
-            object? font = null, Func<string>? dynamicTextFunc = null)
-            : base(x, y, filled, color)
-        {
-            if (dynamicTextFunc != null)
-            {
-                _dynamicTextFunc = dynamicTextFunc;
-                _textContent = _dynamicTextFunc();
-            }
-            else
-            {
-                _textContent = text ?? "Empty text";
-            }
-
-            FontSize = fontSize;
-            LetterPadding = letterPadding;
-            VerticalPadding = verticalPadding;
-            Horizontal = horizontal;
-            Vertical = vertical;
-            Font = font ?? FontFamily.Arial;
-
-            string fontKey = Font switch
-            {
-                FontFamily ff => FontManager.GetNameFromFamily(ff),
-                string s => s,
-                _ => "Arial"
-            };
-
-            _typeface = FontManager.GetTypeface(null, fontKey);
-
-            RecalculateWidthHeight();
-            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
-        }
-
-        private void RecalculateWidthHeight()
-        {
-            var lines = _textContent.Split(["\r\n", "\n"], StringSplitOptions.None);
-            Width = 0f;
-            foreach (var line in lines)
-            {
-                float lineWidth = 0f;
-                for (int i = 0; i < line.Length; i++)
-                {
-                    char c = line[i];
-                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize, _typeface);
-                    if (i < line.Length - 1)
-                        lineWidth += LetterPadding * FontSize;
-                }
-                if (lineWidth > Width)
-                    Width = lineWidth;
-            }
-
-            Height = lines.Length * FontSize + (lines.Length > 0 ? (lines.Length - 1) * (VerticalPadding * FontSize) : 0f);
-        }
-
-        private class CachedChar
-        {
-            public char C;
-            public float LastParentX;
-            public float LastParentY;
-            public float LastParentScale;
-            public float LastParentRotation;
-            public float LastOffsetX;
-            public float LastOffsetY;
-            public List<List<Vector3>> CachedContours = [];
-        }
-
-        // keep these helpers for compatibility (may be used elsewhere)
-        private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, float offsetX,
-            float offsetY, int program, int vbo)
-        {
-            if (contours.Count == 0) return;
-
-            int key = index;
-            if (!_charCache.TryGetValue(key, out var cache))
-            {
-                cache = new CachedChar { C = c, CachedContours = [] };
-                _charCache[key] = cache;
-            }
-
-            bool dirty =
-                cache.C != c ||
-                !Helpers.AlmostEqual(cache.LastParentX, X) ||
-                !Helpers.AlmostEqual(cache.LastParentY, Y) ||
-                !Helpers.AlmostEqual(cache.LastParentScale, Scale) ||
-                !Helpers.AlmostEqual(cache.LastParentRotation, Rotation) ||
-                !Helpers.AlmostEqual(cache.LastOffsetX, offsetX) ||
-                !Helpers.AlmostEqual(cache.LastOffsetY, offsetY);
-
-            if (dirty)
-            {
-                cache.CachedContours.Clear();
-                float cos = MathF.Cos(Rotation) * Scale;
-                float sin = MathF.Sin(Rotation) * Scale;
-
-                foreach (var contour in contours)
-                {
-                    var transformed = new List<Vector3>(contour.Count);
-                    foreach (var v in contour)
-                        transformed.Add(new Vector3(v.X * cos - v.Y * sin, v.X * sin + v.Y * cos, 0f));
-                    cache.CachedContours.Add(transformed);
-                }
-
-                cache.C = c;
-                cache.LastParentX = X;
-                cache.LastParentY = Y;
-                cache.LastParentScale = Scale;
-                cache.LastParentRotation = Rotation;
-                cache.LastOffsetX = offsetX;
-                cache.LastOffsetY = offsetY;
-            }
-
-            foreach (var contour in cache.CachedContours)
-            {
-                if (contour.Count < 2) continue;
-                var finalContours = contour.Select(v => new Vector3(v.X + X, v.Y + Y, v.Z)).ToList();
-                // This call may be replaced by mesh rendering — kept for compatibility
-                RenderVerts(finalContours, Filled, program, vbo, Color, LineWidth);
-            }
-        }
-
-        public override void Render(int program, int vbo, int vao)
-        {
-            if (CustomBoundary != null || ShapeAnim != null)
-            {
-                base.Render(program, vbo, vao);
-                return;
-            }
-
-            // If mesh exists, use it (fast path)
-            if (_mesh != null)
-            {
-                _mesh.Render(program, X, Y, Scale, Rotation, Color, LineWidth);
-                return;
-            }
-
-            // Fallback to original per-char rendering (if mesh is missing)
-            var lines = _textContent.Replace("\r", "").Split('\n');
-
-            float step = FontSize + VerticalPadding * FontSize;
-            float line0YRelativeToCenter = Height / 2f - FontSize / 2f;
-
-            float centerOffset = Vertical switch
-            {
-                VerticalAlignment.Top => Height / 2f,
-                VerticalAlignment.Bottom => -Height / 2f,
-                _ => 0f
-            };
-
-            int globalCharIndex = 0;
-
-            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
-            {
-                var line = lines[lineIdx];
-                float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
-
-                float lineWidth = 0f;
-                for (int i = 0; i < line.Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize, _typeface) +
-                                 (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
-
-                float offsetXLocal = Horizontal switch
-                {
-                    HorizontalAlignment.Left => 0f,
-                    HorizontalAlignment.Right => -lineWidth,
-                    _ => -lineWidth / 2f
-                };
-
-                for (int i = 0; i < line.Length; i++)
-                {
-                    char c = line[i];
-                    var contours = CharMap.GetCharContours(c, offsetXLocal, cursorY, FontSize, _typeface);
-                    RenderContoursWithCharCache(c, globalCharIndex, contours, offsetXLocal, cursorY, program, vbo);
-
-                    float adv = CharMap.GetGlyphAdvance(c, FontSize, _typeface);
-                    offsetXLocal += adv + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
-
-                    globalCharIndex++;
-                }
-            }
-        }
-        
-        public override void Update(float dt)
-        {
-            base.Update(dt);
-            if (_dynamicTextFunc == null) return;
-
-            string newText = _dynamicTextFunc();
-            if (newText == _lastRenderedText) return;
-
-            _textContent = newText;
-            _lastRenderedText = newText;
-
-            RecalculateWidthHeight();
-            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
-            _charCache.Clear();
-        }
-        
-        public void SetDynamicText(Func<string> dynamicTextFunc)
-        {
-            _dynamicTextFunc = dynamicTextFunc;
-            _textContent = _dynamicTextFunc();
-            _lastRenderedText = _textContent;
-            RecalculateWidthHeight();
-            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled, Horizontal, Vertical);
-            _charCache.Clear();
-        }
-
-        public override List<Vector2> GetBoundaryVerts()
-        {
-            var all2 = new List<Vector2>();
-            var lines = _textContent.Replace("\r", "").Split('\n');
-
-            float step = FontSize + VerticalPadding * FontSize;
-            float line0YRelativeToCenter = Height / 2f - FontSize / 2f;
-
-            float centerOffset = Vertical switch
-            {
-                VerticalAlignment.Top => Height / 2f,
-                VerticalAlignment.Bottom => -Height / 2f,
-                _ => 0f
-            };
-
-            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
-            {
-                var line = lines[lineIdx];
-                float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
-
-                float lineWidth = 0f;
-                for (int i = 0; i < line.Length; i++)
-                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize, _typeface) +
-                                 (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
-
-                float offsetXLocal = Horizontal switch
-                {
-                    HorizontalAlignment.Left => 0f,
-                    HorizontalAlignment.Right => -lineWidth,
-                    _ => -lineWidth / 2f
-                };
-
-                for (int i = 0; i < line.Length; i++)
-                {
-                    char c = line[i];
-                    var contours = CharMap.GetCharContours(c, offsetXLocal, cursorY, FontSize, _typeface);
-                    foreach (var contour in contours)
-                    {
-                        all2.AddRange(contour);
-                        all2.Add(new Vector2(float.NaN, float.NaN));
-                    }
-
-                    offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize, _typeface) + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
-                }
-            }
-
-            if (all2.Count > 0 && float.IsNaN(all2[^1].X)) all2.RemoveAt(all2.Count - 1);
-            return all2;
-        }
-    }
-    
-    // ------------------ COMPOSITE PRIMITIVE ------------------
     public class CompositePrimitive : Primitive
     {
         // Настройки отдельного ребёнка (персональные overrides)
@@ -963,8 +509,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             public float? GlobalScaleOverride = null;
         }
 
-        private readonly List<Primitive> _children = new List<Primitive>();
-        private readonly List<ChildSettings> _settings = new List<ChildSettings>();
+        private readonly List<Primitive> _children = [];
+        private readonly List<ChildSettings> _settings = [];
 
         public IReadOnlyList<Primitive> Children => _children.AsReadOnly();
 
@@ -1181,188 +727,601 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             GetSettingsFor(child).GlobalScaleOverride = scale;
         }
     }
-    
-    public class Line : Primitive
-    {
-        public float EndX { get; set; }
-        public float EndY { get; set; }
-        public bool Dashed { get; set; }
-        public float DashLength { get; set; } = 0.05f;
-        public float GapLength { get; set; } = 0.03f;
 
-        public Line(float x = 0, float y = 0, float endX = 0.2f, float endY = 0, bool dashed = false,
+    // ------------------ PRIMITIVES ------------------
+
+    public class Polygon : Primitive
+    {
+        public List<Vector2> Points { get; private set; } = [];
+
+        // --- Dash parameters ---
+        public bool DashEnabled { get; set; } = false;
+        public float DashOn { get; set; } = 0.05f;
+        public float DashOff { get; set; } = 0.03f;
+        public float DashPhase { get; set; } = 0f;
+
+        public Polygon(IEnumerable<Vector2>? points = null, bool closed = true, bool filled = false,
             Vector3 color = default)
-            : base(x, y, false, color)
+            : base(0f, 0f, filled, color)
         {
-            EndX = endX;
-            EndY = endY;
-            Dashed = dashed;
+            Closed = closed;
+            if (points != null) Points.AddRange(points);
+        }
+
+        public void SetPoints(IEnumerable<Vector2> points)
+        {
+            Points.Clear();
+            Points.AddRange(points);
         }
 
         public override List<Vector2> GetBoundaryVerts()
         {
-            var pts = new List<Vector2> { new Vector2(0f, 0f), new Vector2(EndX, EndY) };
-            if (!Dashed) return pts;
-
-            // build dashed segments along the line
-            return BuildDashedPolyline(pts, DashLength, GapLength);
+            return !DashEnabled ? [..Points] : BuildDashedPolygon();
         }
 
-        private static List<Vector2> BuildDashedPolyline(List<Vector2> poly, float dashLen, float gapLen)
+        private List<Vector2> BuildDashedPolygon()
         {
-            // only single segment here, but generalize to polyline
-            var res = new List<Vector2>();
-            for (int i = 0; i < poly.Count - 1; i++)
-            {
-                var a = poly[i];
-                var b = poly[i + 1];
-                var seg = BuildDashesForSegment(a, b, dashLen, gapLen);
-                if (res.Count > 0 && seg.Count > 0)
-                {
-                    // if last point of res equals first of seg, drop duplicate
-                    if (res[^1] == seg[0]) seg.RemoveAt(0);
-                }
+            var result = new List<Vector2>();
+            int count = Points.Count;
+            if (count < 2) return result;
 
-                res.AddRange(seg);
+            for (int i = 0; i < count; i++)
+            {
+                Vector2 start = Points[i];
+                Vector2 end = Points[(i + 1) % count];
+                if (!Closed && i == count - 1) break;
+
+                var segment = BuildDashesForSegment(start, end, DashOn, DashOff, DashPhase);
+                if (result.Count > 0 && segment.Count > 0 && result[^1] == segment[0])
+                    segment.RemoveAt(0);
+
+                result.AddRange(segment);
             }
 
-            return res;
+            return result;
         }
 
-        private static List<Vector2> BuildDashesForSegment(Vector2 a, Vector2 b, float dashLen, float gapLen)
+        private static List<Vector2> BuildDashesForSegment(Vector2 a, Vector2 b, float dashOn, float dashOff,
+            float phase)
         {
-            var dir = b - a;
-            float full = dir.Length;
-            if (full <= 1e-6f) return new List<Vector2> { a, b };
-
-            var ndir = dir / full;
             var res = new List<Vector2>();
-            float pos = 0f;
-            bool draw = true;
-            while (pos < full)
-            {
-                float len = draw ? MathF.Min(dashLen, full - pos) : MathF.Min(gapLen, full - pos);
-                var p0 = a + ndir * pos;
-                var p1 = a + ndir * (pos + len);
+            var dir = b - a;
+            float segLen = dir.Length;
+            if (segLen < 1e-6f) return [a, b];
 
-                if (draw)
+            var ndir = dir / segLen;
+            float pos = -phase;
+            bool draw = true;
+
+            while (pos < segLen)
+            {
+                float len = draw ? dashOn : dashOff;
+                if (pos + len > segLen) len = segLen - pos;
+
+                if (len > 1e-6f && draw)
                 {
-                    // add segment [p0, p1], then insert NaN separator (so renderer treats each dash as a separate segment)
+                    var p0 = a + ndir * MathF.Max(pos, 0f);
+                    var p1 = a + ndir * MathF.Min(pos + len, segLen);
                     res.Add(p0);
                     res.Add(p1);
-                    // NaN sentinel:
-                    res.Add(new Vector2(float.NaN, float.NaN));
+                    res.Add(new Vector2(float.NaN, float.NaN)); // NaN разделитель
                 }
 
                 pos += len;
                 draw = !draw;
             }
 
-            // remove trailing NaN if any
             if (res.Count > 0 && float.IsNaN(res[^1].X)) res.RemoveAt(res.Count - 1);
 
-            // ensure at least two points if not dashed
-            if (res.Count == 1) res.Add(res[0]);
             return res;
         }
+
+        public Primitive AnimateDash(bool enable, float targetDashOn = 0.05f, float targetDashOff = 0.03f,
+            float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            ScheduleOrExecute(() =>
+            {
+                DashEnabled = true;
+                if (enable)
+                {
+                    Animate(() => DashOn, v => DashOn = v, targetDashOn, duration, ease);
+                    Animate(() => DashOff, v => DashOff = v, targetDashOff, duration, ease);
+                }
+                else
+                {
+                    Animate(() => DashOn, v => DashOn = v, 0f, duration, ease);
+                    Animate(() => DashOff, v => DashOff = v, 0f, duration, ease);
+                    Animate(_ => { DashEnabled = false; }, 0f, 0f, 0f);
+                }
+            });
+            return this;
+        }
     }
 
-    public class Triangle : Primitive
+    public class Circle : Polygon
     {
-        public Vector2 A { get; set; }
-        public Vector2 B { get; set; }
-        public Vector2 C { get; set; }
-        public bool FilledTriangle { get; set; } = true;
+        public Circle(float x = 0f, float y = 0f, float radius = 0.1f, bool filled = false,
+            Vector3 color = default, int segments = 80)
+            : base(GenerateCircleVerts(radius, segments), closed: true, filled, color)
+        {
+            X = x;
+            Y = y;
+        }
 
-        public Triangle(float x = 0, float y = 0, Vector2? a = null, Vector2? b = null, Vector2? c = null,
+        private static List<Vector2> GenerateCircleVerts(float radius, int segments)
+        {
+            var verts = new List<Vector2>(segments);
+            for (int i = 0; i < segments; i++)
+            {
+                float a = 2 * MathF.PI * i / segments;
+                verts.Add(new Vector2(MathF.Cos(a) * radius, MathF.Sin(a) * radius));
+            }
+
+            return verts;
+        }
+    }
+
+    public class Rectangle : Polygon
+    {
+        public Rectangle(float x = 0f, float y = 0f, float width = 0.2f, float height = 0.2f,
+            bool filled = false, Vector3 color = default)
+            : base(GenerateRectVerts(width, height), closed: true, filled, color)
+        {
+            X = x;
+            Y = y;
+        }
+
+        private static List<Vector2> GenerateRectVerts(float w, float h)
+            =>
+            [
+                new(-w / 2, -h / 2),
+                new(w / 2, -h / 2),
+                new(w / 2, h / 2),
+                new(-w / 2, h / 2)
+            ];
+    }
+
+    public class Line : Polygon
+    {
+        public Line(float x1 = 0f, float y1 = 0f, float x2 = 0.2f, float y2 = 0f,
+            Vector3 color = default, float lineWidth = 1f)
+            : base([Vector2.Zero, new Vector2(x2 - x1, y2 - y1)], closed: false, filled: false, color)
+        {
+            X = x1;
+            Y = y1;
+            LineWidth = lineWidth;
+        }
+    }
+
+    public class Triangle : Polygon
+    {
+        private static readonly Vector2 DefaultA = new(-0.1f, -0.1f);
+        private static readonly Vector2 DefaultB = new( 0.1f, -0.1f);
+        private static readonly Vector2 DefaultC = new( 0.0f,  0.1f);
+        public Triangle(
+            float x = 0f,
+            float y = 0f,
+            Vector2 a = default,
+            Vector2 b = default,
+            Vector2 c = default,
+            bool filled = true,
             Vector3 color = default)
-            : base(x, y, true, color)
+            : base(GenerateVerts(a, b, c), closed: true, filled, color)
         {
-            A = a ?? new Vector2(-0.01f, -0.01f);
-            B = b ?? new Vector2(0.01f, -0.01f);
-            C = c ?? new Vector2(0f, 0.02f);
-            Filled = FilledTriangle;
+            X = x;
+            Y = y;
         }
 
-        public override List<Vector2> GetBoundaryVerts()
+        private static List<Vector2> GenerateVerts(Vector2 a, Vector2 b, Vector2 c)
         {
-            return new List<Vector2> { A, B, C };
+            if (a == Vector2.Zero && b == Vector2.Zero && c == Vector2.Zero)
+            {
+                return [DefaultA, DefaultB, DefaultC];
+            }
+
+            return
+            [
+                a == Vector2.Zero ? DefaultA : a,
+                b == Vector2.Zero ? DefaultB : b,
+                c == Vector2.Zero ? DefaultC : c
+            ];
         }
     }
 
-    public class Plot : Primitive
+    public class Plot : Polygon
     {
-        public Func<float, float> Func { get; set; }
+        public Func<float, float> Func { get; }
         public float XMin { get; set; }
         public float XMax { get; set; }
-        public int Resolution { get; set; } = 300;
-        public bool Dashed { get; set; } = false;
-        public float DashLength { get; set; } = 0.05f;
-        public float GapLength { get; set; } = 0.03f;
+        public int Resolution { get; set; }
 
-        public Plot(Func<float, float> func, float xMin = -1f, float xMax = 1f, int resolution = 300,
-            Vector3 color = default)
-            : base(0, 0, false, color)
+        public Plot(
+            Func<float, float> func,
+            float xMin = -1f,
+            float xMax = 1f,
+            int resolution = 300,
+            Vector3 color = default,
+            bool dashed = false,
+            bool closed = false,
+            float dashOn = 0.05f,
+            float dashOff = 0.03f)
+            : base(GenerateVerts(func, xMin, xMax, resolution), closed: false, filled: false, color)
         {
             Func = func ?? throw new ArgumentNullException(nameof(func));
             XMin = xMin;
             XMax = xMax;
             Resolution = Math.Max(2, resolution);
+            Closed = closed;
+
+            if (dashed)
+            {
+                DashEnabled = true;
+                DashOn = dashOn;
+                DashOff = dashOff;
+            }
+
+        }
+
+        private static List<Vector2> GenerateVerts(Func<float, float> f, float min, float max, int res)
+        {
+            var verts = new List<Vector2>(res + 1);
+            for (int i = 0; i <= res; i++)
+            {
+                float t = i / (float)res;
+                float x = MathHelper.Lerp(min, max, t);
+                float y = f(x);
+                verts.Add(new Vector2(x, y));
+            }
+
+            return verts;
+        }
+
+        // Пересчитываем график при изменении параметров (например, в анимации)
+        public void UpdatePlot()
+        {
+            SetPoints(GenerateVerts(Func, XMin, XMax, Resolution));
+        }
+
+        // Удобные методы для анимации области и разрешения
+        public Plot WithRange(float xMin, float xMax, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            Animate(() => XMin, v =>
+            {
+                XMin = v;
+                UpdatePlot();
+            }, xMin, duration, ease);
+            Animate(() => XMax, v =>
+            {
+                XMax = v;
+                UpdatePlot();
+            }, xMax, duration, ease);
+            return this;
+        }
+
+        public Plot WithResolution(int resolution, float duration = 1f, EaseType ease = EaseType.EaseInOut)
+        {
+            Animate(() => Resolution, v =>
+            {
+                Resolution = (int)v;
+                UpdatePlot();
+            }, resolution, duration, ease);
+            return this;
+        }
+    }
+
+
+    // ------------------ TEXT (with per-char caching) ------------------
+    public class Text : Primitive
+    {
+        public object? Font { get; set; }
+
+        public enum HorizontalAlignment
+        {
+            Left,
+            Center,
+            Right
+        }
+
+        public enum VerticalAlignment
+        {
+            Top,
+            Center,
+            Bottom
+        }
+
+        private string _textContent;
+
+        public float FontSize { get; set; }
+
+        public float LetterPadding { get; set; }
+        public float VerticalPadding { get; set; }
+
+        public HorizontalAlignment Horizontal { get; set; }
+        public VerticalAlignment Vertical { get; set; }
+
+        public float Width { get; private set; }
+        public float Height { get; private set; }
+
+        public string TextContent => _textContent;
+
+        private Func<string>? _dynamicTextFunc;
+        private string? _lastRenderedText;
+
+        private readonly SKTypeface _typeface;
+
+        // caches
+        private readonly Dictionary<int, CachedChar> _charCache = new();
+
+        // NEW: mesh
+        private TextMesh? _mesh;
+
+        public Text(string text = "Empty text", float x = 0f, float y = 0f, float fontSize = 0.1f,
+            float letterPadding = 0.05f,
+            float verticalPadding = 0.1f, Vector3 color = default,
+            HorizontalAlignment horizontal = HorizontalAlignment.Center,
+            VerticalAlignment vertical = VerticalAlignment.Center, bool filled = false,
+            object? font = null, Func<string>? dynamicTextFunc = null)
+            : base(x, y, filled, color)
+        {
+            if (dynamicTextFunc != null)
+            {
+                _dynamicTextFunc = dynamicTextFunc;
+                _textContent = _dynamicTextFunc();
+            }
+            else
+            {
+                _textContent = text ?? "Empty text";
+            }
+
+            FontSize = fontSize;
+            LetterPadding = letterPadding;
+            VerticalPadding = verticalPadding;
+            Horizontal = horizontal;
+            Vertical = vertical;
+            Font = font ?? FontFamily.Arial;
+
+            string fontKey = Font switch
+            {
+                FontFamily ff => FontManager.GetNameFromFamily(ff),
+                string s => s,
+                _ => "Arial"
+            };
+
+            _typeface = FontManager.GetTypeface(null, fontKey);
+
+            RecalculateWidthHeight();
+            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled,
+                Horizontal, Vertical);
+        }
+
+        private void RecalculateWidthHeight()
+        {
+            var lines = _textContent.Split(["\r\n", "\n"], StringSplitOptions.None);
+            Width = 0f;
+            foreach (var line in lines)
+            {
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize, _typeface);
+                    if (i < line.Length - 1)
+                        lineWidth += LetterPadding * FontSize;
+                }
+
+                if (lineWidth > Width)
+                    Width = lineWidth;
+            }
+
+            Height = lines.Length * FontSize +
+                     (lines.Length > 0 ? (lines.Length - 1) * (VerticalPadding * FontSize) : 0f);
+        }
+
+        private class CachedChar
+        {
+            public char C;
+            public float LastParentX;
+            public float LastParentY;
+            public float LastParentScale;
+            public float LastParentRotation;
+            public float LastOffsetX;
+            public float LastOffsetY;
+            public List<List<Vector3>> CachedContours = [];
+        }
+
+        // keep these helpers for compatibility (may be used elsewhere)
+        private void RenderContoursWithCharCache(char c, int index, List<List<Vector2>> contours, float offsetX,
+            float offsetY, int program, int vbo)
+        {
+            if (contours.Count == 0) return;
+
+            int key = index;
+            if (!_charCache.TryGetValue(key, out var cache))
+            {
+                cache = new CachedChar { C = c, CachedContours = [] };
+                _charCache[key] = cache;
+            }
+
+            bool dirty =
+                cache.C != c ||
+                !Helpers.AlmostEqual(cache.LastParentX, X) ||
+                !Helpers.AlmostEqual(cache.LastParentY, Y) ||
+                !Helpers.AlmostEqual(cache.LastParentScale, Scale) ||
+                !Helpers.AlmostEqual(cache.LastParentRotation, Rotation) ||
+                !Helpers.AlmostEqual(cache.LastOffsetX, offsetX) ||
+                !Helpers.AlmostEqual(cache.LastOffsetY, offsetY);
+
+            if (dirty)
+            {
+                cache.CachedContours.Clear();
+                float cos = MathF.Cos(Rotation) * Scale;
+                float sin = MathF.Sin(Rotation) * Scale;
+
+                foreach (var contour in contours)
+                {
+                    var transformed = new List<Vector3>(contour.Count);
+                    foreach (var v in contour)
+                        transformed.Add(new Vector3(v.X * cos - v.Y * sin, v.X * sin + v.Y * cos, 0f));
+                    cache.CachedContours.Add(transformed);
+                }
+
+                cache.C = c;
+                cache.LastParentX = X;
+                cache.LastParentY = Y;
+                cache.LastParentScale = Scale;
+                cache.LastParentRotation = Rotation;
+                cache.LastOffsetX = offsetX;
+                cache.LastOffsetY = offsetY;
+            }
+
+            foreach (var contour in cache.CachedContours)
+            {
+                if (contour.Count < 2) continue;
+                var finalContours = contour.Select(v => new Vector3(v.X + X, v.Y + Y, v.Z)).ToList();
+                // This call may be replaced by mesh rendering — kept for compatibility
+                RenderVerts(finalContours, Filled, program, vbo, Color, LineWidth);
+            }
+        }
+
+        public override void Render(int program, int vbo, int vao)
+        {
+            if (CustomBoundary != null || ShapeAnim != null)
+            {
+                base.Render(program, vbo, vao);
+                return;
+            }
+
+            // If mesh exists, use it (fast path)
+            if (_mesh != null)
+            {
+                _mesh.Render(program, X, Y, Scale, Rotation, Color, LineWidth);
+                return;
+            }
+
+            // Fallback to original per-char rendering (if mesh is missing)
+            var lines = _textContent.Replace("\r", "").Split('\n');
+
+            float step = FontSize + VerticalPadding * FontSize;
+            float line0YRelativeToCenter = Height / 2f - FontSize / 2f;
+
+            float centerOffset = Vertical switch
+            {
+                VerticalAlignment.Top => Height / 2f,
+                VerticalAlignment.Bottom => -Height / 2f,
+                _ => 0f
+            };
+
+            int globalCharIndex = 0;
+
+            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
+            {
+                var line = lines[lineIdx];
+                float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
+
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize, _typeface) +
+                                 (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+
+                float offsetXLocal = Horizontal switch
+                {
+                    HorizontalAlignment.Left => 0f,
+                    HorizontalAlignment.Right => -lineWidth,
+                    _ => -lineWidth / 2f
+                };
+
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    var contours = CharMap.GetCharContours(c, offsetXLocal, cursorY, FontSize, _typeface);
+                    RenderContoursWithCharCache(c, globalCharIndex, contours, offsetXLocal, cursorY, program, vbo);
+
+                    float adv = CharMap.GetGlyphAdvance(c, FontSize, _typeface);
+                    offsetXLocal += adv + (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+
+                    globalCharIndex++;
+                }
+            }
+        }
+
+        public override void Update(float dt)
+        {
+            base.Update(dt);
+            if (_dynamicTextFunc == null) return;
+
+            string newText = _dynamicTextFunc();
+            if (newText == _lastRenderedText) return;
+
+            _textContent = newText;
+            _lastRenderedText = newText;
+
+            RecalculateWidthHeight();
+            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled,
+                Horizontal, Vertical);
+            _charCache.Clear();
+        }
+
+        public void SetDynamicText(Func<string> dynamicTextFunc)
+        {
+            _dynamicTextFunc = dynamicTextFunc;
+            _textContent = _dynamicTextFunc();
+            _lastRenderedText = _textContent;
+            RecalculateWidthHeight();
+            _mesh = TextMesh.CreateFromText(_textContent, _typeface, FontSize, LetterPadding, VerticalPadding, Filled,
+                Horizontal, Vertical);
+            _charCache.Clear();
         }
 
         public override List<Vector2> GetBoundaryVerts()
         {
-            var pts = new List<Vector2>(Resolution + 1);
-            for (int i = 0; i <= Resolution; i++)
+            var all2 = new List<Vector2>();
+            var lines = _textContent.Replace("\r", "").Split('\n');
+
+            float step = FontSize + VerticalPadding * FontSize;
+            float line0YRelativeToCenter = Height / 2f - FontSize / 2f;
+
+            float centerOffset = Vertical switch
             {
-                float t = i / (float)Resolution;
-                float x = MathHelper.Lerp(XMin, XMax, t);
-                float y = Func(x);
-                pts.Add(new Vector2(x, y));
-            }
+                VerticalAlignment.Top => Height / 2f,
+                VerticalAlignment.Bottom => -Height / 2f,
+                _ => 0f
+            };
 
-            if (!Dashed) return pts;
-            return BuildDashedPolyline(pts, DashLength, GapLength);
-        }
-
-        // reuse the same dash builder used in Line
-        private static List<Vector2> BuildDashedPolyline(List<Vector2> poly, float dashLen, float gapLen)
-        {
-            var res = new List<Vector2>();
-            for (int i = 0; i < poly.Count - 1; i++)
+            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
             {
-                var a = poly[i];
-                var b = poly[i + 1];
-                float segLen = (b - a).Length;
-                if (segLen < 1e-6f)
-                {
-                    // degenerate
-                    res.Add(a);
-                    continue;
-                }
+                var line = lines[lineIdx];
+                float cursorY = line0YRelativeToCenter - lineIdx * step - centerOffset;
 
-                var dir = (b - a) / segLen;
-                float pos = 0f;
-                bool draw = true;
-                while (pos < segLen)
+                float lineWidth = 0f;
+                for (int i = 0; i < line.Length; i++)
+                    lineWidth += CharMap.GetGlyphAdvance(line[i], FontSize, _typeface) +
+                                 (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
+
+                float offsetXLocal = Horizontal switch
                 {
-                    float len = draw ? MathF.Min(dashLen, segLen - pos) : MathF.Min(gapLen, segLen - pos);
-                    if (draw)
+                    HorizontalAlignment.Left => 0f,
+                    HorizontalAlignment.Right => -lineWidth,
+                    _ => -lineWidth / 2f
+                };
+
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    var contours = CharMap.GetCharContours(c, offsetXLocal, cursorY, FontSize, _typeface);
+                    foreach (var contour in contours)
                     {
-                        var p0 = a + dir * pos;
-                        var p1 = a + dir * (pos + len);
-                        res.Add(p0);
-                        res.Add(p1);
-                        res.Add(new Vector2(float.NaN, float.NaN));
+                        all2.AddRange(contour);
+                        all2.Add(new Vector2(float.NaN, float.NaN));
                     }
 
-                    pos += len;
-                    draw = !draw;
+                    offsetXLocal += CharMap.GetGlyphAdvance(c, FontSize, _typeface) +
+                                    (i < line.Length - 1 ? LetterPadding * FontSize : 0f);
                 }
             }
 
-            if (res.Count > 0 && float.IsNaN(res[^1].X)) res.RemoveAt(res.Count - 1);
-            return res;
+            if (all2.Count > 0 && float.IsNaN(all2[^1].X)) all2.RemoveAt(all2.Count - 1);
+            return all2;
         }
     }
+
 }
