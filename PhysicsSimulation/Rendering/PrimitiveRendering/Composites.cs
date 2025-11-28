@@ -4,68 +4,55 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
 {
     public class VectorPrimitive : CompositePrimitive
     {
-        public Line Shaft { get; private set; }
-        public Triangle ArrowHead { get; private set; }
+        public Line Shaft { get; }
+        public Triangle ArrowHead { get; }
         public Text? Label { get; private set; }
 
-        public bool ShowMagnitude { get; set; } = false;
-
-        /// <param name="endX">локальный end x (от начала в локальных координатах)</param>
         public VectorPrimitive(float x = 0f, float y = 0f, float endX = 0.3f, float endY = 0f,
-            Vector3? color = null, bool showMagnitude = false, float arrowSize = 0.04f)
+            Vector3? color = null, bool showMagnitude = false, float arrowSize = 0.08f)
             : base(x, y)
         {
             var c = color ?? Vector3.One;
             Shaft = new Line(x1: endX, y1: endY, color: c) { LineWidth = 2f };
             Add(Shaft);
-
-            // arrowhead: small triangle positioned at end, pointing along shaft
-            ArrowHead = CreateArrowHead(endX, endY, arrowSize, c);
+            ArrowHead = new Triangle(
+                x: 0, y: 0,
+                a: new Vector2(arrowSize, 0f),
+                b: new Vector2(0f, arrowSize * 0.6f),
+                c: new Vector2(0f, -arrowSize * 0.6f),
+                filled: true,
+                color: c);
             Add(ArrowHead);
 
-            ShowMagnitude = showMagnitude;
-            if (ShowMagnitude)
+            if (showMagnitude)
             {
-                float len = new Vector2(endX, endY).Length;
-                Label = new Text($"|v|={len:F2}", endX * 0.5f, endY * 0.5f, 0.08f, color: c);
+                Label = new Text("", endX * 0.5f, endY * 0.5f, 0.08f, color: c);
                 Add(Label);
             }
+
+            SetEnd(endX, endY);
         }
 
-        private Triangle CreateArrowHead(float endX, float endY, float size, Vector3 color)
+        public void SetEnd(float globalEndX, float globalEndY)
         {
-            // base triangle oriented along +X; we'll place as local triangle at (endX,endY) and rotate via Rotation property
-            var dir = new Vector2(endX, endY);
-            float ang = MathF.Atan2(dir.Y, dir.X);
+            float localEndX = globalEndX - X;
+            float localEndY = globalEndY - Y;
+            float length = MathF.Sqrt(localEndX * localEndX + localEndY * localEndY);
+            float angle = MathF.Atan2(localEndY, localEndX);
 
-            // triangle in local coords pointing right
-            var a = new Vector2(0f, 0.0f);
-            var b = new Vector2(-size, size * 0.6f);
-            var c = new Vector2(-size, -size * 0.6f);
+            Shaft.X = 0f;
+            Shaft.Y = 0f;
+            Shaft.SetPoints([Vector2.Zero, new Vector2(localEndX, localEndY)]);
 
-            var tri = new Triangle(endX, endY, a, b, c, color: color)
-            {
-                Filled = true,
-                Rotation = ang
-            };
-
-            return tri;
-        }
-
-        /// <summary>
-        /// Update the vector end position — reconfigure shaft and arrowhead (and label position).
-        /// </summary>
-        public void SetEnd(float endX, float endY)
-        {
-            // reposition arrow
-            ArrowHead.X = endX;
-            ArrowHead.Y = endY;
-            ArrowHead.Rotation = MathF.Atan2(endY, endX);
+            ArrowHead.Rotation = angle;
+            ArrowHead.X = localEndX;
+            ArrowHead.Y = localEndY;
 
             if (Label != null)
             {
-                var vector = new Vector2(endX, endY);
-                Label.SetDynamicText(() => $"|v|={vector.Length:F2}");
+                Label.X = localEndX * 0.5f;
+                Label.Y = localEndY * 0.5f;
+                Label.SetDynamicText(() => $"|v|={length:F2}");
             }
         }
     }
@@ -80,7 +67,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         public bool Dashed { get; set; } = false;
         public Vector3 ColorAxis { get; set; } = new Vector3(0.2f, 0.2f, 0.2f);
 
-        private readonly List<Line> gridLines = new();
+        private readonly List<Line> gridLines = [];
 
         public AxisPrimitive(float x = 0, float y = 0, float length = 1f, int axisAmount = 2, Vector3? color = null,
             bool showGrid = false, float tickSpacing = 0.25f)
