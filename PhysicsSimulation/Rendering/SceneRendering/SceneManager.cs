@@ -8,7 +8,6 @@ namespace PhysicsSimulation.Rendering.SceneRendering
     public static class SceneManager
     {
         private static readonly Dictionary<string, Type> _scenes = new();
-        private static readonly Dictionary<string, Assembly?> _userSceneAssemblies = new();
         private static Scene? _current;
 
         public static Scene? Current => _current;
@@ -120,39 +119,6 @@ namespace PhysicsSimulation.Rendering.SceneRendering
             string sceneName = _current.GetType().Name;
             DebugManager.Scene($"Reloading current scene: {sceneName}");
             Load(sceneName);
-        }
-
-        private static Assembly CompileUserScene(string path)
-        {
-            var code = File.ReadAllText(path);
-            var syntaxTree = CSharpSyntaxTree.ParseText(code);
-
-            var assemblyName = Path.GetRandomFileName();
-            var references = AppDomain.CurrentDomain.GetAssemblies()
-                .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
-                .Select(a => MetadataReference.CreateFromFile(a.Location))
-                .Cast<MetadataReference>();
-
-            var compilation = CSharpCompilation.Create(
-                assemblyName,
-                new[] { syntaxTree },
-                references,
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
-            );
-
-            using var ms = new MemoryStream();
-            var result = compilation.Emit(ms);
-
-            if (!result.Success)
-            {
-                var errors = string.Join("\n", result.Diagnostics
-                    .Where(d => d.Severity == DiagnosticSeverity.Error)
-                    .Select(d => d.ToString()));
-                throw new Exception($"Compilation of scene {path} failed:\n{errors}");
-            }
-
-            ms.Seek(0, SeekOrigin.Begin);
-            return Assembly.Load(ms.ToArray());
         }
     }
 }

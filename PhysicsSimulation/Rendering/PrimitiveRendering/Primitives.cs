@@ -489,24 +489,17 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         }
     }
 
-    public class CompositePrimitive : Primitive
+    public class Composite : Primitive
     {
         // Настройки отдельного ребёнка (персональные overrides)
         public class ChildSettings
         {
-            // если true — позиция ребёнка интерпретируется как глобальная (не умножается/не поворачивается композитом)
-            public bool UseGlobalPosition = false;
-
-            // если true — вращение ребёнка интерпретируется как глобальное (не прибавляется rotation композита)
-            public bool UseGlobalRotation = false;
-
-            // если true — масштаб ребёнка интерпретируется как глобальный (не умножается на Scale композита)
-            public bool UseGlobalScale = false;
-
-            // явные override'ы (если заданы, имеют приоритет)
-            public Vector2? GlobalPositionOverride = null;
-            public float? GlobalRotationOverride = null; // radians
-            public float? GlobalScaleOverride = null;
+            public bool UseGlobalPosition;
+            public bool UseGlobalRotation;
+            public bool UseGlobalScale;
+            public Vector2? GlobalPositionOverride;
+            public float? GlobalRotationOverride;
+            public float? GlobalScaleOverride;
         }
 
         private readonly List<Primitive> _children = [];
@@ -514,17 +507,15 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
 
         public IReadOnlyList<Primitive> Children => _children.AsReadOnly();
 
-        public CompositePrimitive(float x = 0f, float y = 0f, bool filled = false, Vector3 color = default)
+        public Composite(float x = 0f, float y = 0f, bool filled = false, Vector3 color = default)
             : base(x, y, filled, color)
         {
         }
 
         // Добавление ребёнка (запрет на вложенные CompositePrimitive)
-        public CompositePrimitive Add(Primitive child, ChildSettings? settings = null)
+        public Composite Add(Primitive child, ChildSettings? settings = null)
         {
             if (child == null) throw new ArgumentNullException(nameof(child));
-            if (child is CompositePrimitive)
-                throw new InvalidOperationException("CompositePrimitive cannot contain another CompositePrimitive.");
 
             _children.Add(child);
             _settings.Add(settings ?? new ChildSettings());
@@ -547,18 +538,9 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             return _settings[idx];
         }
 
-        public void SetSettingsFor(Primitive child, ChildSettings settings)
-        {
-            int idx = _children.IndexOf(child);
-            if (idx < 0) throw new ArgumentException("Child not found in this composite.", nameof(child));
-            _settings[idx] = settings ?? new ChildSettings();
-        }
-
-        // Обновляем composite (его собственные анимации/физику) и детей (их локальные анимации/физику)
         public override void Update(float dt)
         {
-            base.Update(dt); // обновит X/Y по Vx/Vy и property-анимации composite'а
-            // обновляем детей — их X/Y находятся в локальных координатах composite
+            base.Update(dt);
             foreach (var ch in _children)
                 ch.Update(dt);
         }
@@ -572,7 +554,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
             {
                 var child = _children[i];
                 var verts = child.GetBoundaryVerts();
-                if (verts == null || verts.Count == 0) continue;
+                if (verts.Count == 0) continue;
 
                 // Преобразуем вершины ребенка из его локального пространства в composite-local
                 // (аналог Primitive.TransformVerts, но на месте)
@@ -735,7 +717,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
         public List<Vector2> Points { get; private set; } = [];
 
         // --- Dash parameters ---
-        public bool DashEnabled { get; set; } = false;
+        public bool DashEnabled { get; set; }
         public float DashOn { get; set; } = 0.05f;
         public float DashOff { get; set; } = 0.03f;
         public float DashPhase { get; set; } = 0f;
@@ -1069,9 +1051,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering
                 _textContent = _dynamicTextFunc();
             }
             else
-            {
-                _textContent = text ?? "Empty text";
-            }
+                _textContent = text;
 
             FontSize = fontSize;
             LetterPadding = letterPadding;

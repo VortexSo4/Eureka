@@ -1,7 +1,6 @@
 ﻿using LibTessDotNet;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
-using PhysicsSimulation.Base;
 using PhysicsSimulation.Rendering.PrimitiveRendering;
 using SkiaSharp;
 

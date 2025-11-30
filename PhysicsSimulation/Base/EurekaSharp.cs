@@ -1,11 +1,4 @@
-﻿// EurekaSharp.cs
-// Полностью исправленная, компилируемая, улучшенная версия
-// Все предложенные улучшения реализованы, ничего важного не удалено
-
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
+﻿using System.Globalization;
 using System.Reflection;
 using System.Text;
 using OpenTK.Mathematics;
@@ -46,9 +39,9 @@ namespace EurekaDSL
     public class Lexer
     {
         private readonly string _src;
-        private int _i = 0, _line = 1, _col = 1;
+        private int _i, _line = 1, _col = 1;
 
-        public Lexer(string s) => _src = s ?? "";
+        public Lexer(string s) => _src = s;
 
         private char Peek(int offset = 0) => _i + offset < _src.Length ? _src[_i + offset] : '\0';
 
@@ -582,7 +575,6 @@ namespace EurekaDSL
         private readonly Dictionary<string, GlobalHandler> _globals = new();
         public readonly Dictionary<string, MethodHandler> _methods = new();
         private readonly Dictionary<string, CtorHandler> _ctors = new();
-        private static readonly Dictionary<string, MethodInfo> _methodCache = new();
 
         public void RegisterGlobal(string name, GlobalHandler h) => _globals[name] = h;
 
@@ -606,8 +598,7 @@ namespace EurekaDSL
         
             // Собираем аргументы
             var argValues = argsExpr.Select(a => a.Expr.Eval(rt)).ToArray();
-            var argTypes = argValues.Select(v => v.GetType() ?? typeof(object)).ToArray();
-        
+
             // Ищем метод (с точным совпадением или с конверсией)
             var method = type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)
                          ?? type.GetMethods(BindingFlags.Instance | BindingFlags.Public)
@@ -627,8 +618,8 @@ namespace EurekaDSL
             {
                 var paramType = parameters[i].ParameterType;
                 var value = i < argValues.Length ? argValues[i] : null;
-                convertedArgs[i] = ValueConversions.ConvertToClr(value ?? Value.Null, paramType)
-                                  ?? (parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null);
+                convertedArgs[i] = (ValueConversions.ConvertToClr(value ?? Value.Null, paramType)
+                                    ?? (parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null)) ?? throw new InvalidOperationException();
             }
         
             try
@@ -648,7 +639,7 @@ namespace EurekaDSL
                     int i => new Value(i),
                     bool b => new Value(b),
                     Vector3 v => Value.FromArray([new Value(v.X), new Value(v.Y), new Value(v.Z)]),
-                    SceneObject so => new Value { Type = VType.Object, Obj = robj },
+                    SceneObject => new Value { Type = VType.Object, Obj = robj },
                     _ => Value.Null
                 };
             }
@@ -777,7 +768,7 @@ namespace EurekaDSL
         public static void RegisterCtor(this CommandRegistry reg, params string[] typeNames)
         {
             foreach (var name in typeNames)
-                reg.RegisterCtor(name.ToLowerInvariant(), (_, _, __, ___) => { });
+                reg.RegisterCtor(name.ToLowerInvariant(), (_, _, _, _) => { });
         }
 
         public static void RegisterMethodFor(this CommandRegistry reg, 
@@ -882,7 +873,7 @@ namespace EurekaDSL
     public class Parser
     {
         private readonly List<Token> _tokens;
-        private int _p = 0;
+        private int _p;
 
         public Token Curr => _p < _tokens.Count ? _tokens[_p] : new(TokenType.EOF, "");
         private bool _aborted;
@@ -913,7 +904,7 @@ namespace EurekaDSL
                     break;
                 }
 
-                var right = ParseBinary(prec + (IsLeftAssoc(op) ? 1 : 0));
+                var right = ParseBinary(prec + (IsLeftAssoc() ? 1 : 0));
                 left = new BinaryExpr(left, op, right, left.Line, left.Col);
             }
 
@@ -1072,7 +1063,7 @@ namespace EurekaDSL
                 var prec = GetPrecedence(op);
                 if (prec < minPrec) { _p--; break; }
 
-                var right = ParseBinary(prec + (IsLeftAssoc(op) ? 1 : 0));
+                var right = ParseBinary(prec + (IsLeftAssoc() ? 1 : 0));
                 left = new BinaryExpr(left, op, right, left.Line, left.Col);
             }
 
@@ -1089,7 +1080,7 @@ namespace EurekaDSL
             _ => 0
         };
 
-        private static bool IsLeftAssoc(string op) => true;
+        private static bool IsLeftAssoc() => true;
 
         private Expr ParseUnary()
         {
@@ -1144,12 +1135,10 @@ namespace EurekaDSL
                 else if (Curr.Type == TokenType.LBrack)
                 {
                     Eat(); // [
-                    var index = ParseExpression();
+                    ParseExpression();
                     Match(TokenType.RBrack);
-                    // TODO: Добавьте IndexExpr, если нужно: left = new IndexExpr(left, index, ...);
-                    // Пока: Abort("Indexing not supported");
                 }
-                else if (Curr.Type == TokenType.LBrace && left is IdentExpr ie2) // ctor without args: type { props }
+                else if (Curr.Type == TokenType.LBrace && left is IdentExpr ie2)
                 {
                     Eat(); // {
                     var args = new List<(string?, Expr)>();
@@ -1324,7 +1313,7 @@ namespace EurekaDSL
         {
             reg.RegisterCtor("circle", "rect", "text");
 
-            reg.RegisterGlobal("Add", (rt, pos, _) =>
+            reg.RegisterGlobal("Add", (_, pos, _) =>
             {
                 foreach (var v in pos)
                 {
@@ -1336,14 +1325,14 @@ namespace EurekaDSL
                 return Value.Null;
             });
             
-            reg.RegisterGlobal("wait", (rt, pos, _) =>
+            reg.RegisterGlobal("wait", (_, pos, _) =>
             {
                 float d = pos.Count > 0 ? (float)pos[0].AsNumber() : 1f;
                 Scene.CurrentScene?.Wait(d);
                 return Value.Null;
             });
 
-            reg.RegisterGlobal("bgColor", (rt, pos, _) =>
+            reg.RegisterGlobal("bgColor", (_, pos, _) =>
             {
                 var color = pos.Count > 0 ? ValueConversions.ToVector3(pos[0]) : Vector3.Zero;
                 float dur = pos.Count > 1 ? (float)pos[1].AsNumber() : 1f;
@@ -1351,7 +1340,7 @@ namespace EurekaDSL
                 return Value.Null;
             });
 
-            reg.RegisterGlobal("scene", (rt, pos, named) =>
+            reg.RegisterGlobal("scene", (_, pos, _) =>
             {
                 var newScene = new Scene(autoStart: false);
                 Scene.CurrentScene = newScene;
@@ -1362,14 +1351,14 @@ namespace EurekaDSL
                 return Value.Null;
             });
             
-            reg.RegisterMethodFor(["circle", "rect", "text"], "draw", (rt, obj, pos, _) =>
+            reg.RegisterMethodFor(["circle", "rect", "text"], "draw", (_, obj, pos, _) =>
             {
                     if (obj.NativeInstance is Primitive so)
                         so.Draw(pos.Count > 0 ? (float)pos[0].AsNumber() : 1f);
                     return new Value { Type = VType.Object, Obj = obj };
                 });
             
-            reg.RegisterMethodFor(["circle", "rect", "text"], "move", (rt, obj, pos, named) =>
+            reg.RegisterMethodFor(["circle", "rect", "text"], "move", (_, obj, pos, _) =>
             {
                 if (obj.NativeInstance is not Primitive p) return new Value { Type = VType.Object, Obj = obj };
 
@@ -1385,7 +1374,7 @@ namespace EurekaDSL
                 return new Value { Type = VType.Object, Obj = obj };
             });
 
-            reg.RegisterMethodFor(["circle", "rect"], "scale", (rt, obj, pos, named) =>
+            reg.RegisterMethodFor(["circle", "rect"], "scale", (_, obj, pos, _) =>
             {
                 if (obj.NativeInstance is not Primitive p || pos.Count == 0)
                     return new Value { Type = VType.Object, Obj = obj };
@@ -1401,7 +1390,7 @@ namespace EurekaDSL
                 return new Value { Type = VType.Object, Obj = obj };
             });
 
-            reg.RegisterMethodFor(["circle", "rect", "text"], "color", (rt, obj, pos, named) =>
+            reg.RegisterMethodFor(["circle", "rect", "text"], "color", (_, obj, pos, _) =>
             {
                 if (obj.NativeInstance is not Primitive p || pos.Count == 0)
                     return new Value { Type = VType.Object, Obj = obj };
@@ -1417,7 +1406,7 @@ namespace EurekaDSL
                 return new Value { Type = VType.Object, Obj = obj };
             });
             
-            reg.RegisterMethodFor(["circle", "rect", "text"], "morph", (rt, obj, pos, named) =>
+            reg.RegisterMethodFor(["circle", "rect", "text"], "morph", (_, obj, pos, named) =>
             {
                     if (obj.NativeInstance is not Primitive source || pos.Count == 0)
                         return new Value { Type = VType.Object, Obj = obj };
@@ -1447,7 +1436,7 @@ namespace EurekaDSL
                     return new Value { Type = VType.Object, Obj = obj };
                 });
             
-            reg.RegisterMethodFor(["circle", "rect", "text"], "rotate", (rt, obj, pos, named) =>
+            reg.RegisterMethodFor(["circle", "rect", "text"], "rotate", (_, obj, pos, _) =>
             {
                     if (obj.NativeInstance is not Primitive p || pos.Count == 0)
                         return new Value { Type = VType.Object, Obj = obj };

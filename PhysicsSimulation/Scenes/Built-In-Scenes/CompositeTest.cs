@@ -2,7 +2,6 @@
 using PhysicsSimulation.Base;
 using PhysicsSimulation.Rendering.PrimitiveRendering;
 using PhysicsSimulation.Rendering.SceneRendering;
-using PhysicsSimulation.Rendering.TextRendering;
 
 namespace PhysicsSimulation.Scenes.Built_In_Scenes
 {
@@ -11,10 +10,10 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
         protected override void StartSlides()
         {
             DebugManager.Info("Composite Test Scene Started");
-            AnimateBackgroundColor(new Vector3(0.05f, 0.05f, 0.07f), 1f);
+            AnimateBackgroundColor(new Vector3(0.05f, 0.05f, 0.07f));
 
             // --- COMPOSITE #1: простой ---
-            var comp1 = new CompositePrimitive(x: -0.6f, y: 0.0f);
+            var comp1 = new Composite(x: -0.6f, y: 0.0f);
 
             var c1 = new Circle(0, 0, 0.12f, color: new Vector3(0.3f, 0.8f, 1f));
             var r1 = new Rectangle(0.25f, 0, 0.25f, 0.15f, color: new Vector3(1f, 0.4f, 0.4f));
@@ -25,7 +24,7 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             comp1.Add(txt1);
 
             Add(comp1.Draw());
-            Wait(1f);
+            Wait();
 
             comp1.RotateTo(45, 2f);
             comp1.MoveTo(-0.3f, 0.3f, 2f);
@@ -35,7 +34,7 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             Wait(1.5f);
 
             // --- COMPOSITE #2: тест масштабирования ---
-            var comp2 = new CompositePrimitive(x: 0.5f, y: -0.3f);
+            var comp2 = new Composite(x: 0.5f, y: -0.3f);
 
             var baseRect = new Rectangle(0, 0, 0.25f, 0.25f, color: new Vector3(0.6f, 0.9f, 0.3f));
             var innerCircle = new Circle(0.1f, 0.1f, 0.08f, color: new Vector3(0.9f, 0.6f, 0.2f));
@@ -44,13 +43,13 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             comp2.Add(innerCircle);
 
             Add(comp2.Draw());
-            Wait(1f);
+            Wait();
 
             innerCircle.MoveTo(-0.15f, 0.1f, 2f);
             Wait(2f);
 
             // --- COMPOSITE #3: тест глобального override вращения ---
-            var comp3 = new CompositePrimitive(x: 0.0f, y: 0.5f);
+            var comp3 = new Composite(x: 0.0f, y: 0.5f);
 
             var arrowBody = new Rectangle(0, 0, 0.4f, 0.05f, color: new Vector3(0.3f, 0.7f, 1f));
             var arrowText = new Text("GLOBAL", 0.1f, -0.15f, fontSize: 0.07f);
@@ -66,25 +65,26 @@ namespace PhysicsSimulation.Scenes.Built_In_Scenes
             Wait(2.5f);
 
             // --- БЕНЧМАРК: VectorPrimitive с динамическим текстом ---
-            var vec = new VectorPrimitive(-0.5f, 0.0f, 0.4f, 0.3f, color: new Vector3(1f, 0.8f, 0.2f), showMagnitude: true);
+            var vec = new Vector(-0.5f, 0.0f, 0.4f, 0.3f, color: new Vector3(1f, 0.8f, 0.2f), showMagnitude: true);
             Add(vec.Draw());
             Wait(1.5f);
 
             vec.SetEnd(0.2f, 0.5f);
             Wait(1.5f);
 
-            // --- БЕНЧМАРК: GraphPrimitive через фабрику ---
-            var (graphComposite, plot) = GraphPrimitiveFactory.CreateGraph(
+            var graphComposite = new Graph(
                 f: x => 0.3f * MathF.Sin(8f * x),
                 xMin: -1f,
                 xMax: 1f,
                 resolution: 200,
                 axisLength: 0.8f,
-                axisAmount: 1,
-                showGrid: true);
+                axisAmount: 2,
+                showGrid: false)
+            {
+                X = 0.0f,
+                Y = 0.0f
+            };
 
-            graphComposite.X = 0.6f;
-            graphComposite.Y = -0.4f;
             Add(graphComposite.Draw());
             Wait(1.5f);
 

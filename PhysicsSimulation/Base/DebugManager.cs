@@ -148,24 +148,6 @@ namespace PhysicsSimulation.Base
         public static void Scene(string msg)   => Log(LogLevel.Scene, msg);
         public static void Font(string msg) => Log(LogLevel.Font, msg);
 
-        private static float _fps;
-        private static int _primitives;
-        private static int _vertices;
-        private static int _morphs;
-
-        public static void UpdateStats(float fps, int primitives, int vertices, int morphs)
-        {
-            _fps = fps;
-            _primitives = primitives;
-            _vertices = vertices;
-            _morphs = morphs;
-
-            if (ShowStats)
-            {
-                Stats($"FPS: {_fps:F1} | Объектов: {_primitives} | Вершин: {_vertices:N0} | Морфится: {_morphs} | Память: {GC.GetTotalMemory(false)/1024/1024} МБ");
-            }
-        }
-
         public static void Enable(string name)  => SetLevel(name, true);
         public static void Disable(string name) => SetLevel(name, false);
 
