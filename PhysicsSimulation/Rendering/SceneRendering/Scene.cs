@@ -12,6 +12,9 @@ namespace PhysicsSimulation.Rendering.SceneRendering
 
     public class Scene
     {
+        private List<Vector3> batchedVerts = [];
+        private List<int> batchedIndices = [];
+        private int sceneVbo, sceneVao, sceneEbo;
         public float TimelineLength => _timelineOffset;
         public static Scene? CurrentScene { get; set; }
 

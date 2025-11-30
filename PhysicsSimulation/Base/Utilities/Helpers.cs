@@ -8,46 +8,80 @@ namespace PhysicsSimulation.Base.Utilities
 {
     public static class Helpers
     {
-        private static string _vertexShaderSource = @"
-#version 430 core
-layout (location = 0) in vec3 aPosition;
+        private static readonly string _morphComputeShaderSource = """
+                                                                   #version 460 core
 
-uniform vec2 u_translate;
-uniform float u_cos;
-uniform float u_sin;
-uniform float u_scale;
-uniform vec3 u_color;
-uniform float u_aspectRatio;
+                                                                   layout(local_size_x = 256) in;
 
-out vec3 fragColor;
+                                                                   layout(std430, binding = 0) readonly buffer SourceBuffer { vec2 sourceVertices[]; };
+                                                                   layout(std430, binding = 1) readonly buffer TargetBuffer { vec2 targetVertices[]; };
+                                                                   layout(std430, binding = 2) buffer OutputBuffer { vec2 outputVertices[]; };
 
-void main()
-{
-    vec3 pos = aPosition;
-    float x = pos.x * u_cos - pos.y * u_sin;
-    float y = pos.x * u_sin + pos.y * u_cos;
-    x *= u_scale;
-    y *= u_scale;
-    x += u_translate.x;
-    y += u_translate.y;
-    x *= u_aspectRatio;
-    gl_Position = vec4(x, y, pos.z, 1.0);
-    fragColor = u_color;
-}
-";
+                                                                   uniform float t;
 
+                                                                   const vec2 NAN_VEC2 = vec2(uintBitsToFloat(0x7F800001u), uintBitsToFloat(0x7F800001u));
+
+                                                                   void main()
+                                                                   {
+                                                                       uint idx = gl_GlobalInvocationID.x;
+                                                                       if (idx >= sourceVertices.length() || idx >= targetVertices.length()) return;
+
+                                                                       vec2 start = sourceVertices[idx];
+                                                                       vec2 end   = targetVertices[idx];
+
+                                                                       if (isnan(start.x) || isnan(start.y) || isnan(end.x) || isnan(end.y))
+                                                                       {
+                                                                           outputVertices[idx] = NAN_VEC2;
+                                                                           return;
+                                                                       }
+
+                                                                       outputVertices[idx] = mix(start, end, t);
+                                                                   }
+                                                                   """;
+
+        private static int _morphComputeProgram = -1;
+        private static string _vertexShaderSource = """
+                                                    #version 430 core
+                                                    layout (location = 0) in vec3 aPosition;
+
+                                                    uniform mat4 u_model;
+                                                    uniform mat4 u_viewProjection;
+                                                    uniform vec3 u_color;
+                                                    uniform float u_aspectRatio;
+
+                                                    out vec3 fragColor;
+
+                                                    void main()
+                                                    {
+                                                        vec4 pos = vec4(aPosition, 1.0);
+                                                        pos = u_model * pos;
+                                                        pos = u_viewProjection * pos;
+                                                        //pos.x *= u_aspectRatio;
+                                                        gl_Position = pos;
+                                                        fragColor = u_color;
+                                                    }
+                                                    """;
+
+        private static string _fragmentShaderSource = """
+                                                      #version 430 core
+                                                      in vec3 fragColor;
+                                                      out vec4 FragColor;
+
+                                                      void main()
+                                                      {
+                                                          FragColor = vec4(fragColor, 1.0);
+                                                      }
+                                                      """;
+
+        public static int GetMorphComputeProgram()
+        {
+            if (_morphComputeProgram != -1)
+                return _morphComputeProgram;
+
+            _morphComputeProgram = LoadComputeShader(_morphComputeShaderSource);
+            return _morphComputeProgram;
+        }
         
-        private static string _fragmentShaderSource = @"
-#version 430 core
-in vec3 fragColor;
-out vec4 FragColor;
-
-void main()
-{
-    FragColor = vec4(fragColor, 1.0);
-}
-";
-
         
         // --- Инициализация окна OpenTK ---
         public static GameWindow InitOpenTkWindow(string title = "Physics Simulation", bool fullscreen = false, bool debugMode = true)
@@ -309,6 +343,25 @@ void main()
             DebugManager.Gpu("some text for testing debug output");
             DebugManager.Scene("some text for testing debug output");
             DebugManager.Font("some text for testing debug output");
+        }
+        
+        public static int LoadComputeShader(string source)
+        {
+            int shader = GL.CreateShader(ShaderType.ComputeShader);
+            GL.ShaderSource(shader, source);
+            GL.CompileShader(shader);
+
+            GL.GetShader(shader, ShaderParameter.CompileStatus, out _);
+            int program = GL.CreateProgram();
+            GL.AttachShader(program, shader);
+            GL.LinkProgram(program);
+
+            GL.GetProgram(program, GetProgramParameterName.LinkStatus, out int linkSuccess);
+            if (linkSuccess == 0)
+                throw new Exception("Compute program link failed: " + GL.GetProgramInfoLog(program));
+
+            GL.DeleteShader(shader);
+            return program;
         }
     }
 }

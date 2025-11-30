@@ -22,7 +22,6 @@ namespace PhysicsSimulation.Rendering.TextRendering
         private readonly bool _filled;
         private readonly Text.HorizontalAlignment _hAlign;
         private readonly Text.VerticalAlignment _vAlign;
-        public int VertexCount => _verts?.Count ?? 0;
 
         private TextMesh(string? text, SKTypeface typeface, float fontSize, float letterPadding, float verticalPadding, bool filled,
             Text.HorizontalAlignment hAlign, Text.VerticalAlignment vAlign)
@@ -41,7 +40,8 @@ namespace PhysicsSimulation.Rendering.TextRendering
 
         public static TextMesh CreateFromText(string text, SKTypeface typeface, float fontSize,
             float letterPadding = 0.05f, float verticalPadding = 0.1f, bool filled = false,
-            Text.HorizontalAlignment hAlign = Text.HorizontalAlignment.Center, Text.VerticalAlignment vAlign = Text.VerticalAlignment.Center)
+            Text.HorizontalAlignment hAlign = Text.HorizontalAlignment.Center,
+            Text.VerticalAlignment vAlign = Text.VerticalAlignment.Center)
             => new(text, typeface, fontSize, letterPadding, verticalPadding, filled, hAlign, vAlign);
 
         private void BuildVertsAndUpload()
@@ -93,18 +93,8 @@ namespace PhysicsSimulation.Rendering.TextRendering
                 _verts = [];
                 TriRanges.Clear();
                 LineRanges.Clear();
-                if (Vbo != -1)
-                {
-                    GL.DeleteBuffer(Vbo);
-                    Vbo = -1;
-                }
-
-                if (Vao != -1)
-                {
-                    GL.DeleteVertexArray(Vao);
-                    Vao = -1;
-                }
-
+                if (Vbo != -1) { GL.DeleteBuffer(Vbo); Vbo = -1; }
+                if (Vao != -1) { GL.DeleteVertexArray(Vao); Vao = -1; }
                 return;
             }
 
@@ -132,7 +122,8 @@ namespace PhysicsSimulation.Rendering.TextRendering
                     if (triVerts.Count > 0)
                     {
                         int start = _verts.Count;
-                        foreach (var p in triVerts) _verts.Add(new Vector3(p.X, p.Y, 0f));
+                        foreach (var p in triVerts)
+                            _verts.Add(new Vector3(p.X, p.Y, 0f));
                         int cnt = _verts.Count - start;
                         if (cnt > 0) TriRanges.Add((start, cnt));
                     }
@@ -149,66 +140,48 @@ namespace PhysicsSimulation.Rendering.TextRendering
                 }
             }
 
-            if (Vbo != -1)
-            {
-                GL.DeleteBuffer(Vbo);
-                Vbo = -1;
-            }
+            // Удаляем старые буферы, если были
+            if (Vbo != -1) { GL.DeleteBuffer(Vbo); Vbo = -1; }
+            if (Vao != -1) { GL.DeleteVertexArray(Vao); Vao = -1; }
 
             if (_verts.Count > 0)
             {
                 Vbo = GL.GenBuffer();
-                GL.BindBuffer(BufferTarget.ArrayBuffer, Vbo);
-                GL.BufferData(BufferTarget.ArrayBuffer, _verts.Count * Vector3.SizeInBytes, _verts.ToArray(),
-                    BufferUsageHint.StaticDraw);
-                GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
-
-                if (Vao == -1)
-                    Vao = GL.GenVertexArray();
+                Vao = GL.GenVertexArray();
 
                 GL.BindVertexArray(Vao);
                 GL.BindBuffer(BufferTarget.ArrayBuffer, Vbo);
+
+                GL.BufferData(BufferTarget.ArrayBuffer, _verts.Count * Vector3.SizeInBytes, _verts.ToArray(), BufferUsageHint.StaticDraw);
+
                 GL.EnableVertexAttribArray(0);
                 GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
+
                 GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
                 GL.BindVertexArray(0);
             }
-            else
-            {
-                if (Vao != -1)
-                {
-                    GL.DeleteVertexArray(Vao);
-                    Vao = -1;
-                }
-            }
         }
 
+        // ГЛАВНЫЙ МЕТОД — РЕНДЕР С u_model (новый шейдер)
         public void Render(int program, float x, float y, float scale, float rotation, Vector3 color, float lineWidth = 1f)
         {
             if (_verts == null || _verts.Count == 0) return;
-            if (Vbo == -1 || Vao == -1) return;
 
             GL.UseProgram(program);
 
+            // Цвет
             int colorLoc = GL.GetUniformLocation(program, "u_color");
             if (colorLoc >= 0) GL.Uniform3(colorLoc, color);
 
-            float cos = MathF.Cos(rotation);
-            float sin = MathF.Sin(rotation);
+            // Матрица модели — заменяет translate + cos/sin + scale
+            Matrix4 model = Matrix4.CreateScale(scale) *
+                            Matrix4.CreateRotationZ(rotation) *
+                            Matrix4.CreateTranslation(x, y, 0f);
 
-            int transLoc = GL.GetUniformLocation(program, "u_translate");
-            if (transLoc >= 0) GL.Uniform2(transLoc, new Vector2(x, y));
+            int modelLoc = GL.GetUniformLocation(program, "u_model");
+            if (modelLoc >= 0) GL.UniformMatrix4(modelLoc, false, ref model);
 
-            int cosLoc = GL.GetUniformLocation(program, "u_cos");
-            if (cosLoc >= 0) GL.Uniform1(cosLoc, cos);
-
-            int sinLoc = GL.GetUniformLocation(program, "u_sin");
-            if (sinLoc >= 0) GL.Uniform1(sinLoc, sin);
-
-            int scaleLoc = GL.GetUniformLocation(program, "u_scale");
-            if (scaleLoc >= 0) GL.Uniform1(scaleLoc, scale);
-
-            if (lineWidth > 0) GL.LineWidth(lineWidth);
+            if (lineWidth > 0f) GL.LineWidth(lineWidth);
 
             GL.BindVertexArray(Vao);
 
@@ -229,16 +202,14 @@ namespace PhysicsSimulation.Rendering.TextRendering
                 GL.DeleteBuffer(Vbo);
                 Vbo = -1;
             }
-
             if (Vao != -1)
             {
                 GL.DeleteVertexArray(Vao);
                 Vao = -1;
             }
-
             _verts = null;
         }
-        
+
         private List<Vector2> TriangulateGlyph(List<List<Vector2>> contours)
         {
             var tess = new Tess();

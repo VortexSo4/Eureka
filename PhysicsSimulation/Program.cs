@@ -58,6 +58,14 @@ namespace PhysicsSimulation
                 GL.ClearColor(scene.BackgroundColor.X, scene.BackgroundColor.Y, scene.BackgroundColor.Z, 1f);
                 GL.Clear(ClearBufferMask.ColorBufferBit);
 
+                GL.UseProgram(program);
+
+                Matrix4 ortho = Matrix4.CreateOrthographicOffCenter(-1f, 1f, -1f, 1f, -1f, 1f);
+                int vpLoc = GL.GetUniformLocation(program, "u_viewProjection");
+                if (vpLoc >= 0)
+                    GL.UniformMatrix4(vpLoc, false, ref ortho);
+                GL.UseProgram(0);
+
                 scene.Render(program, vbo, vao);
                 window.SwapBuffers();
             };
