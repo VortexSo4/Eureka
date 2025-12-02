@@ -269,8 +269,6 @@ namespace PhysicsSimulation.Rendering.GPU
 
         #region Animation upload
 
-        // ... (остальной код без изменений, только UploadPendingAnimationsAndIndex)
-
         public void UploadPendingAnimationsAndIndex()
         {
             var newEntries = new List<AnimEntryCpu>();

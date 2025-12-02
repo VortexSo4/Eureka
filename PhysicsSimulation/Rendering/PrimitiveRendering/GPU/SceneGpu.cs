@@ -15,6 +15,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
         private float _animTime;
+        protected float Time => _animTime;
 
         private readonly Queue<BackgroundAnimation> _bgAnimQueue = new();
         private BackgroundAnimation? _currentBgAnim;
@@ -31,12 +32,15 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public void AddPrimitive(PrimitiveGpu p)
         {
+            if (p == null) throw new ArgumentNullException(nameof(p));
+            p.EnsureGeometryRegistered(_arena);
             if (p.PrimitiveId == -1)
             {
                 p.PrimitiveId = _primitives.Count;
-                DebugManager.Gpu($"Assigned PrimitiveId {p.PrimitiveId} to '{p.Name}' in AddPrimitive.");
+                DebugManager.Gpu($"SceneGpu.AddPrimitive: Assigned PrimitiveId {p.PrimitiveId} to '{p.Name}'");
             }
             _primitives.Add(p);
+            DebugManager.Gpu($"SceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
 
         public virtual void Initialize()
@@ -95,6 +99,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 }
             }
 
+            // ← КЛЮЧЕВОЕ ДОБАВЛЕНИЕ: Перерегистрируем геометрию для динамических примитивов
+            foreach (var p in _primitives)
+            {
+                p.EnsureGeometryRegistered(_arena);
+            }
+
+            // Затем стандартные анимации
             _animationEngine.UploadPendingAnimationsAndIndex();
             _animationEngine.UpdateAndDispatch(_animTime);
         }

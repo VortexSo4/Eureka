@@ -1,8 +1,8 @@
-﻿using System;
-using System.Diagnostics;
+﻿using System.Diagnostics;
+using System.Numerics;
 using OpenTK.Graphics.OpenGL4;
-using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
+using OpenTK.Windowing.Common;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 using PhysicsSimulation.Base;
 using PhysicsSimulation.Base.Utilities;
@@ -23,7 +23,6 @@ namespace PhysicsSimulation
             int vao = GL.GenVertexArray();
             GL.BindVertexArray(vao);
             GL.EnableVertexAttribArray(0);
-            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, Vector3.SizeInBytes, 0);
 
             int aspectLoc = GL.GetUniformLocation(program, "u_aspectRatio");
             if (aspectLoc >= 0)
@@ -33,16 +32,15 @@ namespace PhysicsSimulation
                 GL.UseProgram(0);
             }
 
-            UpdateViewport(window);
-            window.Resize += _ => UpdateViewport(window);
-
-            // Создаем сцену и настраиваем
+            // Создаём сцену ДО запуска окна
             var arena = new GeometryArena();
             var scene = new CustomSceneGpuExample(arena);
-            scene.Setup();
+
+            scene.Setup();        // ← создаём примитивы
+            scene.Initialize();   // ← ЭТО САМОЕ ГЛАВНОЕ! Создаётся AnimationEngine!
 
             var stopwatch = Stopwatch.StartNew();
-            double lastTime = stopwatch.Elapsed.TotalSeconds;
+            double lastTime = 0.0;
 
             window.RenderFrame += _ =>
             {
@@ -51,51 +49,27 @@ namespace PhysicsSimulation
                 lastTime = currentTime;
 
                 scene.Update(dt);
-
-                GL.Viewport(0, 0, window.Size.X, window.Size.Y);
                 scene.Render();
+
                 window.SwapBuffers();
             };
 
-            // Переключение сцен по пробелу (здесь можно добавить SceneManager)
-            bool spacePressed = false;
-            window.UpdateFrame += _ =>
+            window.UpdateFrame += args =>
             {
-                if (window.KeyboardState.IsKeyDown(Keys.Space))
-                {
-                    if (spacePressed) return;
-                    // SceneManager.Next();
-                    // scene = SceneManager.Current!;
-                    spacePressed = true;
-                }
-                else spacePressed = false;
+                if (window.KeyboardState.WasKeyDown(Keys.Escape))
+                    window.Close();
             };
 
+            window.Resize += e =>
+            {
+                GL.Viewport(0, 0, window.ClientSize.X, window.ClientSize.Y);
+            };
+
+            // Устанавливаем viewport один раз
+            GL.Viewport(0, 0, window.ClientSize.X, window.ClientSize.Y);
+
+            // Запускаем окно
             window.Run();
-        }
-
-        private static void UpdateViewport(GameWindow window)
-        {
-            int width = window.Size.X, height = window.Size.Y;
-            if (width <= 0 || height <= 0) return;
-
-            const float desiredAspect = 16f / 9f;
-            float windowAspect = (float)width / height;
-
-            int vpX = 0, vpY = 0, vpWidth = width, vpHeight = height;
-
-            if (windowAspect > desiredAspect)
-            {
-                vpWidth = (int)(height * desiredAspect);
-                vpX = (width - vpWidth) / 2;
-            }
-            else
-            {
-                vpHeight = (int)(width / desiredAspect);
-                vpY = (height - vpHeight) / 2;
-            }
-
-            GL.Viewport(vpX, vpY, vpWidth, vpHeight);
         }
     }
 }
