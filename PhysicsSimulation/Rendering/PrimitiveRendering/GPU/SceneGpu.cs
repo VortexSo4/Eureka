@@ -1,5 +1,5 @@
-﻿// File: Scene.cs
-
+﻿using System;
+using System.Collections.Generic;
 using System.Numerics;
 using OpenTK.Graphics.OpenGL4;
 using PhysicsSimulation.Rendering.GPU;
@@ -8,11 +8,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 {
     public abstract class SceneGpu : IDisposable
     {
-        protected List<PrimitiveGpu> _primitives = [];
+        protected List<PrimitiveGpu> _primitives = new();
         protected AnimationEngine _animationEngine;
         protected GeometryArena _arena;
 
-        // Background color (RGB) and optional animation
+        // Background color (RGB) + animation
         private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
         private Vector3 _targetBgColor = new(0.1f, 0.1f, 0.1f);
         private float _bgAnimDuration = 0f;
@@ -24,26 +24,19 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             _arena = arena ?? throw new ArgumentNullException(nameof(arena));
         }
 
-        /// <summary>
-        /// Adds a primitive to the scene
-        /// </summary>
+        public Vector3 BackgroundColor => _bgColor;
+
         public void AddPrimitive(PrimitiveGpu p)
         {
             _primitives.Add(p);
         }
 
-        /// <summary>
-        /// Initialize AnimationEngine and upload geometry
-        /// </summary>
-        public void Initialize()
+        public virtual void Initialize()
         {
             _animationEngine = new AnimationEngine(_arena, _primitives);
             _animationEngine.UploadGeometryFromPrimitives();
         }
 
-        /// <summary>
-        /// Animate background color over time
-        /// </summary>
         public void AnimateBackground(Vector3 targetColor, float duration)
         {
             _bgStartColor = _bgColor;
@@ -52,12 +45,9 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             _bgAnimElapsed = 0f;
         }
 
-        /// <summary>
-        /// Call once per frame
-        /// </summary>
         public virtual void Update(float deltaTime)
         {
-            // update background animation
+            // Background color animation
             if (_bgAnimElapsed < _bgAnimDuration)
             {
                 _bgAnimElapsed += deltaTime;
@@ -65,22 +55,16 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 _bgColor = Vector3.Lerp(_bgStartColor, _targetBgColor, t);
             }
 
-            // update AnimationEngine
+            // Update animations
             _animationEngine.UploadPendingAnimationsAndIndex();
-            _animationEngine.UpdateAndDispatch(_bgAnimElapsed); // use elapsed for time; optionally pass global time
+            _animationEngine.UpdateAndDispatch(_bgAnimElapsed);
         }
 
-        /// <summary>
-        /// Render all primitives
-        /// </summary>
         public virtual void Render()
         {
-            // set background color
             GL.ClearColor(_bgColor.X, _bgColor.Y, _bgColor.Z, 1f);
-            GL.Clear(ClearBufferMask.ColorBufferBit | 
-                     ClearBufferMask.DepthBufferBit);
+            GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-            // render primitives
             _animationEngine.RenderAll();
         }
 

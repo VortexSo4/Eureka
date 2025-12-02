@@ -1,11 +1,12 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 using PhysicsSimulation.Base;
 using PhysicsSimulation.Base.Utilities;
-using PhysicsSimulation.Rendering.SceneRendering;
+using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
 
 namespace PhysicsSimulation
 {
@@ -14,9 +15,7 @@ namespace PhysicsSimulation
         private static void Main(string[] args)
         {
             DebugManager.Log(LogLevel.Custom, $"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "A0FF33");
-            DebugManager.Log( LogLevel.Custom, $"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
-
-            string sceneName = args.Length > 0 ? args[0] : "MainMenuScene";
+            DebugManager.Log(LogLevel.Custom, $"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
@@ -37,7 +36,10 @@ namespace PhysicsSimulation
             UpdateViewport(window);
             window.Resize += _ => UpdateViewport(window);
 
-            Scene scene = SceneManager.Load(sceneName);
+            // Создаем сцену и настраиваем
+            var arena = new GeometryArena();
+            var scene = new CustomSceneGpuExample(arena);
+            scene.Setup();
 
             var stopwatch = Stopwatch.StartNew();
             double lastTime = stopwatch.Elapsed.TotalSeconds;
@@ -49,28 +51,21 @@ namespace PhysicsSimulation
                 lastTime = currentTime;
 
                 scene.Update(dt);
-                
+
                 GL.Viewport(0, 0, window.Size.X, window.Size.Y);
-                GL.ClearColor(0f, 0f, 0f, 1f);
-                GL.Clear(ClearBufferMask.ColorBufferBit);
-                UpdateViewport(window);
-
-                GL.ClearColor(scene.BackgroundColor.X, scene.BackgroundColor.Y, scene.BackgroundColor.Z, 1f);
-                GL.Clear(ClearBufferMask.ColorBufferBit);
-
-                scene.Render(program, vbo, vao);
+                scene.Render();
                 window.SwapBuffers();
             };
 
-            // --- переключение сцен по пробелу ---
+            // Переключение сцен по пробелу (здесь можно добавить SceneManager)
             bool spacePressed = false;
             window.UpdateFrame += _ =>
             {
                 if (window.KeyboardState.IsKeyDown(Keys.Space))
                 {
                     if (spacePressed) return;
-                    SceneManager.Next();
-                    scene = SceneManager.Current!;
+                    // SceneManager.Next();
+                    // scene = SceneManager.Current!;
                     spacePressed = true;
                 }
                 else spacePressed = false;
