@@ -1,4 +1,4 @@
-﻿// File: AnimationEngine.cs
+﻿﻿// File: AnimationEngine.cs
 // Requires OpenTK 4.x (OpenTK.Graphics.OpenGL4)
 // Place near PrimitivesGPU.cs (same namespace recommended)
 
@@ -60,6 +60,16 @@ namespace PhysicsSimulation.Rendering.GPU
         {
             _arena = arena ?? throw new ArgumentNullException(nameof(arena));
             _primitives = primitives?.OrderBy(p => p.PrimitiveId).ToList() ?? throw new ArgumentNullException(nameof(primitives));
+
+            // Assign PrimitiveIds if not already set
+            for (int i = 0; i < _primitiveCount; i++)
+            {
+                if (_primitives[i].PrimitiveId == -1)
+                {
+                    _primitives[i].PrimitiveId = i;
+                    DebugManager.Gpu($"Assigned PrimitiveId {i} to primitive '{_primitives[i].Name}'");
+                }
+            }
 
             // allocate CPU-side descriptor arrays
             _morphDescs = new MorphDescCpu[_primitiveCount];
@@ -261,6 +271,7 @@ namespace PhysicsSimulation.Rendering.GPU
 
         public void UploadPendingAnimationsAndIndex()
         {
+            // Собираем ТОЛЬКО новые (не uploaded) анимации
             var newEntries = new List<AnimEntryCpu>();
             bool hasNew = false;
 
@@ -269,10 +280,11 @@ namespace PhysicsSimulation.Rendering.GPU
                 for (int i = 0; i < prim.PendingAnimations.Count; i++)
                 {
                     var entry = prim.PendingAnimations[i];
-                    if (!entry.PendingOnGpu) continue; // уже загружено
+                    if (!entry.PendingOnGpu) continue;
 
                     newEntries.Add(entry);
-                    prim.PendingAnimations[i] = entry with { PendingOnGpu = false }; // помечаем как загруженное
+                    entry.PendingOnGpu = false;
+                    prim.PendingAnimations[i] = entry; // update back
                     hasNew = true;
                 }
             }
@@ -294,14 +306,14 @@ namespace PhysicsSimulation.Rendering.GPU
             int startIndex = _uploadedAnimEntries.Count;
             _uploadedAnimEntries.AddRange(newEntries);
 
-            // Сериализуем ВЕСЬ пул (да, пока весь — но теперь редко!)
+            // Сериализуем ВЕСЬ пул
             var allBytes = PrimitiveGpu.SerializeAnimEntries(_uploadedAnimEntries);
 
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboAnimEntries);
             GL.BufferData(BufferTarget.ShaderStorageBuffer, allBytes.Length, allBytes, BufferUsageHint.DynamicDraw);
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
 
-            // Пересобираем индекс (теперь с учётом новых)
+            // Пересобираем индекс для всего
             var indices = PrimitiveGpu.BuildAnimIndex(_uploadedAnimEntries, _primitiveCount);
             var indexBytes = ToByteArray(indices);
 
@@ -323,14 +335,13 @@ namespace PhysicsSimulation.Rendering.GPU
             GL.Uniform1(GL.GetUniformLocation(_programAnimCompute, "u_time"), time);
             int groups = (int)MathF.Ceiling(_primitiveCount / 64f);
             GL.DispatchCompute(groups, 1, 1);
-            GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit);   // правильный флаг
+            GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit);
 
             // Dispatch morph compute for each primitive that has morphs
             GL.UseProgram(_programMorphCompute);
             int morphUniformLoc = GL.GetUniformLocation(_programMorphCompute, "u_primitiveId");
             for (int pid = 0; pid < _primitiveCount; pid++)
             {
-                // Пропускаем если нет геометрии или морфинг не активен
                 if (_morphDescs[pid].VertexCount <= 0 || _morphDescs[pid].CurrentT <= 0f) continue;
 
                 GL.Uniform1(morphUniformLoc, pid);
