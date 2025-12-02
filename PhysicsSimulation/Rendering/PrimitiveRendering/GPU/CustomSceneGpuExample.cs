@@ -2,28 +2,22 @@
 
 namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 {
-    public class CustomSceneGpuExample : SceneGpu
+    public class CustomSceneGpuExample(GeometryArena arena) : SceneGpu(arena)
     {
-        public CustomSceneGpuExample(GeometryArena arena) : base(arena)
-        {
-        }
-
         public void Setup()
         {
             // Примитив 1: линия
             var line = new PolygonGpu();
-            line.InitGeometry(_arena, new[]
-            {
-                new List<Vector2> { new(0f, 0f), new(0.5f, 0f), new(0.5f, 0.5f), new(0f, 0.5f) }
-            });
+            line.InitGeometry(_arena, [
+                [new Vector2(0f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0.5f), new Vector2(0f, 0.5f)]
+            ]);
             AddPrimitive(line);
 
             // Примитив 2: другая линия
             var line2 = new PolygonGpu();
-            line2.InitGeometry(_arena, new[]
-            {
-                new List<Vector2> { new(-0.5f, -0.5f), new(0f, -0.5f), new(0f, 0f), new(-0.5f, 0f) }
-            });
+            line2.InitGeometry(_arena, [
+                [new Vector2(-0.5f, -0.5f), new Vector2(0f, -0.5f), new Vector2(0f, 0f), new Vector2(-0.5f, 0f)]
+            ]);
             AddPrimitive(line2);
 
             // Анимация фона
@@ -37,8 +31,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 new Vector4(0f,0f,0f,0f), new Vector4(MathF.PI/2f,0f,0f,0f));
 
             // Line2: перемещение, цвет
-            line2.AnimatePosition(0f, 4f, EaseType.EaseInOut, new Vector2(-0.5f, -0.5f), new Vector2(0.2f, 0.3f));
-            line2.AnimateColor(0f, 4f, EaseType.EaseInOut,
+            line2.AnimatePosition(1f, 4f, EaseType.EaseInOut, new Vector2(-0.5f, -0.5f), new Vector2(0.2f, 0.3f));
+            line2.AnimateColor(1f, 4f, EaseType.EaseInOut,
                 new Vector4(1f, 0f, 0f, 1f), new Vector4(0f, 1f, 0f, 1f));
 
             // Инициализация движка анимаций

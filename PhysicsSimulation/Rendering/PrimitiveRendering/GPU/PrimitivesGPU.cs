@@ -1,4 +1,4 @@
-﻿// File: PrimitivesGPU.cs
+﻿﻿// File: PrimitivesGPU.cs
 // Namespace: PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 // Purpose: GPU-first primitive definitions (CPU-side metadata + SSBO serialization helpers).
 // Note: Actual compute shaders + rendering path will be implemented in AnimationEngine / RenderEngine.
@@ -8,6 +8,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using PhysicsSimulation.Base;
 
 namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 {
@@ -66,6 +67,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public int MorphOffsetB;
         public int MorphOffsetM;
         public int MorphVertexCount;
+        public bool PendingOnGpu;
 
         public AnimEntryCpu(
             AnimType type,
@@ -91,6 +93,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             MorphOffsetB = morphB;
             MorphOffsetM = morphM;
             MorphVertexCount = morphCount;
+            PendingOnGpu = true;
         }
     }
 
@@ -139,10 +142,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public int Allocate(int vertexCount)
         {
+            DebugManager.Gpu($"GeometryArena.Allocate: Allocating {vertexCount} vertices.");
             if (vertexCount <= 0) return -1;
             int off = _nextOffset;
             _allocations.Add((off, vertexCount));
             _nextOffset += vertexCount;
+            DebugManager.Gpu($"GeometryArena.Allocate: Allocated at offset {off}, new nextOffset {_nextOffset}.");
             return off;
         }
 
@@ -150,13 +155,16 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public void Reset()
         {
+            DebugManager.Gpu("GeometryArena.Reset: Resetting arena.");
             _nextOffset = 0;
             _allocations.Clear();
+            DebugManager.Gpu("GeometryArena.Reset: Arena reset complete.");
         }
 
         // Flatten contours into a single vertex array with NaN separators between contours
         public static Vector2[] FlattenContours(IReadOnlyList<List<Vector2>> contours)
         {
+            DebugManager.Gpu($"GeometryArena.FlattenContours: Flattening {contours.Count} contours.");
             var list = new List<Vector2>();
             for (int i = 0; i < contours.Count; i++)
             {
@@ -165,6 +173,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 foreach (var v in c) list.Add(v);
                 if (i < contours.Count - 1) list.Add(new Vector2(float.NaN, float.NaN));
             }
+            DebugManager.Gpu($"GeometryArena.FlattenContours: Flattened to {list.Count} vertices.");
             return list.ToArray();
         }
     }
@@ -177,6 +186,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
     {
         // assigned by engine
         public int PrimitiveId { get; internal set; } = -1;
+        private const int ANIM_ENTRY_SIZE_BYTES = 80;
         public string Name { get; set; } = "";
 
         // geometry offsets (in vertex units)
@@ -207,169 +217,171 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         protected PrimitiveGpu(string name = "")
         {
+            DebugManager.Gpu($"PrimitiveGpu.ctor: Creating primitive with name '{name}'.");
             Name = name ?? "";
+            DebugManager.Gpu($"PrimitiveGpu.ctor: Primitive created.");
         }
 
         #region Geometry registration helpers
 
-        protected int RegisterRawGeometry(GeometryArena arena, Vector2[] flattenedVertices)
+        protected void RegisterRawGeometry(GeometryArena arena, Vector2[] flatVertices)
         {
-            if (flattenedVertices == null || flattenedVertices.Length == 0)
-                throw new ArgumentException("flattenedVertices is empty");
-
-            int off = arena.Allocate(flattenedVertices.Length);
-            VertexOffsetRaw = off;
-            VertexOffsetA = off;
-            VertexCount = flattenedVertices.Length;
-            return off;
+            DebugManager.Gpu($"PrimitiveGpu.RegisterRawGeometry: Registering raw geometry for primitive '{Name}', {flatVertices.Length} vertices.");
+            if (arena == null) throw new ArgumentNullException(nameof(arena));
+            if (flatVertices == null || flatVertices.Length == 0) return;
+            VertexOffsetRaw = arena.Allocate(flatVertices.Length);
+            VertexCount = flatVertices.Length;
+            DebugManager.Gpu($"PrimitiveGpu.RegisterRawGeometry: Registered at offset {VertexOffsetRaw}, count {VertexCount}.");
         }
 
-        public void ReserveMorphTargets(GeometryArena arena, int reserveCount)
+        public void RegisterMorphTarget(GeometryArena arena, Vector2[] verticesA, Vector2[] verticesB)
         {
-            if (reserveCount <= 0) return;
-            if (VertexOffsetB == -1) VertexOffsetB = arena.Allocate(reserveCount);
-            if (VertexOffsetM == -1) VertexOffsetM = arena.Allocate(reserveCount);
+            DebugManager.Gpu($"PrimitiveGpu.RegisterMorphTarget: Registering morph targets for primitive '{Name}'.");
+            if (arena == null) throw new ArgumentNullException(nameof(arena));
+            if (verticesA == null || verticesB == null || verticesA.Length != verticesB.Length || verticesA.Length == 0)
+                throw new ArgumentException("Morph targets must be non-null and same length >0");
+
+            int len = verticesA.Length;
+            VertexOffsetA = arena.Allocate(len);
+            VertexOffsetB = arena.Allocate(len);
+            VertexOffsetM = arena.Allocate(len);
+            VertexCount = len;
+
+            // Note: actual vertex data upload happens in engine.UploadGeometryFromPrimitives
+            DebugManager.Gpu($"PrimitiveGpu.RegisterMorphTarget: Morph targets registered: A={VertexOffsetA}, B={VertexOffsetB}, M={VertexOffsetM}, count={len}.");
         }
 
         #endregion
 
-        #region Animation scheduling API
+        #region Animation helpers
 
-        public void ScheduleAnimation(
-            AnimType type,
-            float start,
-            float end,
-            EaseType ease,
-            Vector4 from,
-            Vector4 to,
-            int morphOffsetA = 0,
-            int morphOffsetB = 0,
-            int morphOffsetM = 0,
-            int morphVertexCount = 0)
-        {
-            var entry = new AnimEntryCpu(
-                type,
-                PrimitiveId,
-                start,
-                end,
-                ease,
-                from,
-                to,
-                morphOffsetA,
-                morphOffsetB,
-                morphOffsetM,
-                morphVertexCount
-            );
-            PendingAnimations.Add(entry);
-        }
-
-        public void ClearPendingAnimations() => PendingAnimations.Clear();
-
-        #endregion
-
-        #region Convenience anim helpers (old-style friendly API)
-
-        // Animates position (vec2)
         public void AnimatePosition(float start, float end, EaseType ease, Vector2 from, Vector2 to)
         {
-            ScheduleAnimation(AnimType.Translate, start, end, ease, new Vector4(from, 0f, 0f), new Vector4(to, 0f, 0f));
+            DebugManager.Gpu($"PrimitiveGpu.AnimatePosition: Adding position animation for '{Name}' from {from} to {to}.");
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.Translate, PrimitiveId, start, end, ease, new Vector4(from, 0f, 0f), new Vector4(to, 0f, 0f)));
+            DebugManager.Gpu($"PrimitiveGpu.AnimatePosition: Position animation added.");
         }
 
-        // Animates color (vec4)
-        public void AnimateColor(float start, float end, EaseType ease, Vector4 from, Vector4 to)
+        public void AnimateRotation(float start, float end, EaseType ease, float from, float to)
         {
-            ScheduleAnimation(AnimType.Color, start, end, ease, from, to);
+            DebugManager.Gpu($"PrimitiveGpu.AnimateRotation: Adding rotation animation for '{Name}' from {from} to {to}.");
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.Rotate, PrimitiveId, start, end, ease, new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
+            DebugManager.Gpu($"PrimitiveGpu.AnimateRotation: Rotation animation added.");
         }
 
-        // Animates scale (single float stored in .x)
         public void AnimateScale(float start, float end, EaseType ease, float from, float to)
         {
-            ScheduleAnimation(AnimType.Scale, start, end, ease, new Vector4(from, 0f,0f,0f), new Vector4(to,0f,0f,0f));
+            DebugManager.Gpu($"PrimitiveGpu.AnimateScale: Adding scale animation for '{Name}' from {from} to {to}.");
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.Scale, PrimitiveId, start, end, ease, new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
+            DebugManager.Gpu($"PrimitiveGpu.AnimateScale: Scale animation added.");
         }
 
-        // Morph request: we pass offsets/count so compute can read proper ranges
+        public void AnimateColor(float start, float end, EaseType ease, Vector4 from, Vector4 to)
+        {
+            DebugManager.Gpu($"PrimitiveGpu.AnimateColor: Adding color animation for '{Name}' from {from} to {to}.");
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.Color, PrimitiveId, start, end, ease, from, to));
+            DebugManager.Gpu($"PrimitiveGpu.AnimateColor: Color animation added.");
+        }
+
         public void AnimateMorph(float start, float end, EaseType ease, int offsetA, int offsetB, int offsetM, int vertexCount)
         {
-            ScheduleAnimation(AnimType.Morph, start, end, ease, Vector4.Zero, Vector4.One, offsetA, offsetB, offsetM, vertexCount);
+            DebugManager.Gpu($"PrimitiveGpu.AnimateMorph: Adding morph animation for '{Name}'.");
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.Morph, PrimitiveId, start, end, ease, Vector4.Zero, Vector4.Zero, offsetA, offsetB, offsetM, vertexCount));
+            DebugManager.Gpu($"PrimitiveGpu.AnimateMorph: Morph animation added.");
         }
 
-        // Dash lengths tuning
-        public void AnimateDashLengths(float start, float end, EaseType ease, float fromFilled, float fromEmpty, float toFilled, float toEmpty)
+        public void AnimateDash(float start, float end, EaseType ease, Vector2 fromLengths, Vector2 toLengths)
         {
-            ScheduleAnimation(AnimType.DashLengths, start, end, ease, new Vector4(fromFilled, fromEmpty, 0, 0), new Vector4(toFilled, toEmpty, 0, 0));
+            DebugManager.Gpu($"PrimitiveGpu.AnimateDash: Adding dash animation for '{Name}' from {fromLengths} to {toLengths}.");
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.DashLengths, PrimitiveId, start, end, ease, new Vector4(fromLengths, 0f, 0f), new Vector4(toLengths, 0f, 0f)));
+            DebugManager.Gpu($"PrimitiveGpu.AnimateDash: Dash animation added.");
+        }
+
+        // ScheduleAnimation (generic for other types)
+        public void ScheduleAnimation(AnimType type, float start, float end, EaseType ease, Vector4 from, Vector4 to, int morphA = 0, int morphB = 0, int morphM = 0, int morphCount = 0)
+        {
+            DebugManager.Gpu($"PrimitiveGpu.ScheduleAnimation: Scheduling {type} animation for '{Name}'.");
+            PendingAnimations.Add(new AnimEntryCpu(type, PrimitiveId, start, end, ease, from, to, morphA, morphB, morphM, morphCount));
+            DebugManager.Gpu($"PrimitiveGpu.ScheduleAnimation: Animation scheduled.");
         }
 
         #endregion
 
-        #region Render instance conversion + serialization helpers
+        #region Serialization helpers
 
         public RenderInstanceCpu ToRenderInstanceCpu()
         {
+            DebugManager.Gpu($"PrimitiveGpu.ToRenderInstanceCpu: Converting primitive '{Name}' to RenderInstanceCpu.");
             float c = MathF.Cos(Rotation);
             float s = MathF.Sin(Rotation);
-
             var row0 = new Vector4(Scale * c, Scale * s, 0f, 0f);
             var row1 = new Vector4(-Scale * s, Scale * c, 0f, 0f);
-            var row2 = new Vector4(Position.X, Position.Y, 1f, 0f);
-
+            var row2 = new Vector4(Position, 1f, 0f);
             var inst = new RenderInstanceCpu
             {
                 TransformRow0 = row0,
                 TransformRow1 = row1,
                 TransformRow2 = row2,
                 Color = Color,
-                OffsetM = VertexOffsetM >= 0 ? VertexOffsetM : VertexOffsetA,
+                OffsetM = VertexOffsetM >= 0 ? VertexOffsetM : VertexOffsetRaw,
                 VertexCount = VertexCount,
                 Flags = (int)Flags,
                 Reserved = 0,
                 DashInfo = new Vector4(FilledLength, EmptyLength, DashOffset, 0f)
             };
-
+            DebugManager.Gpu($"PrimitiveGpu.ToRenderInstanceCpu: Conversion complete.");
             return inst;
         }
 
-        public static byte[] SerializeAnimEntries(IList<AnimEntryCpu> arr)
+        public static byte[] SerializeAnimEntries(List<AnimEntryCpu> entries)
         {
-            const int entrySize = 80;
-            var outBytes = new byte[arr.Count * entrySize];
-            int offset = 0;
-            for (int i = 0; i < arr.Count; i++)
+            DebugManager.Gpu($"PrimitiveGpu.SerializeAnimEntries: Serializing {entries.Count} animation entries.");
+            if (entries == null || entries.Count == 0) return [];
+            int bytes = entries.Count * ANIM_ENTRY_SIZE_BYTES;
+            var data = new byte[bytes];
+            var span = data.AsSpan();
+            for (int i = 0; i < entries.Count; i++)
             {
-                var e = arr[i];
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.MetaType); offset += 4;
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.PrimitiveId); offset += 4;
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.MetaR2); offset += 4;
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.MetaR3); offset += 4;
+                var e = entries[i];
+                var offset = i * ANIM_ENTRY_SIZE_BYTES;
 
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.Start); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.End); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.EaseAsFloat); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.TimesR); offset += 4;
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 0, 4), e.MetaType);
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 4, 4), e.PrimitiveId);
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 8, 4), e.MetaR2);
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 12, 4), e.MetaR3);
 
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.From.X); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.From.Y); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.From.Z); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.From.W); offset += 4;
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 16, 4), e.Start);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 20, 4), e.End);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 24, 4), e.EaseAsFloat);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 28, 4), e.TimesR);
 
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.To.X); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.To.Y); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.To.Z); offset += 4;
-                BinaryPrimitives.WriteSingleLittleEndian(new Span<byte>(outBytes, offset, 4), e.To.W); offset += 4;
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 32, 4), e.From.X);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 36, 4), e.From.Y);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 40, 4), e.From.Z);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 44, 4), e.From.W);
 
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.MorphOffsetA); offset += 4;
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.MorphOffsetB); offset += 4;
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.MorphOffsetM); offset += 4;
-                BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(outBytes, offset, 4), e.MorphVertexCount); offset += 4;
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 48, 4), e.To.X);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 52, 4), e.To.Y);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 56, 4), e.To.Z);
+                BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 60, 4), e.To.W);
+
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 64, 4), e.MorphOffsetA);
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 68, 4), e.MorphOffsetB);
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 72, 4), e.MorphOffsetM);
+                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 76, 4), e.MorphVertexCount);
             }
-            return outBytes;
+            DebugManager.Gpu($"PrimitiveGpu.SerializeAnimEntries: Serialization complete, {bytes} bytes.");
+            return data;
         }
 
-        public static AnimIndexCpu[] BuildAnimIndex(IList<AnimEntryCpu> allEntries, int primitiveCount)
+        public static AnimIndexCpu[] BuildAnimIndex(List<AnimEntryCpu> allEntries, int primitiveCount)
         {
+            DebugManager.Gpu($"PrimitiveGpu.BuildAnimIndex: Building index for {primitiveCount} primitives, {allEntries.Count} entries.");
             var result = new AnimIndexCpu[primitiveCount];
             if (allEntries == null || allEntries.Count == 0)
             {
                 for (int i = 0; i < primitiveCount; i++) result[i] = new AnimIndexCpu(0, 0);
+                DebugManager.Gpu("PrimitiveGpu.BuildAnimIndex: No entries, default indices built.");
                 return result;
             }
 
@@ -394,18 +406,50 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                     result[pid] = new AnimIndexCpu(0, 0);
                 }
             }
+            DebugManager.Gpu("PrimitiveGpu.BuildAnimIndex: Index built.");
             return result;
         }
 
         public static List<AnimEntryCpu> AggregateEntries(IEnumerable<PrimitiveGpu> primitives)
         {
+            DebugManager.Gpu("PrimitiveGpu.AggregateEntries: Aggregating entries from primitives.");
             var outList = new List<AnimEntryCpu>();
             foreach (var p in primitives.OrderBy(p => p.PrimitiveId))
             {
                 if (p.PendingAnimations.Count == 0) continue;
                 outList.AddRange(p.PendingAnimations);
             }
+            DebugManager.Gpu($"PrimitiveGpu.AggregateEntries: Aggregated {outList.Count} entries.");
             return outList;
+        }
+        
+        /// <summary>
+        /// Собирает только анимации, которые ещё не были отправлены на GPU
+        /// </summary>
+        public static List<AnimEntryCpu> AggregateNewEntries(IEnumerable<PrimitiveGpu> primitives)
+        {
+            DebugManager.Gpu("PrimitiveGpu.AggregateNewEntries: Aggregating new entries from primitives.");
+            var outList = new List<AnimEntryCpu>();
+            foreach (var p in primitives.OrderBy(p => p.PrimitiveId))
+            {
+                foreach (var e in p.PendingAnimations)
+                    if (e.PendingOnGpu) outList.Add(e);
+            }
+            DebugManager.Gpu($"PrimitiveGpu.AggregateNewEntries: Aggregated {outList.Count} new entries.");
+            return outList;
+        }
+
+        /// <summary>
+        /// После отправки на GPU ставим PendingOnGpu = false
+        /// </summary>
+        public static void MarkEntriesUploaded(List<AnimEntryCpu> entries)
+        {
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var entry = entries[i];
+                entry.PendingOnGpu = true;  // ставим true, т.к. данные загружены
+                entries[i] = entry;         // нужно записать обратно
+            }
         }
 
         #endregion
@@ -433,10 +477,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         /// </summary>
         public void InitGeometry(GeometryArena arena, IReadOnlyList<List<Vector2>> contours)
         {
+            DebugManager.Gpu($"PolygonGpu.InitGeometry: Initializing geometry for '{Name}', {contours.Count} contours.");
             if (contours == null) throw new ArgumentNullException(nameof(contours));
             Contours = contours.Select(c => new List<Vector2>(c)).ToList();
             var flat = GeometryArena.FlattenContours(Contours);
             RegisterRawGeometry(arena, flat);
+            DebugManager.Gpu($"PolygonGpu.InitGeometry: Geometry initialized.");
         }
 
         public Vector2[] GetFlattenedVertices() => GeometryArena.FlattenContours(Contours);
@@ -444,10 +490,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         // convenience: set dashed flag quickly (old API compatibility)
         public void SetDash(bool enabled, float filledLen = 0.05f, float emptyLen = 0.03f, float phase = 0f)
         {
+            DebugManager.Gpu($"PolygonGpu.SetDash: Setting dash for '{Name}', enabled={enabled}.");
             if (enabled) Flags |= PrimitiveFlags.None; // keep flags extensible
             FilledLength = filledLen;
             EmptyLength = emptyLen;
             DashOffset = phase;
+            DebugManager.Gpu($"PolygonGpu.SetDash: Dash set.");
         }
     }
 
@@ -465,6 +513,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         private static List<List<Vector2>> CreateRectangleContours(float width, float height)
         {
+            DebugManager.Gpu($"RectGpu.CreateRectangleContours: Creating contours for width={width}, height={height}.");
             float hw = width / 2f;
             float hh = height / 2f;
 
@@ -477,6 +526,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 new(-hw, -hh)
             };
 
+            DebugManager.Gpu("RectGpu.CreateRectangleContours: Contours created.");
             return [contour];
         }
     }
@@ -515,6 +565,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         // Engine should call this after generating glyph contours (via CharMap)
         public void InitGlyphContours(GeometryArena arena, IEnumerable<List<List<Vector2>>> glyphContours)
         {
+            DebugManager.Gpu($"TextGpu.InitGlyphContours: Initializing glyph contours for '{Name}'.");
             GlyphContours = glyphContours.Select(g => g.Select(c => new List<Vector2>(c)).ToList()).ToList();
 
             var allContours = new List<List<Vector2>>();
@@ -526,6 +577,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
             var flat = GeometryArena.FlattenContours(allContours);
             RegisterRawGeometry(arena, flat);
+            DebugManager.Gpu($"TextGpu.InitGlyphContours: Glyph contours initialized.");
         }
     }
 

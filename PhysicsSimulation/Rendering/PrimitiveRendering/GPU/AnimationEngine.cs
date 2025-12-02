@@ -8,6 +8,7 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using OpenTK.Graphics.OpenGL4;
+using PhysicsSimulation.Base;
 using PhysicsSimulation.Rendering.GPU;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU; // assumes PrimitiveGPU lives here
 
@@ -43,12 +44,17 @@ namespace PhysicsSimulation.Rendering.GPU
         // Prebuilt arrays (CPU mirrors)
         private MorphDescCpu[] _morphDescs;
         private RenderInstanceCpu[] _renderInstances;
+        private List<AnimEntryCpu> _uploadedAnimEntries = new();
+        private bool _animationsEverUploaded = false;
 
         // Config
         private const int ANIM_ENTRY_SIZE_BYTES = 80; // from earlier spec
         private const int ANIM_INDEX_SIZE_BYTES = 16;
         private const int MORPH_DESC_SIZE_BYTES = 32;
         private const int RENDER_INSTANCE_SIZE_BYTES = 96; // 3 vec4 + vec4 + ivec4 + vec4 = 96
+        private const int NO_ANIM_DEBUG_OUTPUT_RANGE = 10000;
+        private int NO_ANIM_DEBUG_CURRENT;
+        private const bool DO_NO_ANIM_DEBUG = false;
 
         public AnimationEngine(GeometryArena arena, IEnumerable<PrimitiveGpu> primitives)
         {
@@ -255,21 +261,55 @@ namespace PhysicsSimulation.Rendering.GPU
 
         public void UploadPendingAnimationsAndIndex()
         {
-            var allPending = PrimitiveGpu.AggregateEntries(_primitives);
-            if (allPending.Count == 0) return;
+            var newEntries = new List<AnimEntryCpu>();
+            bool hasNew = false;
 
-            // Upload AnimEntries
-            var bytesEntries = PrimitiveGpu.SerializeAnimEntries(allPending);
+            foreach (var prim in _primitives)
+            {
+                for (int i = 0; i < prim.PendingAnimations.Count; i++)
+                {
+                    var entry = prim.PendingAnimations[i];
+                    if (!entry.PendingOnGpu) continue; // уже загружено
+
+                    newEntries.Add(entry);
+                    prim.PendingAnimations[i] = entry with { PendingOnGpu = false }; // помечаем как загруженное
+                    hasNew = true;
+                }
+            }
+
+            if (!hasNew)
+            {
+                NO_ANIM_DEBUG_CURRENT += 1;
+                if (DO_NO_ANIM_DEBUG && NO_ANIM_DEBUG_OUTPUT_RANGE == NO_ANIM_DEBUG_CURRENT)
+                {
+                    DebugManager.Gpu("UploadPendingAnimationsAndIndex: No new animations. Skipping upload.");
+                    NO_ANIM_DEBUG_CURRENT = 0;
+                }
+                return;
+            }
+
+            DebugManager.Gpu($"UploadPendingAnimationsAndIndex: Uploading {newEntries.Count} NEW animation entries (total will be {_uploadedAnimEntries.Count + newEntries.Count})");
+
+            // Добавляем новые в общий пул
+            int startIndex = _uploadedAnimEntries.Count;
+            _uploadedAnimEntries.AddRange(newEntries);
+
+            // Сериализуем ВЕСЬ пул (да, пока весь — но теперь редко!)
+            var allBytes = PrimitiveGpu.SerializeAnimEntries(_uploadedAnimEntries);
+
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboAnimEntries);
-            GL.BufferData(BufferTarget.ShaderStorageBuffer, bytesEntries.Length, bytesEntries, BufferUsageHint.DynamicDraw);
-
-            // Build and upload AnimIndex
-            var indices = PrimitiveGpu.BuildAnimIndex(allPending, _primitiveCount);
-            var bytesIndex = ToByteArray(indices);
-            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboAnimIndex);
-            GL.BufferData(BufferTarget.ShaderStorageBuffer, bytesIndex.Length, bytesIndex, BufferUsageHint.DynamicDraw);
-
+            GL.BufferData(BufferTarget.ShaderStorageBuffer, allBytes.Length, allBytes, BufferUsageHint.DynamicDraw);
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
+
+            // Пересобираем индекс (теперь с учётом новых)
+            var indices = PrimitiveGpu.BuildAnimIndex(_uploadedAnimEntries, _primitiveCount);
+            var indexBytes = ToByteArray(indices);
+
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboAnimIndex);
+            GL.BufferData(BufferTarget.ShaderStorageBuffer, indexBytes.Length, indexBytes, BufferUsageHint.DynamicDraw);
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
+
+            DebugManager.Gpu($"UploadPendingAnimationsAndIndex: Successfully uploaded {newEntries.Count} new entries. Total: {_uploadedAnimEntries.Count}");
         }
 
         #endregion
