@@ -104,6 +104,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             {
                 p.EnsureGeometryRegistered(_arena);
             }
+            
+            _arena.Reset();  // Очищаем arena, чтобы избежать накопления мусора
+            foreach (var p in _primitives)
+            {
+                p.InvalidateGeometry();  // Инвалидируем ВСЕ примитивы (минимально: можно добавить флаг, но для простоты все)
+                p.EnsureGeometryRegistered(_arena);  // Перерегистрируем (динамичные пересчитают вершины)
+            }
+            _animationEngine.UploadGeometryFromPrimitives();
 
             // Затем стандартные анимации
             _animationEngine.UploadPendingAnimationsAndIndex();

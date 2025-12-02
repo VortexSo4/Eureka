@@ -199,7 +199,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         private const int ANIM_ENTRY_SIZE_BYTES = 80;
         internal bool IsGeometryRegistered { get; private set; } = false;
         protected abstract void RegisterGeometryInternal(GeometryArena arena);
-        protected void InvalidateGeometry() => IsGeometryRegistered = false;
+        public void InvalidateGeometry() => IsGeometryRegistered = false;
         internal void MarkGeometryRegistered() => IsGeometryRegistered = true;
         public string Name { get; set; } = "";
 
