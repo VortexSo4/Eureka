@@ -26,15 +26,15 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
             // --- Анимации примитивов ---
             // Line1: перемещение, масштаб, поворот
-            line.AnimatePosition(0f, 3f, EaseType.EaseInOut, new Vector2(0f, 0f), new Vector2(0.3f, 0.2f));
-            line.AnimateScale(0f, 3f, EaseType.EaseInOut, 1f, 1.5f);
+            line.AnimatePosition(0f, 3f, EaseType.EaseInOut, new Vector2(0.3f, 0.2f));
+            line.AnimateScale(0f, 3f, EaseType.EaseInOut, .5f);
             line.ScheduleAnimation(AnimType.Rotate, 0f, 3f, EaseType.EaseInOut,
                 new Vector4(0f,0f,0f,0f), new Vector4(MathF.PI/2f,0f,0f,0f));
 
             // Line2: перемещение, цвет
-            line2.AnimatePosition(1f, 4f, EaseType.EaseInOut, new Vector2(-0.5f, -0.5f), new Vector2(0.2f, 0.3f));
+            line2.AnimatePosition(1f, 4f, EaseType.EaseInOut, new Vector2(0.2f, 0.3f));
             line2.AnimateColor(1f, 4f, EaseType.EaseInOut,
-                new Vector4(1f, 0f, 0f, 1f), new Vector4(0f, 1f, 0f, 1f));
+                new Vector4(0f, 1f, 0f, 1f));
 
             // Инициализация движка анимаций
             Initialize();

@@ -1,4 +1,6 @@
-﻿using System.Numerics;
+﻿using System;
+using System.Collections.Generic;
+using System.Numerics;
 using OpenTK.Graphics.OpenGL4;
 using PhysicsSimulation.Rendering.GPU;
 using PhysicsSimulation.Base;
@@ -27,7 +29,15 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public Vector3 BackgroundColor => _bgColor;
 
-        public void AddPrimitive(PrimitiveGpu p) => _primitives.Add(p);
+        public void AddPrimitive(PrimitiveGpu p)
+        {
+            if (p.PrimitiveId == -1)
+            {
+                p.PrimitiveId = _primitives.Count;
+                DebugManager.Gpu($"Assigned PrimitiveId {p.PrimitiveId} to '{p.Name}' in AddPrimitive.");
+            }
+            _primitives.Add(p);
+        }
 
         public virtual void Initialize()
         {
@@ -62,13 +72,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 {
                     _currentBgAnim = _bgAnimQueue.Dequeue();
                     _bgStartColorAtCurrentAnim = _bgColor;
+
                     DebugManager.Gpu($"AnimateBackground: STARTED → {_currentBgAnim.Value.TargetColor} " +
                                      $"from {_bgStartColorAtCurrentAnim} @ t={_animTime:F3}s " +
                                      $"[{_currentBgAnim.Value.StartTime} → {_currentBgAnim.Value.EndTime}]");
                 }
             }
 
-            // === Обновление текущей анимации ===
             if (_currentBgAnim is BackgroundAnimation current)
             {
                 if (_animTime <= current.EndTime)

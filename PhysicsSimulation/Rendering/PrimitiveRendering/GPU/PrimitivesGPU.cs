@@ -7,8 +7,10 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
-using System.Numerics;
+using OpenTK.Mathematics;
 using PhysicsSimulation.Base;
+using Vector2 = System.Numerics.Vector2;
+using Vector4 = System.Numerics.Vector4;
 
 namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 {
@@ -255,29 +257,33 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         #region Animation helpers
 
-        public void AnimatePosition(float start, float end, EaseType ease, Vector2 from, Vector2 to)
+        public void AnimatePosition(float start, float end, EaseType ease, Vector2 to)
         {
+            Vector2 from = Position;
             DebugManager.Gpu($"PrimitiveGpu.AnimatePosition: Adding position animation for '{Name}' from {from} to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Translate, PrimitiveId, start, end, ease, new Vector4(from, 0f, 0f), new Vector4(to, 0f, 0f)));
             DebugManager.Gpu($"PrimitiveGpu.AnimatePosition: Position animation added.");
         }
 
-        public void AnimateRotation(float start, float end, EaseType ease, float from, float to)
+        public void AnimateRotation(float start, float end, EaseType ease, float to)
         {
+            float from = Rotation;
             DebugManager.Gpu($"PrimitiveGpu.AnimateRotation: Adding rotation animation for '{Name}' from {from} to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Rotate, PrimitiveId, start, end, ease, new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
             DebugManager.Gpu($"PrimitiveGpu.AnimateRotation: Rotation animation added.");
         }
 
-        public void AnimateScale(float start, float end, EaseType ease, float from, float to)
+        public void AnimateScale(float start, float end, EaseType ease, float to)
         {
+            float from = Scale;
             DebugManager.Gpu($"PrimitiveGpu.AnimateScale: Adding scale animation for '{Name}' from {from} to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Scale, PrimitiveId, start, end, ease, new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
             DebugManager.Gpu($"PrimitiveGpu.AnimateScale: Scale animation added.");
         }
 
-        public void AnimateColor(float start, float end, EaseType ease, Vector4 from, Vector4 to)
+        public void AnimateColor(float start, float end, EaseType ease, Vector4 to)
         {
+            Vector4 from = Color;
             DebugManager.Gpu($"PrimitiveGpu.AnimateColor: Adding color animation for '{Name}' from {from} to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Color, PrimitiveId, start, end, ease, from, to));
             DebugManager.Gpu($"PrimitiveGpu.AnimateColor: Color animation added.");

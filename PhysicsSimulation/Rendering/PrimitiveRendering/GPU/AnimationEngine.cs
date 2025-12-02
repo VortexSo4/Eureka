@@ -269,9 +269,10 @@ namespace PhysicsSimulation.Rendering.GPU
 
         #region Animation upload
 
+        // ... (остальной код без изменений, только UploadPendingAnimationsAndIndex)
+
         public void UploadPendingAnimationsAndIndex()
         {
-            // Собираем ТОЛЬКО новые (не uploaded) анимации
             var newEntries = new List<AnimEntryCpu>();
             bool hasNew = false;
 
@@ -282,9 +283,16 @@ namespace PhysicsSimulation.Rendering.GPU
                     var entry = prim.PendingAnimations[i];
                     if (!entry.PendingOnGpu) continue;
 
+                    if (entry.PrimitiveId < 0 || entry.PrimitiveId >= _primitiveCount)
+                    {
+                        DebugManager.Warn(
+                            $"Invalid PrimitiveId {entry.PrimitiveId} in AnimEntry for type {(AnimType)entry.MetaType}. Skipping.");
+                        continue;
+                    }
+
                     newEntries.Add(entry);
                     entry.PendingOnGpu = false;
-                    prim.PendingAnimations[i] = entry; // update back
+                    prim.PendingAnimations[i] = entry;
                     hasNew = true;
                 }
             }
@@ -300,20 +308,18 @@ namespace PhysicsSimulation.Rendering.GPU
                 return;
             }
 
-            DebugManager.Gpu($"UploadPendingAnimationsAndIndex: Uploading {newEntries.Count} NEW animation entries (total will be {_uploadedAnimEntries.Count + newEntries.Count})");
+            DebugManager.Gpu(
+                $"UploadPendingAnimationsAndIndex: Uploading {newEntries.Count} NEW animation entries (total will be {_uploadedAnimEntries.Count + newEntries.Count})");
 
-            // Добавляем новые в общий пул
             int startIndex = _uploadedAnimEntries.Count;
             _uploadedAnimEntries.AddRange(newEntries);
 
-            // Сериализуем ВЕСЬ пул
             var allBytes = PrimitiveGpu.SerializeAnimEntries(_uploadedAnimEntries);
 
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboAnimEntries);
             GL.BufferData(BufferTarget.ShaderStorageBuffer, allBytes.Length, allBytes, BufferUsageHint.DynamicDraw);
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
 
-            // Пересобираем индекс для всего
             var indices = PrimitiveGpu.BuildAnimIndex(_uploadedAnimEntries, _primitiveCount);
             var indexBytes = ToByteArray(indices);
 
@@ -321,7 +327,8 @@ namespace PhysicsSimulation.Rendering.GPU
             GL.BufferData(BufferTarget.ShaderStorageBuffer, indexBytes.Length, indexBytes, BufferUsageHint.DynamicDraw);
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
 
-            DebugManager.Gpu($"UploadPendingAnimationsAndIndex: Successfully uploaded {newEntries.Count} new entries. Total: {_uploadedAnimEntries.Count}");
+            DebugManager.Gpu(
+                $"UploadPendingAnimationsAndIndex: Successfully uploaded {newEntries.Count} new entries. Total: {_uploadedAnimEntries.Count}");
         }
 
         #endregion
