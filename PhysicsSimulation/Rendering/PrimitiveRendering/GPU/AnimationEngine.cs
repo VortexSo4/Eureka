@@ -66,6 +66,10 @@ namespace PhysicsSimulation.Rendering.GPU
             // initialize morph descriptors from primitives (offsets)
             InitMorphDescsFromPrimitives();
             UploadMorphDescBuffer(); // initial upload
+
+            // initialize render instances from primitives
+            InitRenderInstancesFromPrimitives();
+            UploadRenderInstancesBuffer();
         }
 
         #region GL resource creation
@@ -160,6 +164,27 @@ namespace PhysicsSimulation.Rendering.GPU
 
         #endregion
 
+        #region RenderInstances init + upload
+
+        private void InitRenderInstancesFromPrimitives()
+        {
+            for (int i = 0; i < _primitiveCount; i++)
+            {
+                var p = _primitives[i];
+                _renderInstances[i] = p.ToRenderInstanceCpu();
+            }
+        }
+
+        private void UploadRenderInstancesBuffer()
+        {
+            int size = _primitiveCount * RENDER_INSTANCE_SIZE_BYTES;
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboRenderInstances);
+            GL.BufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, size, ToByteArray(_renderInstances));
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
+        }
+
+        #endregion
+
         #region Geometry upload
 
         /// <summary>
@@ -222,175 +247,85 @@ namespace PhysicsSimulation.Rendering.GPU
             GL.BufferData(BufferTarget.ArrayBuffer, bytes, allData, BufferUsageHint.DynamicDraw);
             // Also bind as SSBO base
             GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, BINDING_GEOMETRY, _ssboGeometry);
-
-            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         }
 
         #endregion
 
-        #region Animations upload (entries / index) helpers
+        #region Animation upload
 
-        /// <summary>
-        /// Gather pending AnimEntries from primitives, build index and upload both SSBOs.
-        /// After upload, clear primitives' pending lists (engine expects scheduling once).
-        /// </summary>
         public void UploadPendingAnimationsAndIndex()
         {
-            // aggregate entries grouped by primitive order (PrimitiveGPU.AggregateEntries ensures grouping)
-            var entries = PrimitiveGpu.AggregateEntries(_primitives);
-            int totalEntries = entries.Count;
+            var allPending = PrimitiveGpu.AggregateEntries(_primitives);
+            if (allPending.Count == 0) return;
 
-            // Build AnimIndex: for correct contiguity we re-group explicitly here
-            var animIndexList = new AnimIndexCpu[_primitiveCount];
-            var grouped = new Dictionary<int, List<AnimEntryCpu>>();
-            foreach (var e in entries)
-            {
-                if (!grouped.TryGetValue(e.PrimitiveId, out var l)) { l = new List<AnimEntryCpu>(); grouped[e.PrimitiveId] = l; }
-                l.Add(e);
-            }
-
-            // Build compact entries array where entries are grouped per primitive in ascending PrimitiveId order
-            var compact = new List<AnimEntryCpu>(totalEntries);
-            for (int pid = 0; pid < _primitiveCount; pid++)
-            {
-                if (grouped.TryGetValue(pid, out var list) && list.Count > 0)
-                {
-                    int start = compact.Count;
-                    compact.AddRange(list);
-                    animIndexList[pid] = new AnimIndexCpu(start, list.Count);
-                }
-                else
-                {
-                    animIndexList[pid] = new AnimIndexCpu(0, 0);
-                }
-            }
-
-            // Serialize entries to bytes
-            var entriesBytes = PrimitiveGpu.SerializeAnimEntries(compact);
             // Upload AnimEntries
+            var bytesEntries = PrimitiveGpu.SerializeAnimEntries(allPending);
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboAnimEntries);
-            GL.BufferData(BufferTarget.ShaderStorageBuffer, entriesBytes.Length, entriesBytes, BufferUsageHint.DynamicDraw);
-            GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, BINDING_ANIMENTRIES, _ssboAnimEntries);
+            GL.BufferData(BufferTarget.ShaderStorageBuffer, bytesEntries.Length, bytesEntries, BufferUsageHint.DynamicDraw);
 
-            // Serialize AnimIndex
-            int indexBytes = _primitiveCount * ANIM_INDEX_SIZE_BYTES;
-            var indexArray = new byte[indexBytes];
-            int pos = 0;
-            for (int i = 0; i < _primitiveCount; i++)
-            {
-                var ai = animIndexList[i];
-                // start, count, r2, r3
-                BitConverter.TryWriteBytes(new Span<byte>(indexArray, pos, 4), ai.Start); pos += 4;
-                BitConverter.TryWriteBytes(new Span<byte>(indexArray, pos, 4), ai.Count); pos += 4;
-                BitConverter.TryWriteBytes(new Span<byte>(indexArray, pos, 4), ai.R2); pos += 4;
-                BitConverter.TryWriteBytes(new Span<byte>(indexArray, pos, 4), ai.R3); pos += 4;
-            }
+            // Build and upload AnimIndex
+            var indices = PrimitiveGpu.BuildAnimIndex(allPending, _primitiveCount);
+            var bytesIndex = ToByteArray(indices);
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboAnimIndex);
-            GL.BufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, indexBytes, indexArray);
-            GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, BINDING_ANIMINDEX, _ssboAnimIndex);
-
-            // Clear primitives' pending animations (we've serialized them)
-            foreach (var p in _primitives) p.ClearPendingAnimations();
+            GL.BufferData(BufferTarget.ShaderStorageBuffer, bytesIndex.Length, bytesIndex, BufferUsageHint.DynamicDraw);
 
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
         }
 
         #endregion
 
-        #region Dispatch compute passes
+        #region Update & Dispatch
 
-        /// <summary>
-        /// Main frame update: call this each frame with engine time (seconds),
-        /// it will run AnimationCompute and MorphCompute and update renderInstances buffer.
-        /// </summary>
-        public void UpdateAndDispatch(float timeSeconds)
+        public void UpdateAndDispatch(float time)
         {
-            // 1) Animation compute: writes RenderInstances and MorphDescs
+            // Dispatch animation compute (updates RenderInstances and MorphDesc)
             GL.UseProgram(_programAnimCompute);
-            // set uniform u_time
-            int locTime = GL.GetUniformLocation(_programAnimCompute, "u_time");
-            if (locTime >= 0) GL.Uniform1(locTime, timeSeconds);
-
-            // dispatch groups = ceil(primitiveCount / local_size_x)
-            int localSize = 64; // must match compute shader local_size_x
-            int groups = Math.Max(1, (_primitiveCount + localSize - 1) / localSize);
+            GL.Uniform1(GL.GetUniformLocation(_programAnimCompute, "u_time"), time);
+            int groups = (int)MathF.Ceiling(_primitiveCount / 64f);
             GL.DispatchCompute(groups, 1, 1);
+            GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit);   // правильный флаг
 
-            // ensure writes to morphDesc and renderInstances are visible
-            GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit);
-
-            // 2) Morph compute: for each primitive with morph vertexcount > 0 dispatch compute that morphs its vertices
-            // For simplicity we dispatch per primitive (can be optimized)
+            // Dispatch morph compute for each primitive that has morphs
+            GL.UseProgram(_programMorphCompute);
+            int morphUniformLoc = GL.GetUniformLocation(_programMorphCompute, "u_primitiveId");
             for (int pid = 0; pid < _primitiveCount; pid++)
             {
-                var md = _morphDescs[pid];
-                if (md.VertexCount <= 0) continue;
-                // Read morph descriptor from GPU side? We maintain CPU mirror _morphDescs, but AnimationCompute might have changed morphs on GPU.
-                // For now, we copy CPU-side _morphDescs to GPU before morph. In a more advanced pipeline AnimationCompute writes it directly.
+                // Пропускаем если нет геометрии или морфинг не активен
+                if (_morphDescs[pid].VertexCount <= 0 || _morphDescs[pid].CurrentT <= 0f) continue;
+
+                GL.Uniform1(morphUniformLoc, pid);
+                int morphGroups = (int)MathF.Ceiling(_morphDescs[pid].VertexCount / 256f);
+                GL.DispatchCompute(morphGroups, 1, 1);
             }
 
-            // NOTE: we must re-upload MorphDesc from GPU if AnimationCompute changed it. To keep PoC consistent:
-            // We'll read morphdesc SSBO back to CPU? that's expensive. Instead, in current design AnimationCompute writes MorphDesc directly on GPU,
-            // and MorphCompute will read it; hence we don't need CPU to re-upload. We only need to dispatch MorphCompute per-primitive using offsets encoded in MorphDesc on GPU.
-            // For simplicity we will dispatch MorphCompute groups = ceil(maxVertexCount among primitives / local_size)
-            int maxV = _primitives.Max(p => p.VertexCount);
-            if (maxV > 0)
-            {
-                int groupsV = Math.Max(1, (maxV + 255) / 256);
-                // We'll set uniform u_primitiveCount to allow MorphCompute iterate morphs by id
-                GL.UseProgram(_programMorphCompute);
-                int locPC = GL.GetUniformLocation(_programMorphCompute, "u_primitiveCount");
-                if (locPC >= 0) GL.Uniform1(locPC, _primitiveCount);
-                // Dispatch a conservative global dispatch: groupsV * _primitiveCount would be too big, so we'll instead dispatch groupsV with work that each invocation checks its global id and maps to prim+vertex index.
-                // For simplicity in this PoC, dispatch per-primitive loop on CPU:
-                for (int pid = 0; pid < _primitiveCount; pid++)
-                {
-                    int vcount = _primitives[pid].VertexCount;
-                    if (vcount <= 0) continue;
-                    int groupsForPrim = Math.Max(1, (vcount + 255) / 256);
-                    // set uniform u_primitiveId
-                    int locPid = GL.GetUniformLocation(_programMorphCompute, "u_primitiveId");
-                    if (locPid >= 0) GL.Uniform1(locPid, pid);
-                    GL.DispatchCompute(groupsForPrim, 1, 1);
-                    GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit | MemoryBarrierFlags.VertexAttribArrayBarrierBit);
-                }
-            }
+            // Барьер после всех морф-вычислений: SSBO + данные вершинного буфера
+            GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit | 
+                             MemoryBarrierFlags.VertexAttribArrayBarrierBit);
 
-            // 3) After morph compute, we must ensure geometry buffer updates are visible to vertex fetch
-            GL.MemoryBarrier(MemoryBarrierFlags.VertexAttribArrayBarrierBit | MemoryBarrierFlags.ShaderStorageBarrierBit);
-
-            // 4) Now update CPU mirror of RenderInstances from SSBO? Not necessary; render shader reads SSBO directly by uniform index per-draw.
-            // We'll perform render next.
+            GL.UseProgram(0);
         }
 
         #endregion
 
         #region Render
 
-        /// <summary>
-        /// Render primitives by issuing draw calls.
-        /// This simple renderer uses per-primitive draw: it sets uniform u_primIndex and issues glDrawArrays(base, count).
-        /// For production, implement instanced/multi-draw paths.
-        /// </summary>
         public void RenderAll()
         {
             GL.UseProgram(_programRender);
             GL.BindVertexArray(_vao);
 
-            // Bind SSBOs to same binding points so render shader can read RenderInstances & Geometry (binding was done earlier)
-            GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, BINDING_RENDERINST, _ssboRenderInstances);
-            GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, BINDING_GEOMETRY, _ssboGeometry);
+            int primLoc = GL.GetUniformLocation(_programRender, "u_primIndex");
 
-            int locPrimIndex = GL.GetUniformLocation(_programRender, "u_primIndex");
             for (int pid = 0; pid < _primitiveCount; pid++)
             {
-                var p = _primitives[pid];
-                if (p.VertexCount <= 0) continue;
+                var md = _morphDescs[pid];
+                if (md.VertexCount <= 0) continue;
 
-                if (locPrimIndex >= 0) GL.Uniform1(locPrimIndex, pid);
+                int offset = md.OffsetM; // Use morphed geometry if available
+                int count = md.VertexCount;
 
-                // draw: glDrawArrays(first, count)
-                GL.DrawArrays(PrimitiveType.LineStrip, p.VertexOffsetM >= 0 ? p.VertexOffsetM : p.VertexOffsetRaw, p.VertexCount);
+                GL.Uniform1(primLoc, pid);
+                GL.DrawArrays(PrimitiveType.LineStrip, offset, count);
             }
 
             GL.BindVertexArray(0);
@@ -399,9 +334,9 @@ namespace PhysicsSimulation.Rendering.GPU
 
         #endregion
 
-        #region Helpers: shader compilation, serialize arrays
+        #region Helpers
 
-        private static int CreateComputeProgram(string src, string nameForDebug = "")
+        private static int CreateComputeProgram(string src, string nameForDebug)
         {
             int cs = GL.CreateShader(ShaderType.ComputeShader);
             GL.ShaderSource(cs, src);
@@ -509,23 +444,25 @@ layout(std430, binding = 0) buffer AnimEntries { AnimEntry entries[]; };
 struct AnimIndex { ivec2 startCount; ivec2 r; };
 layout(std430, binding = 1) buffer AnimIndexSB { AnimIndex animIndex[]; };
 
-struct MorphDesc { float currentT; float easeType; float r0; float r1; ivec4 offsets; };
+struct MorphDesc { float currentT; float easeType; float r0; float r1; ivec4 offsets; }; // offsets: a,b,m,count
 layout(std430, binding = 2) buffer MorphDescSB { MorphDesc morphs[]; };
 
-layout(std430, binding = 4) buffer RenderInstances {
-    // we store rows as vec4 for alignment
-    vec4 row0[];
-    // careful: we'll use structured access in host; here we simply write via separate arrays if needed
+struct RenderInstance {
+    vec4 row0; // transform row0
+    vec4 row1; // transform row1
+    vec4 row2; // transform row2
+    vec4 color; // color
+    ivec4 meta; // offsetM, vertexCount, flags, reserved
+    vec4 dash; // filledLen, emptyLen, offset, reserved
 };
 
-// Instead of complex struct for render instances we will use separate SSBO writes via morphs or other
-// For PoC we will pack RenderInstance in MorphDesc write and have render shader read morphs for transform/color.
+layout(std430, binding = 4) buffer RenderInstances {
+    RenderInstance instances[];
+};
 
-// uniform time
 uniform float u_time;
 
-float easeVal(float t, int e)
-{
+float easeVal(float t, int e) {
     if (e == 0) return t;
     if (e == 1) return t*t;
     if (e == 2) return 1.0 - (1.0 - t)*(1.0 - t);
@@ -533,91 +470,86 @@ float easeVal(float t, int e)
     return t;
 }
 
-void main()
-{
+void main() {
     uint pid = gl_GlobalInvocationID.x;
     if (pid >= animIndex.length()) return;
 
-    // base transform / color defaults
-    vec2 pos = vec2(0.0, 0.0);
-    float rot = 0.0;
-    float scale = 1.0;
-    vec4 color = vec4(1.0, 1.0, 1.0, 1.0);
-    float filledLen = 0.0;
-    float emptyLen = 0.0;
-    float dashOffset = 0.0;
-    int flags = 0;
+    // Read initial values from RenderInstances (uploaded from CPU)
+    RenderInstance inst = instances[pid];
+    vec4 initRow0 = inst.row0;
+    vec4 initRow1 = inst.row1;
+    vec4 initRow2 = inst.row2;
+    vec4 color = inst.color;
+    ivec4 meta = inst.meta;
+    vec4 dash = inst.dash;
+
+    // Extract initials (reverse engineer from rows)
+    float initScale = length(initRow0.xy); // assuming uniform scale
+    float initRot = atan(initRow0.y, initRow0.x); // corrected atan2(sin, cos)
+    vec2 initPos = initRow2.xy;
+
+    // Start with initials
+    vec2 pos = initPos;
+    float rot = initRot;
+    float scale = initScale;
 
     AnimIndex idx = animIndex[pid];
     int start = idx.startCount.x;
     int count = idx.startCount.y;
 
-    // read existing morph desc for offsets baseline (assume prefilled by CPU)
     MorphDesc mdesc = morphs[pid];
 
-    for (int i = 0; i < count; i++)
-    {
+    for (int i = 0; i < count; i++) {
         AnimEntry e = entries[start + i];
         int type = e.meta.x;
         float st = e.times.x;
         float et = e.times.y;
         int easeI = int(e.times.z + 0.5);
-        float progress = 0.0;
-        if (u_time < st) progress = 0.0;
-        else if (u_time >= et) progress = 1.0;
-        else progress = easeVal((u_time - st) / max(1e-6, et - st), easeI);
 
-        if (type == 1) { // TRANSLATE
-            vec2 fromv = e.from.xy;
-            vec2 tov = e.to.xy;
-            pos += mix(fromv, tov, progress);
+        if (u_time < st) continue; // Skip if animation hasn't started yet
+
+        float progress = 0.0;
+        if (u_time >= et) {
+            progress = 1.0;
+        } else {
+            progress = easeVal((u_time - st) / max(1e-6, et - st), easeI);
         }
-        else if (type == 2) { // ROTATE
-            float fromr = e.from.x;
-            float tor = e.to.x;
-            rot += mix(fromr, tor, progress);
-        }
-        else if (type == 3) { // SCALE
-            float froms = e.from.x;
-            float tos = e.to.x;
-            scale *= mix(froms, tos, progress);
-        }
-        else if (type == 4) { // COLOR
+
+        if (type == 1) { // Translate (absolute)
+            pos = mix(e.from.xy, e.to.xy, progress);
+        } else if (type == 2) { // Rotate (absolute)
+            rot = mix(e.from.x, e.to.x, progress);
+        } else if (type == 3) { // Scale (absolute)
+            scale = mix(e.from.x, e.to.x, progress);
+        } else if (type == 4) { // Color (absolute)
             color = mix(e.from, e.to, progress);
-        }
-        else if (type == 5) { // MORPH
-            // write currentT and ease into morph desc (overwriting)
-            mdesc.currentT = mix(mdesc.currentT, progress, 1.0);
+        } else if (type == 5) { // Morph
+            mdesc.currentT = progress;
             mdesc.easeType = e.times.z;
-            // copy morph offsets if provided in entry (entry.morph)
-            mdesc.offsets.x = e.morph.x;
-            mdesc.offsets.y = e.morph.y;
-            mdesc.offsets.z = e.morph.z;
-            mdesc.offsets.w = e.morph.w;
-        }
-        else if (type == 6) { // DASH
-            vec2 ff = e.from.xy;
-            vec2 tt = e.to.xy;
-            vec2 val = mix(ff, tt, progress);
-            filledLen = val.x;
-            emptyLen = val.y;
+            mdesc.offsets = e.morph;
+        } else if (type == 6) { // Dash (absolute)
+            dash.xy = mix(e.from.xy, e.to.xy, progress);
         }
     }
 
-    // write back morph desc
-    morphs[pid] = mdesc;
-
-    // convert transform to rows (scale->rotate->translate)
+    // Rebuild transform rows
     float c = cos(rot);
     float s = sin(rot);
     vec4 row0 = vec4(scale * c, scale * s, 0.0, 0.0);
     vec4 row1 = vec4(-scale * s, scale * c, 0.0, 0.0);
     vec4 row2 = vec4(pos.x, pos.y, 1.0, 0.0);
 
-    // For simplicity: we will write these rows into the RenderInstances SSBO area contiguous at indices (pid * 6...) etc.
-    // But since we didn't define a strict struct earlier for RenderInstances in GLSL (to keep file small),
-    // we will rely on MorphDesc/RenderInstances on CPU for reading; in PoC we'll write transform into morphs.r0/r1 (not ideal).
-    // In a production change, create a proper RenderInstances struct in GLSL with vec4 row0,row1,row2,color,ivec4,vec4 and write it here.
+    // Write back to instance
+    inst.row0 = row0;
+    inst.row1 = row1;
+    inst.row2 = row2;
+    inst.color = color;
+    inst.meta = ivec4(mdesc.offsets.z, mdesc.offsets.w, meta.z, meta.w); // Preserve flags/reserved
+    inst.dash = dash;
+    instances[pid] = inst;
+
+    // Write morph desc back
+    morphs[pid] = mdesc;
 }
 ";
 
@@ -674,23 +606,58 @@ void main()
 layout(location = 0) in vec2 in_pos;
 uniform int u_primIndex;
 
-struct MorphDesc { float currentT; float easeType; float r0; float r1; ivec4 offsets; };
-layout(std430, binding = 2) buffer MorphDescSB { MorphDesc morphs[]; };
+struct RenderInstance {
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    vec4 color;
+    ivec4 meta;
+    vec4 dash;
+};
+
+layout(std430, binding = 4) buffer RenderInstances {
+    RenderInstance instances[];
+};
 
 void main() {
-    MorphDesc md = morphs[u_primIndex];
-    // reconstruct transform: we don't have full rows stored in morphdesc for PoC, so we assume identity transform and just place geometry
-    // In full version store transform in RenderInstances SSBO and read here
-    vec2 p = in_pos;
-    gl_Position = vec4(p, 0.0, 1.0);
+    RenderInstance inst = instances[u_primIndex];
+    vec4 r0 = inst.row0;
+    vec4 r1 = inst.row1;
+    vec4 r2 = inst.row2;
+
+    mat2 rs = mat2(r0.xy, r1.xy);
+    vec2 p = rs * in_pos + r2.xy;
+
+    // Skip rendering if NaN (contour separator)
+    if (isnan(in_pos.x) || isnan(in_pos.y)) {
+        gl_Position = vec4(0.0, 0.0, 0.0, 0.0); // Or discard in frag, but this prevents drawing
+    } else {
+        gl_Position = vec4(p, 0.0, 1.0);
+    }
 }
 ";
 
         private const string FRAGMENT_RENDER_SRC = @"
 #version 430
 out vec4 outColor;
+uniform int u_primIndex;
+
+struct RenderInstance {
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    vec4 color;
+    ivec4 meta;
+    vec4 dash;
+};
+
+layout(std430, binding = 4) buffer RenderInstances {
+    RenderInstance instances[];
+};
+
 void main(){
-    outColor = vec4(0.3, 0.7, 1.0, 1.0);
+    outColor = instances[u_primIndex].color;
+    // TODO: If you add discard for NaN or other effects, do it here.
 }
 ";
         #endregion

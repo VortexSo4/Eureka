@@ -1,4 +1,4 @@
-﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.Numerics;
 using OpenTK.Graphics.OpenGL4;
@@ -18,6 +18,9 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         private float _bgAnimDuration = 0f;
         private float _bgAnimElapsed = 0f;
         private Vector3 _bgStartColor;
+
+        // Animation time
+        private float _animTime = 0f;
 
         protected SceneGpu(GeometryArena arena)
         {
@@ -55,9 +58,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 _bgColor = Vector3.Lerp(_bgStartColor, _targetBgColor, t);
             }
 
+            // Always advance animation time
+            _animTime += deltaTime;
+
             // Update animations
             _animationEngine.UploadPendingAnimationsAndIndex();
-            _animationEngine.UpdateAndDispatch(_bgAnimElapsed);
+            _animationEngine.UpdateAndDispatch(_animTime);
         }
 
         public virtual void Render()
