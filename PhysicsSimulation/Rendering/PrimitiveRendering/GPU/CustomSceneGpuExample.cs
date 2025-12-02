@@ -21,7 +21,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             AddPrimitive(line2);
 
             // Анимация фона
-            AnimateBackground(new Vector3(0.1f, 0.4f, 0.8f), 5f);
+            AnimateBackground(new Vector3(1.0f, 0.0f, 0.0f), 0, 5);
+            AnimateBackground(new Vector3(0.1f, 0.4f, 0.8f), 5, 10);
 
             // --- Анимации примитивов ---
             // Line1: перемещение, масштаб, поворот
