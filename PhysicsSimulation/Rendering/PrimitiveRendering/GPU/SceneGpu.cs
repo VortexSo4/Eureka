@@ -15,7 +15,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
         private float _animTime;
-        protected float Time => _animTime;
+        protected float T => _animTime;
 
         private readonly Queue<BackgroundAnimation> _bgAnimQueue = new();
         private BackgroundAnimation? _currentBgAnim;
@@ -42,6 +42,21 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             _primitives.Add(p);
             DebugManager.Gpu($"SceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
+        
+        protected T Add<T>(T primitive) where T : PrimitiveGpu
+        {
+            AddPrimitive(primitive);
+            return primitive;
+        }
+
+        protected T Add<T>(T primitive, Action<T> configure) where T : PrimitiveGpu
+        {
+            configure(primitive);
+            AddPrimitive(primitive);
+            return primitive;
+        }
+
+        public abstract void Setup();
 
         public virtual void Initialize()
         {
@@ -69,6 +84,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         {
             _animTime += deltaTime;
 
+            // === Анимация фона ===
             if (_currentBgAnim == null && _bgAnimQueue.Count > 0)
             {
                 var next = _bgAnimQueue.Peek();
@@ -76,10 +92,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 {
                     _currentBgAnim = _bgAnimQueue.Dequeue();
                     _bgStartColorAtCurrentAnim = _bgColor;
-
-                    DebugManager.Gpu($"AnimateBackground: STARTED → {_currentBgAnim.Value.TargetColor} " +
-                                     $"from {_bgStartColorAtCurrentAnim} @ t={_animTime:F3}s " +
-                                     $"[{_currentBgAnim.Value.StartTime} → {_currentBgAnim.Value.EndTime}]");
                 }
             }
 
@@ -94,24 +106,23 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 else
                 {
                     _bgColor = current.TargetColor;
-                    DebugManager.Gpu($"AnimateBackground: FINISHED → {current.TargetColor} @ t={_animTime:F3}s");
                     _currentBgAnim = null;
                 }
             }
 
-            // ← КЛЮЧЕВОЕ ДОБАВЛЕНИЕ: Перерегистрируем геометрию для динамических примитивов
-            foreach (var p in _primitives)
+            if (_primitives.Any(p => p.IsDynamic))
             {
-                p.EnsureGeometryRegistered(_arena);
+                foreach (var p in _primitives.Where(p => p.IsDynamic))
+                    p.InvalidateGeometry();
+
+                _arena.Reset();
+
+                foreach (var p in _primitives)
+                    p.EnsureGeometryRegistered(_arena);
+
+                _animationEngine.UploadGeometryFromPrimitives();
+                _animationEngine.RebuildAllDescriptors();
             }
-            
-            _arena.Reset();  // Очищаем arena, чтобы избежать накопления мусора
-            foreach (var p in _primitives)
-            {
-                p.InvalidateGeometry();
-                p.EnsureGeometryRegistered(_arena);
-            }
-            _animationEngine.UploadGeometryFromPrimitives();
 
             // Затем стандартные анимации
             _animationEngine.UploadPendingAnimationsAndIndex();

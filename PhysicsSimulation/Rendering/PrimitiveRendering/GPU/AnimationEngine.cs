@@ -391,6 +391,14 @@ namespace PhysicsSimulation.Rendering.GPU
         #endregion
 
         #region Helpers
+        
+        public void RebuildAllDescriptors()
+        {
+            InitMorphDescsFromPrimitives();
+            UploadMorphDescBuffer();
+            InitRenderInstancesFromPrimitives();
+            UploadRenderInstancesBuffer();
+        }
 
         private static int CreateComputeProgram(string src, string nameForDebug)
         {

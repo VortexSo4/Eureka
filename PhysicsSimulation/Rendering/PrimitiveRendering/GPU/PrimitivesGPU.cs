@@ -229,12 +229,15 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         // convenience user slot
         public object? Tag;
-
-        protected PrimitiveGpu(string name = "", bool isDynamic = false)
+        
+        private static int _counter = 0;
+        protected PrimitiveGpu(bool isDynamic = false)
         {
-            DebugManager.Gpu($"PrimitiveGpu.ctor: Creating primitive with name '{name}'.");
-            Name = name ?? "";
-            isDynamic = IsDynamic;
+            var id = Interlocked.Increment(ref _counter);
+            Name = $"{GetType().Name}_{id}";
+            IsDynamic = isDynamic;
+            DebugManager.Gpu($"PrimitiveGpu.ctor: Creating primitive with name '{Name}'.");
+            IsDynamic = isDynamic;
             DebugManager.Gpu($"PrimitiveGpu.ctor: Primitive created.");
         }
 
@@ -286,7 +289,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         #region Animation helpers
 
-        public void AnimatePosition(float start, float end, EaseType ease, Vector2 to)
+        public PrimitiveGpu AnimatePosition(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, Vector2 to = default)
         {
             Vector2 from = Position;
             DebugManager.Gpu(
@@ -294,9 +297,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Translate, PrimitiveId, start, end, ease,
                 new Vector4(from, 0f, 0f), new Vector4(to, 0f, 0f)));
             DebugManager.Gpu($"PrimitiveGpu.AnimatePosition: Position animation added.");
+            return this;
         }
 
-        public void AnimateRotation(float start, float end, EaseType ease, float to)
+        public PrimitiveGpu AnimateRotation(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, float to = 0)
         {
             float from = Rotation;
             DebugManager.Gpu(
@@ -304,51 +308,57 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Rotate, PrimitiveId, start, end, ease,
                 new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
             DebugManager.Gpu($"PrimitiveGpu.AnimateRotation: Rotation animation added.");
+            return this;
         }
 
-        public void AnimateScale(float start, float end, EaseType ease, float to)
+        public PrimitiveGpu AnimateScale(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, float to = 1)
         {
             float from = Scale;
             DebugManager.Gpu($"PrimitiveGpu.AnimateScale: Adding scale animation for '{Name}' from {from} to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Scale, PrimitiveId, start, end, ease,
                 new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
             DebugManager.Gpu($"PrimitiveGpu.AnimateScale: Scale animation added.");
+            return this;
         }
 
-        public void AnimateColor(float start, float end, EaseType ease, Vector4 to)
+        public PrimitiveGpu AnimateColor(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, Vector4 to = default)
         {
             Vector4 from = Color;
             DebugManager.Gpu($"PrimitiveGpu.AnimateColor: Adding color animation for '{Name}' from {from} to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Color, PrimitiveId, start, end, ease, from, to));
             DebugManager.Gpu($"PrimitiveGpu.AnimateColor: Color animation added.");
+            return this;
         }
 
-        public void AnimateMorph(float start, float end, EaseType ease, int offsetA, int offsetB, int offsetM,
-            int vertexCount)
+        public PrimitiveGpu AnimateMorph(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, int offsetA = 0, int offsetB = 0, int offsetM = 0,
+            int vertexCount = 0)
         {
             DebugManager.Gpu($"PrimitiveGpu.AnimateMorph: Adding morph animation for '{Name}'.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Morph, PrimitiveId, start, end, ease, Vector4.Zero,
                 Vector4.Zero, offsetA, offsetB, offsetM, vertexCount));
             DebugManager.Gpu($"PrimitiveGpu.AnimateMorph: Morph animation added.");
+            return this;
         }
 
-        public void AnimateDash(float start, float end, EaseType ease, Vector2 fromLengths, Vector2 toLengths)
+        public PrimitiveGpu AnimateDash(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, Vector2 fromLengths = default, Vector2 toLengths = default)
         {
             DebugManager.Gpu(
                 $"PrimitiveGpu.AnimateDash: Adding dash animation for '{Name}' from {fromLengths} to {toLengths}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.DashLengths, PrimitiveId, start, end, ease,
                 new Vector4(fromLengths, 0f, 0f), new Vector4(toLengths, 0f, 0f)));
             DebugManager.Gpu($"PrimitiveGpu.AnimateDash: Dash animation added.");
+            return this;
         }
 
         // ScheduleAnimation (generic for other types)
-        public void ScheduleAnimation(AnimType type, float start, float end, EaseType ease, Vector4 from, Vector4 to,
+        public PrimitiveGpu ScheduleAnimation(AnimType type, float start, float end, EaseType ease, Vector4 from, Vector4 to,
             int morphA = 0, int morphB = 0, int morphM = 0, int morphCount = 0)
         {
             DebugManager.Gpu($"PrimitiveGpu.ScheduleAnimation: Scheduling {type} animation for '{Name}'.");
             PendingAnimations.Add(new AnimEntryCpu(type, PrimitiveId, start, end, ease, from, to, morphA, morphB,
                 morphM, morphCount));
             DebugManager.Gpu($"PrimitiveGpu.ScheduleAnimation: Animation scheduled.");
+            return this;
         }
 
         #endregion
@@ -513,17 +523,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
     public class PolygonGpu : PrimitiveGpu
     {
         public IReadOnlyList<List<Vector2>> Contours => _contours;
-        private readonly List<List<Vector2>> _contours = [];
+        protected readonly List<List<Vector2>> _contours = [];
 
-        public PolygonGpu(string name = "") : base(name)
-        {
-        }
-
-        protected PolygonGpu(IReadOnlyList<List<Vector2>> contours, string name = "", bool isDynamic = false) : base(name)
+        protected PolygonGpu(IReadOnlyList<List<Vector2>> contours, bool isDynamic = false)
         {
             if (contours != null && contours.Count > 0)
                 SetContours(contours);
-            isDynamic = IsDynamic;
+            IsDynamic = isDynamic;
         }
         
         protected void SetContours(IReadOnlyList<List<Vector2>> contours)
@@ -566,12 +572,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float Width { get; set; }
         public float Height { get; set; }
 
-        public RectGpu(float width = 1f, float height = 1f, string name = "", bool isDynamic = false)
-            : base(CreateRectangleContours(width, height), name)
+        public RectGpu(float width = 1f, float height = 1f, bool isDynamic = false)
+            : base(CreateRectangleContours(width, height))
         {
             Width = width;
             Height = height;
-            isDynamic = IsDynamic;
+            IsDynamic = isDynamic;
         }
 
         private static List<List<Vector2>> CreateRectangleContours(float width, float height)
@@ -598,16 +604,16 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
     public class LineGpu : PolygonGpu
     {
-        public LineGpu(float x1 = 0f, float y1 = 0f, float x2 = 0.5f, float y2 = 0f, string name = "Line")
-            : base(name)
+        public LineGpu(float x1 = 0f, float y1 = 0f, float x2 = 0.5f, float y2 = 0f)
+            : base([[new Vector2(0, -0.5f), new Vector2(0, 0.5f)]])
         {
             SetContours([[Vector2.Zero, new Vector2(x2 - x1, y2 - y1)]]);
             Flags = PrimitiveFlags.None;
         }
 
         // Удобный конструктор от двух точек
-        public LineGpu(Vector2 from, Vector2 to, string name = "Line")
-            : this(from.X, from.Y, to.X, to.Y, name) { }
+        public LineGpu(Vector2 from, Vector2 to)
+            : this(from.X, from.Y, to.X, to.Y) { }
     }
 
     #endregion
@@ -621,8 +627,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         private static readonly Vector2 DefaultC = new(0.0f, 0.15f);
 
         public TriangleGpu(Vector2 a = default, Vector2 b = default, Vector2 c = default,
-            bool filled = true, string name = "Triangle", bool isDynamic = false)
-            : base(name)
+            bool filled = true, bool isDynamic = false)
+            : base([[DefaultA,DefaultB,DefaultC]])
         {
             var va = a == default ? new Vector2(-0.1f, -0.1f) : a;
             var vb = b == default ? new Vector2( 0.1f, -0.1f) : b;
@@ -630,16 +636,16 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
             SetContours([[va, vb, vc, va]]);
             Flags = filled ? PrimitiveFlags.Filled | PrimitiveFlags.Closed : PrimitiveFlags.Closed;
-            isDynamic = IsDynamic;
+            IsDynamic = isDynamic;
         }
 
         // Удобный конструктор с позицией
-        public TriangleGpu(Vector2 center, float size = 0.2f, bool filled = true, string name = "Triangle")
+        public TriangleGpu(Vector2 center, float size = 0.2f, bool filled = true)
             : this(
                 new Vector2(-size, -size),
                 new Vector2(size, -size),
                 new Vector2(0, size * 1.732f),
-                filled, name)
+                filled)
         {
             Position = center;
         }
@@ -653,8 +659,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
     {
         public int Segments { get; }
 
-        public CircleGpu(float radius = 0.2f, int segments = 80, bool filled = false, string name = "Circle", bool isDynamic = false)
-            : base(name)
+        public CircleGpu(float radius = 0.2f, int segments = 80, bool filled = false, bool isDynamic = false)
+            : base([GenerateCircleContour(radius, 80)], false)
         {
             Segments = Math.Max(8, segments);
             SetContours([GenerateCircleContour(radius, Segments)]);
@@ -662,7 +668,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             Flags = filled
                 ? PrimitiveFlags.Filled | PrimitiveFlags.Closed
                 : PrimitiveFlags.Closed;
-            isDynamic = IsDynamic;
+            IsDynamic = isDynamic;
         }
         private static List<Vector2> GenerateCircleContour(float radius, int segments)
         {
@@ -689,14 +695,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public int Resolution { get; private set; }
 
         public PlotGpu(Func<float, float> func, float xMin = -1f, float xMax = 1f,
-            int resolution = 300, string name = "Plot",  bool isDynamic = false)
-            : base(name)
+            int resolution = 300,  bool isDynamic = false)
+            : base([])
         {
             Func = func ?? throw new ArgumentNullException(nameof(func));
             Resolution = Math.Max(2, resolution);
             UpdateRange(xMin, xMax);
             Flags = PrimitiveFlags.None;
-            isDynamic = IsDynamic;
+            IsDynamic = isDynamic;
         }
 
         public void UpdateRange(float xMin, float xMax, int? resolution = null)
@@ -724,6 +730,38 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             ScheduleAnimation(AnimType.Morph, 0, duration, ease,
                 new Vector4(fromMin, fromMax, Resolution, 0),
                 new Vector4(toMin, toMax, Resolution, 0));
+        }
+        
+        protected override void RegisterGeometryInternal(GeometryArena arena)
+        {
+            DebugManager.Gpu($"[DYNAMIC PLOT] Regenerating points for '{Name}'");
+    
+            if (IsDynamic)
+            {
+                DebugManager.Gpu($"[DYNAMIC PLOT] IsDynamic = true, recalculating {Resolution} points...");
+        
+                var points = new List<Vector2>(Resolution + 1);
+                for (int i = 0; i <= Resolution; i++)
+                {
+                    float t = i / (float)Resolution;
+                    float x = MathHelper.Lerp(XMin, XMax, t);
+                    float y = Func(x);
+                    points.Add(new Vector2(x, y));
+                }
+                SetContours([points]);
+        
+                DebugManager.Gpu($"[DYNAMIC PLOT] Points regenerated. First point: ({points[0].X}, {points[0].Y}), Last: ({points[^1].X}, {points[^1].Y})");
+            }
+            else
+            {
+                DebugManager.Gpu($"[DYNAMIC PLOT] IsDynamic = false — using cached geometry");
+            }
+
+            if (_contours.Count == 0)
+                throw new InvalidOperationException($"Primitive '{Name}' has no contours to register!");
+
+            var flat = GeometryArena.FlattenContours(_contours);
+            RegisterRawGeometry(arena, flat);
         }
     }
 
@@ -764,12 +802,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public Func<string>? DynamicTextSource { get; set; }
 
         public TextGpu(string text = "Empty text", float fontSize = 0.1f, string? fontKey = null, string name = "", bool isDynamic = false)
-            : base(name)
         {
             Text = text ?? "";
             FontSize = fontSize;
             FontKey = fontKey;
-            isDynamic = IsDynamic;
+            IsDynamic = isDynamic;
         }
 
         protected override void RegisterGeometryInternal(GeometryArena arena)
