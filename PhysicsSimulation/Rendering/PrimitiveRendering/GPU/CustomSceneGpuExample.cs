@@ -18,7 +18,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
             var parabola = new PlotGpu(
                 x => x * x * scene.Time - 0.5f,
-                xMin: -0.5f, xMax: 0.5f, resolution: 40, name: "Parabola"
+                xMin: -0.5f, xMax: 0.5f, resolution: 40, name: "Parabola", isDynamic: true
             );
             parabola.Color = new Vector4(1f, 0.7f, 0f, 1f);
             AddPrimitive(parabola);
@@ -30,7 +30,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 x => MathF.Pow(MathF.Abs(x), 2f / 3f) +
                      0.9f * MathF.Sqrt(MathF.Max(0f, 1f - x * x)) *
                      MathF.Sin(20f * MathF.PI * x + scene.Time * 2f),
-                xMin: -1f, xMax: 1f, resolution: 120, name: "Heart"
+                xMin: -1f, xMax: 1f, resolution: 120, name: "Heart", isDynamic: true
             );
             heart.Color = new Vector4(1f, 0.1f, 0.3f, 1f);
             AddPrimitive(heart);
@@ -38,7 +38,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             var wave = new PlotGpu(
                 x => MathF.Sin(x * 10f + scene.Time * 4f) * 0.22f +
                      MathF.Cos(x * 23f + scene.Time * 2.7f) * 0.06f,
-                xMin: -1f, xMax: 1f, resolution: 120, name: "LiveWave"
+                xMin: -1f, xMax: 1f, resolution: 120, name: "LiveWave", isDynamic: true
             );
             wave.Color = new Vector4(0.2f, 1f, 0.6f, 1f);
             AddPrimitive(wave);

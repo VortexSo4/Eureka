@@ -197,6 +197,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         // assigned by engine
         public int PrimitiveId { get; internal set; } = -1;
         private const int ANIM_ENTRY_SIZE_BYTES = 80;
+        public bool IsDynamic { get; set; } = false;
         internal bool IsGeometryRegistered { get; private set; } = false;
         protected abstract void RegisterGeometryInternal(GeometryArena arena);
         public void InvalidateGeometry() => IsGeometryRegistered = false;
@@ -229,10 +230,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         // convenience user slot
         public object? Tag;
 
-        protected PrimitiveGpu(string name = "")
+        protected PrimitiveGpu(string name = "", bool isDynamic = false)
         {
             DebugManager.Gpu($"PrimitiveGpu.ctor: Creating primitive with name '{name}'.");
             Name = name ?? "";
+            isDynamic = IsDynamic;
             DebugManager.Gpu($"PrimitiveGpu.ctor: Primitive created.");
         }
 
@@ -517,10 +519,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         {
         }
 
-        protected PolygonGpu(IReadOnlyList<List<Vector2>> contours, string name = "") : base(name)
+        protected PolygonGpu(IReadOnlyList<List<Vector2>> contours, string name = "", bool isDynamic = false) : base(name)
         {
             if (contours != null && contours.Count > 0)
                 SetContours(contours);
+            isDynamic = IsDynamic;
         }
         
         protected void SetContours(IReadOnlyList<List<Vector2>> contours)
@@ -563,11 +566,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float Width { get; set; }
         public float Height { get; set; }
 
-        public RectGpu(float width = 1f, float height = 1f, string name = "")
+        public RectGpu(float width = 1f, float height = 1f, string name = "", bool isDynamic = false)
             : base(CreateRectangleContours(width, height), name)
         {
             Width = width;
             Height = height;
+            isDynamic = IsDynamic;
         }
 
         private static List<List<Vector2>> CreateRectangleContours(float width, float height)
@@ -617,7 +621,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         private static readonly Vector2 DefaultC = new(0.0f, 0.15f);
 
         public TriangleGpu(Vector2 a = default, Vector2 b = default, Vector2 c = default,
-            bool filled = true, string name = "Triangle")
+            bool filled = true, string name = "Triangle", bool isDynamic = false)
             : base(name)
         {
             var va = a == default ? new Vector2(-0.1f, -0.1f) : a;
@@ -626,6 +630,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
             SetContours([[va, vb, vc, va]]);
             Flags = filled ? PrimitiveFlags.Filled | PrimitiveFlags.Closed : PrimitiveFlags.Closed;
+            isDynamic = IsDynamic;
         }
 
         // Удобный конструктор с позицией
@@ -648,7 +653,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
     {
         public int Segments { get; }
 
-        public CircleGpu(float radius = 0.2f, int segments = 80, bool filled = false, string name = "Circle")
+        public CircleGpu(float radius = 0.2f, int segments = 80, bool filled = false, string name = "Circle", bool isDynamic = false)
             : base(name)
         {
             Segments = Math.Max(8, segments);
@@ -657,6 +662,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             Flags = filled
                 ? PrimitiveFlags.Filled | PrimitiveFlags.Closed
                 : PrimitiveFlags.Closed;
+            isDynamic = IsDynamic;
         }
         private static List<Vector2> GenerateCircleContour(float radius, int segments)
         {
@@ -683,13 +689,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public int Resolution { get; private set; }
 
         public PlotGpu(Func<float, float> func, float xMin = -1f, float xMax = 1f,
-            int resolution = 300, string name = "Plot")
+            int resolution = 300, string name = "Plot",  bool isDynamic = false)
             : base(name)
         {
             Func = func ?? throw new ArgumentNullException(nameof(func));
             Resolution = Math.Max(2, resolution);
             UpdateRange(xMin, xMax);
             Flags = PrimitiveFlags.None;
+            isDynamic = IsDynamic;
         }
 
         public void UpdateRange(float xMin, float xMax, int? resolution = null)
@@ -756,12 +763,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public string? FontKey { get; set; }
         public Func<string>? DynamicTextSource { get; set; }
 
-        public TextGpu(string text = "Empty text", float fontSize = 0.1f, string? fontKey = null, string name = "")
+        public TextGpu(string text = "Empty text", float fontSize = 0.1f, string? fontKey = null, string name = "", bool isDynamic = false)
             : base(name)
         {
             Text = text ?? "";
             FontSize = fontSize;
             FontKey = fontKey;
+            isDynamic = IsDynamic;
         }
 
         protected override void RegisterGeometryInternal(GeometryArena arena)
