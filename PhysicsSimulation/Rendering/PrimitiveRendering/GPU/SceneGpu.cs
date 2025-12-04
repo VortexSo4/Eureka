@@ -37,10 +37,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             if (p.PrimitiveId == -1)
             {
                 p.PrimitiveId = _primitives.Count;
-                DebugManager.Gpu($"SceneGpu.AddPrimitive: Assigned PrimitiveId {p.PrimitiveId} to '{p.Name}'");
+                DebugManager.Scene($"SceneGpu.AddPrimitive: Assigned PrimitiveId {p.PrimitiveId} to '{p.Name}'");
             }
             _primitives.Add(p);
-            DebugManager.Gpu($"SceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
+            DebugManager.Scene($"SceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
         
         protected T Add<T>(T primitive) where T : PrimitiveGpu
@@ -60,10 +60,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public virtual void Initialize()
         {
-            DebugManager.Gpu("SceneGpu.Initialize: Creating AnimationEngine...");
+            DebugManager.Scene("SceneGpu.Initialize: Creating AnimationEngine...");
             _animationEngine = new AnimationEngine(_arena, _primitives);
             _animationEngine.UploadGeometryFromPrimitives();
-            DebugManager.Gpu("SceneGpu.Initialize: AnimationEngine created and geometry uploaded.");
+            DebugManager.Scene("SceneGpu.Initialize: AnimationEngine created and geometry uploaded.");
         }
 
         public void AnimateBackground(Vector3 targetColor, float startTime, float endTime)
@@ -77,7 +77,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             var anim = new BackgroundAnimation(targetColor, startTime, endTime);
             _bgAnimQueue.Enqueue(anim);
 
-            DebugManager.Gpu($"AnimateBackground: QUEUED → {targetColor} @ [{startTime:F3}s → {endTime:F3}s] (will start from current color when time comes)");
+            DebugManager.Scene($"AnimateBackground: QUEUED → {targetColor} @ [{startTime:F3}s → {endTime:F3}s] (will start from current color when time comes)");
         }
 
         public virtual void Update(float deltaTime)

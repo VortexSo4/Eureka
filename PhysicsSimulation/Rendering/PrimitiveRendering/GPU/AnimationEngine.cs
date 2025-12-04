@@ -67,7 +67,7 @@ namespace PhysicsSimulation.Rendering.GPU
                 if (_primitives[i].PrimitiveId == -1)
                 {
                     _primitives[i].PrimitiveId = i;
-                    DebugManager.Gpu($"Assigned PrimitiveId {i} to primitive '{_primitives[i].Name}'");
+                    DebugManager.Anim($"Assigned PrimitiveId {i} to primitive '{_primitives[i].Name}'");
                 }
             }
 
@@ -283,8 +283,7 @@ namespace PhysicsSimulation.Rendering.GPU
 
                     if (entry.PrimitiveId < 0 || entry.PrimitiveId >= _primitiveCount)
                     {
-                        DebugManager.Warn(
-                            $"Invalid PrimitiveId {entry.PrimitiveId} in AnimEntry for type {(AnimType)entry.MetaType}. Skipping.");
+                        DebugManager.Warn($"Invalid PrimitiveId {entry.PrimitiveId} in AnimEntry for type {(AnimType)entry.MetaType}. Skipping.");
                         continue;
                     }
 
@@ -300,14 +299,13 @@ namespace PhysicsSimulation.Rendering.GPU
                 NO_ANIM_DEBUG_CURRENT += 1;
                 if (DO_NO_ANIM_DEBUG && NO_ANIM_DEBUG_OUTPUT_RANGE == NO_ANIM_DEBUG_CURRENT)
                 {
-                    DebugManager.Gpu("UploadPendingAnimationsAndIndex: No new animations. Skipping upload.");
+                    DebugManager.Anim("UploadPendingAnimationsAndIndex: No new animations. Skipping upload.");
                     NO_ANIM_DEBUG_CURRENT = 0;
                 }
                 return;
             }
 
-            DebugManager.Gpu(
-                $"UploadPendingAnimationsAndIndex: Uploading {newEntries.Count} NEW animation entries (total will be {_uploadedAnimEntries.Count + newEntries.Count})");
+            DebugManager.Anim($"UploadPendingAnimationsAndIndex: Uploading {newEntries.Count} NEW animation entries (total will be {_uploadedAnimEntries.Count + newEntries.Count})");
 
             int startIndex = _uploadedAnimEntries.Count;
             _uploadedAnimEntries.AddRange(newEntries);
@@ -325,8 +323,7 @@ namespace PhysicsSimulation.Rendering.GPU
             GL.BufferData(BufferTarget.ShaderStorageBuffer, indexBytes.Length, indexBytes, BufferUsageHint.DynamicDraw);
             GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
 
-            DebugManager.Gpu(
-                $"UploadPendingAnimationsAndIndex: Successfully uploaded {newEntries.Count} new entries. Total: {_uploadedAnimEntries.Count}");
+            DebugManager.Anim($"UploadPendingAnimationsAndIndex: Successfully uploaded {newEntries.Count} new entries. Total: {_uploadedAnimEntries.Count}");
         }
 
         #endregion

@@ -11,7 +11,13 @@ namespace PhysicsSimulation.Base
         Morph,
         Render,
         Memory,
-        Gpu,
+        Alloc,   
+        Geometry,
+        Anim,    
+        Dispatch,
+        Buffer,  
+        Shader,  
+        Draw,    
         Scene,
         Font,
         Custom
@@ -28,7 +34,13 @@ namespace PhysicsSimulation.Base
         public static bool ShowMorph   { get; set; } = true;
         public static bool ShowRender  { get; set; } = true;
         public static bool ShowMemory  { get; set; } = true;
-        public static bool ShowGpu     { get; set; } = true;
+        public static bool ShowGpuAlloc    { get; set; } = true;
+        public static bool ShowGpuGeometry { get; set; } = true;
+        public static bool ShowGpuAnim     { get; set; } = true;
+        public static bool ShowGpuDispatch { get; set; } = true;
+        public static bool ShowGpuBuffer   { get; set; } = true;
+        public static bool ShowGpuShader   { get; set; } = true;
+        public static bool ShowGpuDraw     { get; set; } = true;
         public static bool ShowScene   { get; set; } = true;
         public static bool ShowFontManager { get; set; } = true;
 
@@ -73,7 +85,13 @@ namespace PhysicsSimulation.Base
             { LogLevel.Morph,   "#FF55AA" },
             { LogLevel.Render,  "#004BFF" },
             { LogLevel.Memory,  "#FF8800" },
-            { LogLevel.Gpu,     "#227722" },
+            { LogLevel.Alloc,    "#44AA44" },
+            { LogLevel.Geometry, "#00AADD" },
+            { LogLevel.Anim,     "#FFAA00" },
+            { LogLevel.Dispatch, "#AA88FF" },
+            { LogLevel.Buffer,   "#88AAAA" },
+            { LogLevel.Shader,   "#FF6666" },
+            { LogLevel.Draw,     "#00FFAA" },
             { LogLevel.Scene,   "#00AA88" },
             { LogLevel.Font,    "#AA33FF" },
             { LogLevel.Custom,  "#FFFFFF" }
@@ -100,7 +118,13 @@ namespace PhysicsSimulation.Base
                 LogLevel.Morph   => "MORPH",
                 LogLevel.Render  => "RENDER",
                 LogLevel.Memory  => "MEMORY",
-                LogLevel.Gpu     => "GPU",
+                LogLevel.Alloc    => "ALLOC",
+                LogLevel.Geometry => "GEOM",
+                LogLevel.Anim     => "ANIM",
+                LogLevel.Dispatch => "DISPCH",
+                LogLevel.Buffer   => "BUFFER",
+                LogLevel.Shader   => "SHADER",
+                LogLevel.Draw     => "DRAW",
                 LogLevel.Scene   => "SCENE",
                 LogLevel.Font    => "FONT",
                 LogLevel.Custom  => customTag?.ToUpper() ?? "CUSTOM",
@@ -144,7 +168,13 @@ namespace PhysicsSimulation.Base
         public static void Morph(string msg)   => Log(LogLevel.Morph, msg);
         public static void Render(string msg)  => Log(LogLevel.Render, msg);
         public static void Memory(string msg)  => Log(LogLevel.Memory, msg);
-        public static void Gpu(string msg)     => Log(LogLevel.Gpu, msg);
+        public static void Alloc(string msg)    => Log(LogLevel.Alloc, msg);
+        public static void Geometry(string msg) => Log(LogLevel.Geometry, msg);
+        public static void Anim(string msg)     => Log(LogLevel.Anim, msg);
+        public static void Dispatch(string msg) => Log(LogLevel.Dispatch, msg);
+        public static void Buffer(string msg)   => Log(LogLevel.Buffer, msg);
+        public static void Shader(string msg)   => Log(LogLevel.Shader, msg);
+        public static void Draw(string msg)     => Log(LogLevel.Draw, msg);
         public static void Scene(string msg)   => Log(LogLevel.Scene, msg);
         public static void Font(string msg) => Log(LogLevel.Font, msg);
 
@@ -162,7 +192,13 @@ namespace PhysicsSimulation.Base
                 case "morph":   ShowMorph = state; break;
                 case "render":  ShowRender = state; break;
                 case "memory":  ShowMemory = state; break;
-                case "gpu":     ShowGpu = state; break;
+                case "gpualloc":    ShowGpuAlloc = state; break;
+                case "gpugeometry": ShowGpuGeometry = state; break;
+                case "gpuanim":     ShowGpuAnim = state; break;
+                case "gpudispatch": ShowGpuDispatch = state; break;
+                case "gpubuffer":   ShowGpuBuffer = state; break;
+                case "gpushader":   ShowGpuShader = state; break;
+                case "gpudraw":     ShowGpuDraw = state; break;
                 case "scene":   ShowScene = state; break;
                 case "font": ShowFontManager = state; break;
                 default: Info($"Unknown log: {name}"); break;
@@ -178,7 +214,13 @@ namespace PhysicsSimulation.Base
             LogLevel.Morph   => ShowMorph,
             LogLevel.Render  => ShowRender,
             LogLevel.Memory  => ShowMemory,
-            LogLevel.Gpu     => ShowGpu,
+            LogLevel.Alloc    => ShowGpuAlloc,
+            LogLevel.Geometry => ShowGpuGeometry,
+            LogLevel.Anim     => ShowGpuAnim,
+            LogLevel.Dispatch => ShowGpuDispatch,
+            LogLevel.Buffer   => ShowGpuBuffer,
+            LogLevel.Shader   => ShowGpuShader,
+            LogLevel.Draw     => ShowGpuDraw,
             LogLevel.Scene   => ShowScene,
             LogLevel.Font    => ShowFontManager,
             _ => true

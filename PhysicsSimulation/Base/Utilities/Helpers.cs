@@ -306,7 +306,6 @@ void main()
             DebugManager.Morph("some text for testing debug output");
             DebugManager.Render("some text for testing debug output");
             DebugManager.Memory("some text for testing debug output");
-            DebugManager.Gpu("some text for testing debug output");
             DebugManager.Scene("some text for testing debug output");
             DebugManager.Font("some text for testing debug output");
         }
