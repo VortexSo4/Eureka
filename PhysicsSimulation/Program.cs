@@ -14,8 +14,8 @@ namespace PhysicsSimulation
     {
         private static void Main(string[] args)
         {
-            DebugManager.Log(LogLevel.Custom, $"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "A0FF33");
-            DebugManager.Log(LogLevel.Custom, $"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
+            DebugManager.Custom($"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "#A0FF33");
+            DebugManager.Custom($"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();

@@ -887,7 +887,7 @@ namespace EurekaDSL
             {
                 _aborted = true;
                 _abortMsg = msg;
-                DebugManager.Log(LogLevel.Error, msg, "PARSER", "#FF3333");
+                DebugManager.Error(msg);
             }
         }
         
@@ -1346,7 +1346,7 @@ namespace EurekaDSL
                 Scene.CurrentScene = newScene;
 
                 string? title = pos.Count > 0 && pos[0].Str != null ? pos[0].Str : "Untitled Scene";
-                DebugManager.Log(LogLevel.Custom, $"[DSL] New scene started: {title}", "SCENE", "#88FF88");
+                //DebugManager.Log(LogLevel.Custom, $"[DSL] New scene started: {title}", "SCENE", "#88FF88");
 
                 return Value.Null;
             });
