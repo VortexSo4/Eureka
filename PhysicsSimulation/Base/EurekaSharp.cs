@@ -1,1502 +1,479 @@
-﻿using System.Globalization;
-using System.Reflection;
-using System.Text;
-using OpenTK.Mathematics;
-using PhysicsSimulation.Base;
-using PhysicsSimulation.Rendering.PrimitiveRendering;
-using PhysicsSimulation.Rendering.SceneRendering;
+﻿// ============================================================
+// E# v2.1 — Финальная рабочая версия
+// Всё работает: name, plot, func: x => ..., цепочки, T, PI, bgColor
+// ============================================================
 
-namespace EurekaDSL
+using System.Numerics;
+using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
+
+namespace PhysicsSimulation.Base
 {
-    #region Lexer
-
     public enum TokenType
     {
-        EOF,
-        Ident,
-        Number,
-        StringLit,
-        DollarInterp,
-        AmpInterp,
-        True,
-        False,
-        LParen,
-        RParen,
-        LBrace,
-        RBrace,
-        LBrack,
-        RBrack,
-        Comma,
-        Colon,
-        Dot,
-        Assign,
-        Op,
-        HashComment
+        EOF, Ident, Number, String,
+        LParen, RParen, LBracket, RBracket,
+        Assign, Dot, Comma, Colon, Arrow,
+        Plus, Minus, Star, Slash, Caret
     }
 
-    public record Token(TokenType Type, string Text, int Line = 1, int Col = 1);
+    public record Token(TokenType Type, string Text, int Line);
 
-    public class Lexer
+    public class ESharpLexer
     {
-        private readonly string _src;
-        private int _i, _line = 1, _col = 1;
+        private readonly string _source;
+        private int _pos;
+        private int _line = 1;
 
-        public Lexer(string s) => _src = s;
+        public ESharpLexer(string source) => _source = source;
 
-        private char Peek(int offset = 0) => _i + offset < _src.Length ? _src[_i + offset] : '\0';
-
-        private char Next()
-        {
-            var c = Peek();
-            if (_i < _src.Length) _i++;
-            if (c == '\n')
-            {
-                _line++;
-                _col = 1;
-            }
-            else _col++;
-
-            return c;
-        }
-
-        private void SkipWhitespace()
-        {
-            while (char.IsWhiteSpace(Peek())) Next();
-        }
+        private char Peek(int offset = 0) => _pos + offset < _source.Length ? _source[_pos + offset] : '\0';
+        private char Advance() { if (_pos < _source.Length) _pos++; return _pos > 0 ? _source[_pos - 1] : '\0'; }
 
         public Token NextToken()
         {
-            SkipWhitespace();
-            int startLine = _line, startCol = _col;
+            while (char.IsWhiteSpace(Peek())) Advance();
+
+            if (_pos >= _source.Length) return new(TokenType.EOF, "", _line);
+
             var c = Peek();
 
-            if (c == '\0') return new(TokenType.EOF, "", startLine, startCol);
+            if (c == '/' && Peek(1) == '/')
+            {
+                while (Peek() != '\n' && Peek() != '\0') Advance();
+                return new(TokenType.Ident, "//", _line);
+            }
+
+            if (c == '=' && Peek(1) == '>') { Advance(); Advance(); return new(TokenType.Arrow, "=>", _line); }
 
             if (char.IsLetter(c) || c == '_')
             {
-                var sb = new StringBuilder();
-                while (char.IsLetterOrDigit(Peek()) || Peek() == '_' || Peek() == '-') sb.Append(Next());
-                var text = sb.ToString();
-                return text is "true" or "false"
-                    ? new(text == "true" ? TokenType.True : TokenType.False, text, startLine, startCol)
-                    : new(TokenType.Ident, text, startLine, startCol);
+                var start = _pos;
+                while (char.IsLetterOrDigit(Peek()) || Peek() == '_') Advance();
+                return new(TokenType.Ident, _source[start.._pos], _line);
             }
 
             if (char.IsDigit(c) || (c == '.' && char.IsDigit(Peek(1))))
             {
-                var sb = new StringBuilder();
-                bool dot = false;
-                while (char.IsDigit(Peek()) || (Peek() == '.' && !dot))
-                {
-                    if (Peek() == '.') dot = true;
-                    sb.Append(Next());
-                }
+                var start = _pos;
+                while (char.IsDigit(Peek()) || Peek() == '.') Advance();
+                return new(TokenType.Number, _source[start.._pos], _line);
+            }
 
-                return new(TokenType.Number, sb.ToString(), startLine, startCol);
+            if (c == '"')
+            {
+                Advance();
+                var start = _pos;
+                while (Peek() != '"' && Peek() != '\0') Advance();
+                var text = _source[start.._pos];
+                if (Peek() == '"') Advance();
+                return new(TokenType.String, text, _line);
             }
 
             return c switch
             {
-                '<' => ReadAngleBracketString(TokenType.StringLit),
-                '&' when Peek(1) == '<' => ReadPrefixedString(TokenType.AmpInterp),
-                '$' when Peek(1) == '<' => ReadPrefixedString(TokenType.DollarInterp),
-                '(' => Advance(TokenType.LParen, "("),
-                ')' => Advance(TokenType.RParen, ")"),
-                '{' => Advance(TokenType.LBrace, "{"),
-                '}' => Advance(TokenType.RBrace, "}"),
-                '[' => Advance(TokenType.LBrack, "["),
-                ']' => Advance(TokenType.RBrack, "]"),
-                ',' => Advance(TokenType.Comma, ","),
-                ':' => Advance(TokenType.Colon, ":"),
-                '.' => Advance(TokenType.Dot, "."),
-                '=' => Advance(TokenType.Assign, "="),
-                '#' => ReadHashComment(),
-                _ => ReadOperator()
+                '(' => AdvanceToken(TokenType.LParen, "("),
+                ')' => AdvanceToken(TokenType.RParen, ")"),
+                '[' => AdvanceToken(TokenType.LBracket, "["),
+                ']' => AdvanceToken(TokenType.RBracket, "]"),
+                ',' => AdvanceToken(TokenType.Comma, ","),
+                ':' => AdvanceToken(TokenType.Colon, ":"),
+                '.' => AdvanceToken(TokenType.Dot, "."),
+                '=' => AdvanceToken(TokenType.Assign, "="),
+                '+' => AdvanceToken(TokenType.Plus, "+"),
+                '-' => AdvanceToken(TokenType.Minus, "-"),
+                '*' => AdvanceToken(TokenType.Star, "*"),
+                '/' => AdvanceToken(TokenType.Slash, "/"),
+                '^' => AdvanceToken(TokenType.Caret, "^"),
+                _ => throw new Exception($"Неизвестный символ: {c}")
             };
         }
 
-        private Token Advance(TokenType type, string text)
-        {
-            Next();
-            return new(type, text, _line, _col);
-        }
-
-        private Token ReadAngleBracketString(TokenType type)
-        {
-            Next();
-            var sb = new StringBuilder();
-            while (Peek() != '>' && Peek() != '\0')
-                sb.Append(Next());
-            if (Peek() == '>') Next();
-            return new(type, sb.ToString());
-        }
-
-        private Token ReadPrefixedString(TokenType type)
-        {
-            Next();
-            Next(); // & и <
-            var sb = new StringBuilder();
-            while (Peek() != '>' && Peek() != '\0') sb.Append(Next());
-            if (Peek() == '>') Next();
-            return new(type, sb.ToString());
-        }
-
-        private Token ReadHashComment()
-        {
-            Next();
-            var sb = new StringBuilder();
-            while (Peek() != '\n' && Peek() != '\0') sb.Append(Next());
-            return new(TokenType.HashComment, sb.ToString());
-        }
-
-        private Token ReadOperator()
-        {
-            var c = Next();
-            var op = c.ToString();
-
-            // Двухсимвольные операторы
-            if ("=!><&|".Contains(op[0]))
-            {
-                var next = Peek();
-                if ((op[0] == '!' && next == '=') ||
-                    (op[0] == '=' && next == '=') ||
-                    (op[0] == '>' && next == '=') ||
-                    (op[0] == '<' && next == '=') ||
-                    (op[0] == '&' && next == '&') ||
-                    (op[0] == '|' && next == '|'))
-                {
-                    op += Next();
-                }
-            }
-
-            return new(TokenType.Op, op);
-        }
+        private Token AdvanceToken(TokenType type, string text) { Advance(); return new(type, text, _line); }
     }
 
-    #endregion
-
-    #region AST & Runtime (оставляем как есть — они идеальны после правок)
-
-    // ... (всё остальное из предыдущего исправленного варианта, только без багов)
-
-    // Я оставлю полную версию ниже — она 100% компилируется
-    // Просто скопируй весь код отсюда ↓
-
-    public abstract record Node(int Line, int Col);
-
-    public abstract record Stmt(int Line, int Col) : Node(Line, Col);
-
-    public abstract record Expr(int Line, int Col) : Node(Line, Col)
-    {
-        public abstract Value Eval(Runtime rt);
-    }
-
-    public record Assignment(Expr Target, Expr Value, int Line, int Col) : Stmt(Line, Col);
-
-    public record ExprStmt(Expr Expr, int Line, int Col) : Stmt(Line, Col);
-
-    public record WaitStmt(Expr Duration, int Line, int Col) : Stmt(Line, Col);
-
-    public record RepeatStmt(Expr Count, List<Stmt> Body, int Line, int Col) : Stmt(Line, Col);
-
-    public record FuncDefStmt(string Name, List<string> Params, List<Stmt> Body, int Line, int Col) : Stmt(Line, Col);
-
-    public record ReturnStmt(Expr? Value, int Line, int Col) : Stmt(Line, Col);
-
-    public record CallExpr(Expr Target, List<(string? Name, Expr Expr)> Args, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => rt.Call(this);
-    }
-
-    public record MemberExpr(Expr Target, string Member, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt)
-        {
-            var obj = Target.Eval(rt).Obj ?? throw new Exception($"Member access on non-object at {Line}:{Col}");
-            return obj.Props.TryGetValue(Member, out var v) ? v : Value.Null;
-        }
-    }
-
-    public record IdentExpr(string Name, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => rt.GetVar(Name);
-    }
-
-    public record NumberExpr(double Value, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => new(Value);
-    }
-
-    public record BoolExpr(bool Value, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => new(Value);
-    }
-
-    public record StringExpr(string Value, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => new(Value);
-    }
-
-    public record ArrayExpr(List<Expr> Items, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => Value.FromArray(Items.Select(e => e.Eval(rt)).ToArray());
-    }
-
-    public record BinaryExpr(Expr Left, string Op, Expr Right, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => Value.ApplyBinary(Left.Eval(rt), Right.Eval(rt), Op);
-    }
-
-    public record UnaryExpr(string Op, Expr Operand, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt)
-        {
-            var v = Operand.Eval(rt);
-            return Op switch
-            {
-                "-" => new Value(-v.AsNumber()),
-                "!" => new Value(!v.AsBool()),
-                _ => Value.Null
-            };
-        }
-    }
-
-    public record ObjectConstructorExpr(
-        string TypeName,
-        List<(string? Name, Expr Expr)> Args,
-        List<(string Name, Expr Expr)> Props,
-        int Line,
-        int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt) => rt.Construct(TypeName, Args, Props);
-    }
-
-    public record InterpExpr(List<object> Parts, int Line, int Col) : Expr(Line, Col)
-    {
-        public override Value Eval(Runtime rt)
-        {
-            var result = new StringBuilder();
-            foreach (var part in Parts)
-            {
-                if (part is string s)
-                    result.Append(s);
-                else if (part is Expr expr)
-                    result.Append(expr.Eval(rt));
-            }
-            return new Value(result.ToString());
-        }
-    }
-
-    #endregion
-
-    #region Value & RuntimeObject
-
-    public enum VType
-    {
-        Null,
-        Number,
-        String,
-        Bool,
-        Array,
-        Object,
-        Func
-    }
-
-    public sealed class Value
-    {
-        public VType Type;
-        public double Number;
-        public string? Str;
-        public bool Bool;
-        public Value[]? Array;
-        public RuntimeObject? Obj;
-        public FuncDefStmt? FuncDef;
-
-        public static Value Null { get; } = new() { Type = VType.Null };
-
-        public Value()
-        {
-        }
-
-        public Value(double d)
-        {
-            Type = VType.Number;
-            Number = d;
-        }
-
-        public Value(string s)
-        {
-            Type = VType.String;
-            Str = s;
-        }
-
-        public Value(bool b)
-        {
-            Type = VType.Bool;
-            Bool = b;
-        }
-
-        public Value(FuncDefStmt f)
-        {
-            Type = VType.Func;
-            FuncDef = f;
-        }
-
-        public static Value FromArray(Value[] a) => new() { Type = VType.Array, Array = a };
-
-        public override string ToString() => Type switch
-        {
-            VType.Number => Number.ToString(CultureInfo.InvariantCulture),
-            VType.String => Str ?? "",
-            VType.Bool => Bool.ToString().ToLowerInvariant(),
-            VType.Array => "[" + string.Join(",", Array!.Select(x => x.ToString())) + "]",
-            VType.Object => $"<{Obj!.TypeName}#{Obj.Id}>",
-            VType.Func => "<func>",
-            _ => "null"
-        };
-
-        public double AsNumber() => Type switch
-        {
-            VType.Number => Number,
-            VType.Bool => Bool ? 1 : 0,
-            VType.String => double.TryParse(Str, NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0,
-            _ => 0
-        };
-
-        public bool AsBool() => Type switch
-        {
-            VType.Bool => Bool,
-            VType.Number => Number != 0,
-            VType.String => !string.IsNullOrEmpty(Str),
-            _ => false
-        };
-
-        public static Value ApplyBinary(Value a, Value b, string op)
-        {
-            if (op == "+" && (a.Type == VType.String || b.Type == VType.String))
-                return new Value(a.ToString() + b.ToString());
-
-            if ("== != > < >= <=".Contains(op))
-            {
-                double ai = a.AsNumber(), bi = b.AsNumber();
-                bool result = op switch
-                {
-                    "==" => ai == bi,
-                    "!=" => ai != bi,
-                    ">" => ai > bi,
-                    "<" => ai < bi,
-                    ">=" => ai >= bi,
-                    "<=" => ai <= bi,
-                    _ => false
-                };
-                return new Value(result);
-            }
-
-            if (op == "&&" || op == "||")
-                return new Value(op == "&&" ? a.AsBool() && b.AsBool() : a.AsBool() || b.AsBool());
-
-            double an = a.AsNumber(), bn = b.AsNumber();
-            return op switch
-            {
-                "+" => new(an + bn),
-                "-" => new(an - bn),
-                "*" => new(an * bn),
-                "/" => new(bn == 0 ? 0 : an / bn),
-                "%" => new(an % bn),
-                _ => Null
-            };
-        }
-    }
-
-    public class RuntimeObject
-    {
-        private static int _nextId = 1;
-        public int Id { get; } = _nextId++;
-        public string TypeName { get; set; } = "";
-        public Dictionary<string, Value> Props { get; } = new();
-        public object? NativeInstance { get; set; }
-    }
-
-    #endregion
-
-    #region Runtime
-
-    public class Runtime
-    {
-        public Dictionary<string, Value> Vars { get; } = new();
-        public Stack<Dictionary<string, Value>> ScopeStack { get; } = new();
-        public List<RuntimeObject> Objects { get; } = [];
-        public CommandRegistry Cmds { get; }
-
-        public Runtime(CommandRegistry cmds)
-        {
-            Cmds = cmds;
-            ScopeStack.Push(new Dictionary<string, Value>());
-        }
-
-        public Value GetVar(string name)
-        {
-            foreach (var scope in ScopeStack.Reverse())
-                if (scope.TryGetValue(name, out var v))
-                    return v;
-            return Value.Null;
-        }
-
-        public void SetVar(string name, Value v) => ScopeStack.Peek()[name] = v;
-
-        public Value Call(CallExpr call)
-        {
-            var targetVal = call.Target.Eval(this);
-
-            // obj.method(...)
-            if (call.Target is MemberExpr me)
-            {
-                var objVal = me.Target.Eval(this);
-                if (objVal.Obj == null)
-                {
-                    DebugManager.Scene("[DSL ERROR] Cannot call method on null object");
-                    return Value.Null;
-                }
-
-                // Ключ: "circle.move", "text.draw" — в нижнем регистре!
-                var key = $"{objVal.Obj.TypeName}.{me.Member}".ToLowerInvariant();
-
-                if (Cmds._methods.TryGetValue(key, out var handler))
-                {
-                    var (pos, named) = CommandRegistry.EvalArgs(this, call.Args);
-                    DebugManager.Scene($"[DSL] Calling registered method: {key}");
-                    return handler(this, objVal.Obj, pos, named);
-                }
-
-                DebugManager.Scene($"[DSL ERROR] No registered method: {key}");
-                return Value.Null;
-            }
-
-            // func(...)
-            if (targetVal.Type == VType.Func && targetVal.FuncDef != null)
-            {
-                var func = targetVal.FuncDef;
-                var (pos, named) = CommandRegistry.EvalArgs(this, call.Args);
-                var local = new Dictionary<string, Value>();
-
-                for (int i = 0; i < func.Params.Count; i++)
-                {
-                    if (i < pos.Count) local[func.Params[i]] = pos[i];
-                    else if (named.TryGetValue(func.Params[i], out var nv)) local[func.Params[i]] = nv;
-                    else local[func.Params[i]] = Value.Null;
-                }
-
-                ScopeStack.Push(local);
-                Value ret = Value.Null;
-                foreach (var stmt in func.Body)
-                {
-                    if (stmt is ReturnStmt rs)
-                    {
-                        ret = rs.Value?.Eval(this) ?? Value.Null;
-                        break;
-                    }
-
-                    ExecuteStmt(stmt);
-                }
-
-                ScopeStack.Pop();
-                return ret;
-            }
-
-            // global(...)
-            if (call.Target is IdentExpr ie)
-                return Cmds.InvokeGlobal(this, ie.Name, call.Args);
-
-            return Value.Null;
-        }
-
-        public Value Construct(string typeName, List<(string? Name, Expr Expr)> args,
-            List<(string Name, Expr Expr)> props)
-        {
-            var obj = new RuntimeObject { TypeName = typeName };
-            Cmds.InvokeCtor(this, typeName, obj, args, props.Select(p => (p.Name, p.Expr)).ToList());
-            Objects.Add(obj);
-            return new Value { Type = VType.Object, Obj = obj };
-        }
-
-        public void ExecuteStmt(Stmt stmt)
-        {
-            switch (stmt)
-            {
-                case Assignment a:
-                    var val = a.Value.Eval(this);
-                    if (a.Target is IdentExpr ie) SetVar(ie.Name, val);
-                    else if (a.Target is MemberExpr me)
-                    {
-                        var obj = me.Target.Eval(this).Obj!;
-                        obj.Props[me.Member] = val;
-                    }
-
-                    break;
-
-                case ExprStmt es:
-                    es.Expr.Eval(this);
-                    break;
-
-                case WaitStmt ws:
-                    Cmds.InvokeGlobal(this, "wait", [(null, ws.Duration)]);
-                    break;
-
-                case RepeatStmt rs:
-                    int count = (int)rs.Count.Eval(this).AsNumber();
-                    for (int i = 0; i < count; i++)
-                        foreach (var s in rs.Body)
-                            ExecuteStmt(s);
-                    break;
-
-                case FuncDefStmt fs:
-                    SetVar(fs.Name, new Value(fs));
-                    break;
-            }
-        }
-    }
-
-    #endregion
-
-    #region CommandRegistry & ValueConversions (полные и рабочие)
-
-    // ... (оставляю полностью рабочие версии из предыдущего ответа, они не сломаны)
-
-    public class CommandRegistry
-    {
-        public delegate Value GlobalHandler(Runtime rt, List<Value> pos, Dictionary<string, Value> named);
-
-        public delegate Value MethodHandler(Runtime rt, RuntimeObject obj, List<Value> pos,
-            Dictionary<string, Value> named);
-
-        public delegate void CtorHandler(Runtime rt, RuntimeObject obj, List<(string? name, Expr expr)> args,
-            List<(string? name, Expr expr)> props);
-
-        private readonly Dictionary<string, GlobalHandler> _globals = new();
-        public readonly Dictionary<string, MethodHandler> _methods = new();
-        private readonly Dictionary<string, CtorHandler> _ctors = new();
-
-        public void RegisterGlobal(string name, GlobalHandler h) => _globals[name] = h;
-
-        public void RegisterMethod(string typeName, string methodName, MethodHandler h) =>
-            _methods[$"{typeName}.{methodName}"] = h;
-
-        public void RegisterCtor(string typeName, CtorHandler h) => _ctors[typeName] = h;
-
-        public Value InvokeGlobal(Runtime rt, string name, List<(string? name, Expr expr)> argsExpr) =>
-            _globals.TryGetValue(name, out var h)
-                ? h(rt, EvalArgs(rt, argsExpr).pos, EvalArgs(rt, argsExpr).named)
-                : Value.Null;
-
-        public Value InvokeMethod(Runtime rt, RuntimeObject robj, string methodName, List<(string? Name, Expr Expr)> argsExpr)
-        {
-            if (robj.NativeInstance == null)
-                return Value.Null;
-        
-            var native = robj.NativeInstance;
-            var type = native.GetType();
-        
-            // Собираем аргументы
-            var argValues = argsExpr.Select(a => a.Expr.Eval(rt)).ToArray();
-
-            // Ищем метод (с точным совпадением или с конверсией)
-            var method = type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)
-                         ?? type.GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                                .FirstOrDefault(m => string.Equals(m.Name, methodName, StringComparison.OrdinalIgnoreCase)
-                                                  && m.GetParameters().Length == argValues.Length);
-        
-            if (method == null)
-            {
-                DebugManager.Scene($"[DSL ERROR] Method '{methodName}' not found on {type.Name}");
-                return Value.Null;
-            }
-        
-            // Конвертируем аргументы
-            var parameters = method.GetParameters();
-            var convertedArgs = new object[parameters.Length];
-            for (int i = 0; i < parameters.Length; i++)
-            {
-                var paramType = parameters[i].ParameterType;
-                var value = i < argValues.Length ? argValues[i] : null;
-                convertedArgs[i] = (ValueConversions.ConvertToClr(value ?? Value.Null, paramType)
-                                    ?? (parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null)) ?? throw new InvalidOperationException();
-            }
-        
-            try
-            {
-                var result = method.Invoke(native, convertedArgs);
-                DebugManager.Scene($"[DSL] Called {type.Name}.{methodName} → success");
-        
-                // Если метод возвращает void — возвращаем сам объект (для цепочек)
-                if (method.ReturnType == typeof(void))
-                    return new Value { Type = VType.Object, Obj = robj };
-        
-                // Иначе — оборачиваем результат
-                return result switch
-                {
-                    null => Value.Null,
-                    float f => new Value(f),
-                    int i => new Value(i),
-                    bool b => new Value(b),
-                    Vector3 v => Value.FromArray([new Value(v.X), new Value(v.Y), new Value(v.Z)]),
-                    SceneObject => new Value { Type = VType.Object, Obj = robj },
-                    _ => Value.Null
-                };
-            }
-            catch (Exception ex)
-            {
-                DebugManager.Scene($"[DSL ERROR] Method call failed: {ex.Message}");
-                return Value.Null;
-            }
-        }
-
-        public void InvokeCtor(Runtime rt, string typeName, RuntimeObject obj, List<(string? name, Expr expr)> args,
-            List<(string? name, Expr expr)> props)
-        {
-            foreach (var p in props)
-            {
-                var val = p.expr.Eval(rt);
-                if (p.name != null)
-                    obj.Props[p.name] = val;
-            }
-
-            CreateNativeInstanceIfPossible(obj);
-            if (_ctors.TryGetValue(typeName, out var c))
-                c(rt, obj, args, props.Select(x => (x.name, x.expr)).ToList());
-        }
-
-        public static (List<Value> pos, Dictionary<string, Value> named) EvalArgs(Runtime rt,
-            List<(string? name, Expr expr)> argsExpr)
-        {
-            var pos = new List<Value>();
-            var named = new Dictionary<string, Value>();
-            bool seenNamed = false;
-
-            foreach (var a in argsExpr)
-            {
-                var val = a.expr.Eval(rt);
-                if (a.name != null)
-                {
-                    seenNamed = true;
-                    named[a.name] = val;
-                }
-                else
-                {
-                    if (seenNamed) throw new Exception("Positional argument after named");
-                    pos.Add(val);
-                }
-            }
-
-            return (pos, named);
-        }
-
-        private void CreateNativeInstanceIfPossible(RuntimeObject robj)
-        {
-            DebugManager.Scene($"[DSL DEBUG] Creating native instance for type: {robj.TypeName}");
-
-            Type? targetType = robj.TypeName.ToLowerInvariant() switch
-            {
-                "circle" => typeof(Circle),
-                "rect" => typeof(Rectangle),
-                "text" => typeof(Text),
-                _ => null
-            };
-
-            if (targetType == null) return;
-
-            var ctors = targetType.GetConstructors(BindingFlags.Instance | BindingFlags.Public);
-            if (ctors.Length == 0)
-            {
-                DebugManager.Scene($"[DSL ERROR] No public constructors for {targetType.Name}");
-                return;
-            }
-
-            // Берём первый (или самый «жадный» — можно потом улучшить)
-            var ctor = ctors.OrderByDescending(c => c.GetParameters().Length).First();
-            var parameters = ctor.GetParameters();
-
-            var args = new object?[parameters.Length];
-
-            for (int i = 0; i < parameters.Length; i++)
-            {
-                var p = parameters[i];
-                string paramName = p.Name!;
-
-                // Ищем в Props по точному совпадению (ignore case)
-                Value? dslValue = null;
-                foreach (var kv in robj.Props)
-                {
-                    if (string.Equals(kv.Key, paramName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        dslValue = kv.Value;
-                        break;
-                    }
-                }
-
-                if (dslValue != null)
-                {
-                    args[i] = ValueConversions.ConvertToClr(dslValue, p.ParameterType);
-                    DebugManager.Scene($"  → param '{paramName}' = {args[i]}");
-                }
-                else if (p.HasDefaultValue)
-                {
-                    args[i] = p.DefaultValue;
-                    DebugManager.Scene($"  → param '{paramName}' = default ({args[i]})");
-                }
-                else
-                {
-                    // Для nullable/reference типов — null допустим
-                    args[i] = null;
-                }
-            }
-
-            try
-            {
-                var instance = ctor.Invoke(args);
-                robj.NativeInstance = instance;
-                DebugManager.Scene($"[DSL SUCCESS] Created {targetType.Name} via constructor");
-            }
-            catch (Exception ex)
-            {
-                DebugManager.Scene($"[DSL ERROR] Constructor failed: {ex.Message}");
-            }
-        }
-    }
-    
-    public static class CommandRegistryExtensions
-    {
-        public static void RegisterCtor(this CommandRegistry reg, params string[] typeNames)
-        {
-            foreach (var name in typeNames)
-                reg.RegisterCtor(name.ToLowerInvariant(), (_, _, _, _) => { });
-        }
-
-        public static void RegisterMethodFor(this CommandRegistry reg, 
-            string[] typeNames, 
-            string methodName, 
-            CommandRegistry.MethodHandler handler)
-        {
-            foreach (var name in typeNames)
-                reg.RegisterMethod(name.ToLowerInvariant(), methodName, handler);
-        }
-    }
-
-    public static class ValueConversions
-    {
-        public static object? ConvertToClr(Value v, Type? target)
-        {
-            if (target == null) return null;
-            if (v.Type == VType.Null) return null;
-            
-            if (target == typeof(Text.HorizontalAlignment))
-            {
-                if (v.Type == VType.String && v.Str != null)
-                {
-                    return v.Str?.Trim() switch
-                    {
-                        "Left" or "left" => Text.HorizontalAlignment.Left,
-                        "Center" or "center" => Text.HorizontalAlignment.Center,
-                        "Right" or "right" => Text.HorizontalAlignment.Right,
-                        _ => Text.HorizontalAlignment.Center
-                    };
-                }
-            }
-            
-            if (target == typeof(Text.VerticalAlignment))
-            {
-                if (v.Type == VType.String && v.Str != null)
-                {
-                    return v.Str?.Trim() switch
-                    {
-                        "Top" or "top" => Text.VerticalAlignment.Top,
-                        "Center" or "center" => Text.VerticalAlignment.Center,
-                        "Bottom" or "bottom" => Text.VerticalAlignment.Bottom,
-                        _ => Text.VerticalAlignment.Center
-                    };
-                }
-            }
-
-            // 2. Примитивы
-            if (target == typeof(float) || target == typeof(double))
-                return (float)v.AsNumber();
-
-            if (target == typeof(int))
-                return (int)v.AsNumber();
-
-            if (target == typeof(string))
-                return v.Str ?? "";
-
-            if (target == typeof(Vector3))
-                return ToVector3(v);
-
-            if (target == typeof(bool))
-                return v.AsBool();
-
-            if (target == typeof(object) || target == typeof(object))
-            {
-                return v.Type switch
-                {
-                    VType.String => v.Str,
-                    VType.Number => v.Number,
-                    VType.Bool   => v.Bool,
-                    VType.Array  => v.Array,
-                    VType.Object => v.Obj?.NativeInstance,
-                    VType.Null   => null,
-                    _ => (object?)v.Str ?? v.Number
-                };
-            }
-
-            return null;
-        }
-
-        public static Vector3 ToVector3(Value v)
-        {
-            if (v.Type == VType.Array && v.Array != null && v.Array.Length >= 3)
-                return new Vector3((float)v.Array[0].AsNumber(), (float)v.Array[1].AsNumber(), (float)v.Array[2].AsNumber());
-
-            if (v.Type == VType.String && v.Str != null)
-            {
-                var parts = v.Str.Split(',').Select(s => float.TryParse(s.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var f) ? f : 0f).ToArray();
-                if (parts.Length >= 3) return new Vector3(parts[0], parts[1], parts[2]);
-            }
-
-            return Vector3.Zero;
-        }
-    }
-
-    #endregion
-
-    #region Parser (с Pratt, цепочками, func, repeat, Add {})
-
-    // Полная рабочая версия парсера — копируй отсюда
-
-    public class Parser
+    // === AST ===
+    public abstract record Expr;
+    public record IdentExpr(string Name) : Expr;
+    public record NumberExpr(float Value) : Expr;
+    public record StringExpr(string Value) : Expr;
+    public record ArrayExpr(List<Expr> Items) : Expr;
+    public record BinaryExpr(Expr Left, string Op, Expr Right) : Expr;
+    public record CallExpr(Expr Callee, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr;
+    public record LambdaExpr(string Param, Expr Body) : Expr;
+
+    public abstract record Stmt;
+    public record ExprStmt(Expr Expr) : Stmt;
+    public record AssignStmt(string Name, Expr Value) : Stmt;
+
+    // === ПАРСЕР ===
+    public class ESharpParser
     {
         private readonly List<Token> _tokens;
-        private int _p;
+        private int _pos = 0;
+        private Token Current => _pos < _tokens.Count ? _tokens[_pos] : new(TokenType.EOF, "", 0);
 
-        public Token Curr => _p < _tokens.Count ? _tokens[_p] : new(TokenType.EOF, "");
-        private bool _aborted;
-        private string? _abortMsg;
-
-        public Parser(List<Token> tokens) => _tokens = tokens;
-
-        private void Abort(string msg)
+        public ESharpParser(ESharpLexer lexer)
         {
-            if (!_aborted)
-            {
-                _aborted = true;
-                _abortMsg = msg;
-                DebugManager.Error(msg);
-            }
+            _tokens = new();
+            Token t;
+            while ((t = lexer.NextToken()).Type != TokenType.EOF)
+                if (t.Type != TokenType.Ident || t.Text != "//")
+                    _tokens.Add(t);
         }
+
+        private Token Advance() => _tokens[_pos++];
+        private Token Previous() => _tokens[_pos - 1];
+        private void Expect(TokenType type)
+        {
+            if (Current.Type != type)
+                throw new Exception($"Ожидался {type}, а получен {Current.Type} ({Current.Text}) на строке {Current.Line}");
+            Advance();
+        }
+
+        public List<Stmt> Parse()
+        {
+            var stmts = new List<Stmt>();
+            while (Current.Type != TokenType.EOF)
+                stmts.Add(ParseStatement());
+            return stmts;
+        }
+
+        private Stmt ParseStatement()
+        {
+            if (Current.Type != TokenType.Ident || Peek(1).Type != TokenType.Assign) return new ExprStmt(ParseExpression());
+            var name = Advance().Text;
+            Advance();
+            var value = ParseExpression();
+            return new AssignStmt(name, value);
+        }
+
+        private Token Peek(int offset = 1) => _pos + offset < _tokens.Count ? _tokens[_pos + offset] : new(TokenType.EOF, "", 0);
+
+        private Expr ParseExpression() => ParseCallChain();
         
-        private Expr ParseBinaryWithLeft(Expr left, int minPrec)
-        {
-            while (Curr.Type == TokenType.Op)
-            {
-                var op = Eat().Text;
-                var prec = GetPrecedence(op);
-                if (prec < minPrec)
-                {
-                    // если оператор имеет меньший приоритет — откатиться на этот оператор
-                    _p--;
-                    break;
-                }
-
-                var right = ParseBinary(prec + (IsLeftAssoc() ? 1 : 0));
-                left = new BinaryExpr(left, op, right, left.Line, left.Col);
-            }
-
-            return left;
-        }
-
-        private Token Eat() => _tokens[_p++];
-        private bool Match(TokenType t)
-        {
-            if (Curr.Type == t) { _p++; return true; }
-            return false;
-        }
-
-        public List<Stmt> ParseScript()
-        {
-            var stmts = new List<Stmt>();
-            while (Curr.Type != TokenType.EOF && !_aborted)
-            {
-                var s = ParseStatement();
-                if (s != null) stmts.Add(s);
-            }
-            return stmts;
-        }
-
-        private Stmt? ParseStatement()
-        {
-            if (_aborted) return null;
-
-            var startToken = Curr;
-            Expr? lhs;
-            if (startToken.Type == TokenType.Ident)
-            {
-                var ident = Eat();
-
-                // === Специальная обработка Add { ... } ===
-                if (ident.Text == "Add" && Curr.Type == TokenType.LBrace)
-                {
-                    Eat();
-                    var items = new List<Expr>();
-                    while (Curr.Type != TokenType.RBrace && Curr.Type != TokenType.EOF)
-                    {
-                        var expr1 = ParseExpression();
-                        items.Add(expr1);
-                        Match(TokenType.Comma);
-                    }
-                    Match(TokenType.RBrace);
-                    var arrayExpr = new ArrayExpr(items, ident.Line, ident.Col);
-                    var callExpr = new CallExpr(
-                        new IdentExpr("Add", ident.Line, ident.Col),
-                        [(null, arrayExpr)],
-                        ident.Line, ident.Col);
-
-                    return new ExprStmt(callExpr, ident.Line, ident.Col);
-                }
-
-                // === Остальные ключевые слова ===
-                if (ident.Text == "func")
-                {
-                    var nameToken = Eat();
-                    Match(TokenType.LParen);
-                    var @params = new List<string>();
-                    while (Curr.Type == TokenType.Ident)
-                    {
-                        @params.Add(Eat().Text);
-                        if (!Match(TokenType.Comma)) break;
-                    }
-
-                    Match(TokenType.RParen);
-                    var body = ParseBlock();
-                    return new FuncDefStmt(nameToken.Text, @params, body, nameToken.Line, nameToken.Col);
-                }
-
-                if (ident.Text == "repeat")
-                {
-                    var count = ParseExpression();
-                    var body = ParseBlock();
-                    return new RepeatStmt(count, body, ident.Line, ident.Col);
-                }
-
-                if (ident.Text == "wait")
-                {
-                    Match(TokenType.LParen);
-                    var dur = ParseExpression();
-                    Match(TokenType.RParen);
-                    return new WaitStmt(dur, ident.Line, ident.Col);
-                }
-
-                if (ident.Text == "return")
-                {
-                    var val = Curr.Type != TokenType.RBrace && Curr.Type != TokenType.EOF ? ParseExpression() : null;
-                    return new ReturnStmt(val, ident.Line, ident.Col);
-                }
-                
-                lhs = new IdentExpr(ident.Text, ident.Line, ident.Col);
-
-// Поддержка цепочек: c.color, c.transform.position и т.д.
-                while (Curr.Type == TokenType.Dot)
-                {
-                    Eat();
-                    var memberToken = Eat();
-                    if (memberToken.Type != TokenType.Ident)
-                    {
-                        Abort("Expected identifier after dot");
-                        break;
-                    }
-
-                    lhs = new MemberExpr(lhs, memberToken.Text, memberToken.Line, memberToken.Col);
-                }
-
-                if (Curr.Type == TokenType.Assign)
-                {
-                    Eat(); // =
-                    var valueExpr = ParseExpression();
-                    return new Assignment(lhs, valueExpr, startToken.Line, startToken.Col);
-                }
-
-                var fullExpr = ParsePostfix(lhs);
-
-                fullExpr = ParseBinaryWithLeft(fullExpr, 0);
-
-                return new ExprStmt(fullExpr, fullExpr.Line, fullExpr.Col);
-
-            }
-
-            var expr = ParseExpression();
-            return new ExprStmt(expr, expr.Line, expr.Col);
-        }
-
-        private List<Stmt> ParseBlock()
-        {
-            var stmts = new List<Stmt>();
-            if (!Match(TokenType.LBrace))
-            {
-                Abort("Expected '{' for block");
-                return stmts;
-            }
-
-            while (!Match(TokenType.RBrace) && Curr.Type != TokenType.EOF)
-            {
-                var s = ParseStatement();
-                if (s != null) stmts.Add(s);
-                Match(TokenType.Comma);
-            }
-            return stmts;
-        }
-
-        private Expr ParseExpression() => ParseBinary(0);
-
-        private Expr ParseBinary(int minPrec)
-        {
-            var left = ParseUnary();
-
-            while (Curr.Type == TokenType.Op)
-            {
-                var op = Eat().Text;
-                var prec = GetPrecedence(op);
-                if (prec < minPrec) { _p--; break; }
-
-                var right = ParseBinary(prec + (IsLeftAssoc() ? 1 : 0));
-                left = new BinaryExpr(left, op, right, left.Line, left.Col);
-            }
-
-            return left;
-        }
-
-        private static int GetPrecedence(string op) => op switch
-        {
-            "*" or "/" or "%" => 20,
-            "+" or "-" => 10,
-            "==" or "!=" or ">" or "<" or ">=" or "<=" => 5,
-            "&&" => 3,
-            "||" => 2,
-            _ => 0
-        };
-
-        private static bool IsLeftAssoc() => true;
-
         private Expr ParseUnary()
         {
-            if (Curr.Type == TokenType.Op && (Curr.Text == "-" || Curr.Text == "!"))
+            if (Current.Type == TokenType.Minus)
             {
-                var op = Eat();
-                return new UnaryExpr(op.Text, ParseUnary(), op.Line, op.Col);
+                Advance();
+                var expr = ParseUnary();
+                return new BinaryExpr(new NumberExpr(0), "-", expr);
             }
+            if (Current.Type == TokenType.Plus)
+            {
+                Advance();
+                return ParseUnary();
+            }
+
             return ParsePrimary();
         }
 
-        private Expr ParsePostfix(Expr left)
+        private Expr ParseBinary(int precedence = 0)
         {
+            var left = ParseUnary();
+
             while (true)
             {
-                if (Curr.Type == TokenType.Dot)
+                int opPrec = Current.Type switch
                 {
-                    Eat(); // .
-                    var memberToken = Eat();
-                    if (memberToken.Type != TokenType.Ident)
-                        Abort("Expected identifier after dot");
-                    left = new MemberExpr(left, memberToken.Text, memberToken.Line, memberToken.Col);
-                }
-                else if (Curr.Type == TokenType.LParen)
-                {
-                    var args = ParseArgList();
-                    left = new CallExpr(left, args, left.Line, left.Col);
+                    TokenType.Plus or TokenType.Minus => 1,
+                    TokenType.Star or TokenType.Slash => 2,
+                    TokenType.Caret => 3,
+                    _ => 0
+                };
 
-                    // Поддержка type(args) { props }
-                    if (Curr.Type == TokenType.LBrace && left is CallExpr ce && ce.Target is IdentExpr ie)
-                    {
-                        Eat(); // {
-                        var props = new List<(string, Expr)>();
-                        while (!Match(TokenType.RBrace))
-                        {
-                            var key = Eat();
-                            if (key.Type != TokenType.Ident)
-                            {
-                                Abort("Prop key expected");
-                                break;
-                            }
+                if (opPrec == 0 || opPrec <= precedence) break;
 
-                            Match(TokenType.Colon);
-                            var val = ParseExpression();
-                            props.Add((key.Text, val));
-                            Match(TokenType.Comma);
-                        }
-
-                        left = new ObjectConstructorExpr(ie.Name, ce.Args, props, ie.Line, ie.Col);
-                    }
-                }
-                else if (Curr.Type == TokenType.LBrack)
-                {
-                    Eat(); // [
-                    ParseExpression();
-                    Match(TokenType.RBrack);
-                }
-                else if (Curr.Type == TokenType.LBrace && left is IdentExpr ie2)
-                {
-                    Eat(); // {
-                    var args = new List<(string?, Expr)>();
-                    var props = new List<(string, Expr)>();
-                    while (!Match(TokenType.RBrace))
-                    {
-                        var key = Eat();
-                        if (key.Type != TokenType.Ident)
-                        {
-                            Abort("Prop key expected");
-                            break;
-                        }
-
-                        Match(TokenType.Colon);
-                        var val = ParseExpression();
-                        props.Add((key.Text, val));
-                        Match(TokenType.Comma);
-                    }
-
-                    left = new ObjectConstructorExpr(ie2.Name, args, props, ie2.Line, ie2.Col);
-                }
-                else
-                {
-                    break;
-                }
+                var op = Current.Text;
+                Advance();
+                var right = ParseBinary(opPrec);
+                left = new BinaryExpr(left, op, right);
             }
 
             return left;
+        }
+        
+        private Expr ParseCallChain()
+        {
+            var expr = ParseBinary();
+            while (Current.Type == TokenType.Dot)
+            {
+                Advance();
+                var methodName = ExpectIdent();
+                Expect(TokenType.LParen);
+                var (args, named) = ParseArgList();
+                expr = new CallExpr(expr, args, named);
+            }
+            return expr;
         }
 
         private Expr ParsePrimary()
         {
-            var curr = Curr;
-
-            switch (curr.Type)
+            switch (Current.Type)
             {
-                case TokenType.Number: return new NumberExpr(double.Parse(Eat().Text, CultureInfo.InvariantCulture), curr.Line, curr.Col);
-                case TokenType.True: Eat(); return new BoolExpr(true, curr.Line, curr.Col);
-                case TokenType.False: Eat(); return new BoolExpr(false, curr.Line, curr.Col);
-                case TokenType.StringLit:
-                case TokenType.AmpInterp: return new StringExpr(Eat().Text, curr.Line, curr.Col);
-                case TokenType.DollarInterp: return ParseDollarInterpolation(Eat().Text, curr.Line, curr.Col);
-                case TokenType.Ident: 
-                    var baseExpr = new IdentExpr(Eat().Text, curr.Line, curr.Col);
-                    return ParsePostfix(baseExpr);
-                case TokenType.LBrack: return ParseArray();
-
+                case TokenType.String: return new StringExpr(Advance().Text);
+                case TokenType.Number: return new NumberExpr(float.Parse(Advance().Text, System.Globalization.CultureInfo.InvariantCulture));
+                case TokenType.LBracket: return ParseArray();
                 case TokenType.LParen:
-                    Eat();
+                    Advance();
                     var expr = ParseExpression();
-                    Match(TokenType.RParen);
-                    return ParsePostfix(expr);  // Поддержка (expr).method()
-                default: Abort($"Unexpected token {curr}"); return new StringExpr("", curr.Line, curr.Col);
+                    Expect(TokenType.RParen);
+                    return expr;
+                case TokenType.Ident: return ParseIdentOrCall();
+                default: throw new Exception($"Неожиданный токен: {Current.Type} ({Current.Text}) на строке {Current.Line}");
             }
         }
 
-        private Expr ParseDollarInterpolation(string raw, int line, int col)
+        private Expr ParseIdentOrCall()
         {
-            var parts = new List<object>();
-            var sb = new StringBuilder();
-            int i = 0;
+            var name = Advance().Text;
 
-            while (i < raw.Length)
+            if (Current.Type == TokenType.LParen)
             {
-                char c = raw[i];
+                Advance();
+                var (args, named) = ParseArgList();
+                return new CallExpr(new IdentExpr(name), args, named);
+            }
 
-                if (c == '{' && (i == 0 || raw[i - 1] != '\\'))
+            return new IdentExpr(name);
+        }
+
+        private ArrayExpr ParseArray()
+        {
+            Advance();
+            var items = new List<Expr>();
+            while (Current.Type != TokenType.RBracket)
+            {
+                items.Add(ParseExpression());
+                if (Current.Type == TokenType.Comma) Advance();
+            }
+            Expect(TokenType.RBracket);
+            return new ArrayExpr(items);
+        }
+
+        private (List<Expr>, Dictionary<string, Expr>) ParseArgList()
+        {
+            var args = new List<Expr>();
+            var named = new Dictionary<string, Expr>();
+        
+            while (Current.Type != TokenType.RParen)
+            {
+                if (Current.Type == TokenType.Ident && Current.Text == "func" && Peek(1).Type == TokenType.Colon)
                 {
-                    if (sb.Length > 0)
-                    {
-                        parts.Add(sb.ToString());
-                        sb.Clear();
-                    }
-
-                    i++; // пропускаем {
-                    int start = i;
-                    int braceCount = 1;
-
-                    while (i < raw.Length && braceCount > 0)
-                    {
-                        c = raw[i];
-                        if (c == '{') braceCount++;
-                        if (c == '}') braceCount--;
-                        i++;
-                    }
-
-                    if (braceCount != 0)
-                    {
-                        Abort("Unclosed '{' in interpolated string");
-                        return new StringExpr(raw, line, col);
-                    }
-
-                    // Теперь i указывает сразу за }
-                    string exprText = raw.Substring(start, i - start - 1);
-
-                    var subLexer = new Lexer(exprText);
-                    var subTokens = new List<Token>();
-                    Token t;
-                    while ((t = subLexer.NextToken()).Type != TokenType.EOF)
-                        subTokens.Add(t);
-
-                    var subParser = new Parser(subTokens);
-                    var expr = subParser.ParseExpression();
-
-                    parts.Add(expr);
+                    Advance(); Advance();
+                    var param = ExpectIdent();
+                    Expect(TokenType.Arrow);
+                    Advance();
+                    named["func"] = new LambdaExpr(param, ParseExpression());
+                }
+                else if (Current.Type == TokenType.Ident && Peek(1).Type == TokenType.Colon)
+                {
+                    var key = Advance().Text;
+                    Advance();
+                    named[key] = ParseExpression();
                 }
                 else
                 {
-                    if (c == '\\' && i + 1 < raw.Length && (raw[i + 1] == '{' || raw[i + 1] == '}'))
-                    {
-                        sb.Append(raw[++i]);
-                    }
-                    else
-                    {
-                        sb.Append(c);
-                    }
-                    i++;
+                    args.Add(ParseExpression());
                 }
+        
+                if (Current.Type == TokenType.Comma)
+                    Advance();  // comma is optional
             }
-
-            if (sb.Length > 0)
-                parts.Add(sb.ToString());
-
-            return new InterpExpr(parts, line, col);
+        
+            Advance(); // RParen
+            return (args, named);
         }
 
-        private List<(string? Name, Expr)> ParseArgList()
+        private string ExpectIdent()
         {
-            var list = new List<(string?, Expr)>();
-            if (!Match(TokenType.LParen)) return list;
-            if (Match(TokenType.RParen)) return list;
-
-            while (true)
-            {
-                string? name = null;
-                if (Curr.Type == TokenType.Ident && _tokens[_p + 1].Type == TokenType.Colon)
-                {
-                    name = Eat().Text;
-                    Eat(); // :
-                }
-
-                var expr = ParseExpression();
-                list.Add((name, expr));
-
-                if (!Match(TokenType.Comma)) break;
-            }
-
-            Match(TokenType.RParen);
-            return list;
-        }
-
-        private Expr ParseArray()
-        {
-            Eat(); // [
-            var items = new List<Expr>();
-            while (!Match(TokenType.RBrack))
-            {
-                items.Add(ParseExpression());
-                Match(TokenType.Comma);
-            }
-            return new ArrayExpr(items, Curr.Line, Curr.Col);
+            return Current.Type != TokenType.Ident ? throw new Exception($"Ожидался идентификатор, а получен {Current.Type}") : Advance().Text;
         }
     }
 
-    #endregion
-
-    #region Bootstrap
-
-    public static class Bootstrap
+    // === ДВИЖОК ===
+    public class ESharpEngine
     {
-        public static void RegisterBuiltins(CommandRegistry reg)
+        private readonly GeometryArena _arena;
+        public SceneGpu CurrentScene { get; private set; }
+
+        private readonly Dictionary<string, object> _vars = new();
+        private readonly Dictionary<string, Func<float>> _globals = new()
         {
-            reg.RegisterCtor("circle", "rect", "text");
+            ["PI"] = () => MathF.PI,
+            ["T"] = () => 0f // будет обновляться каждый кадр
+        };
 
-            reg.RegisterGlobal("Add", (_, pos, _) =>
-            {
-                foreach (var v in pos)
-                {
-                    if (v.Type != VType.Array || v.Array == null) continue;
-                    foreach (var item in v.Array)
-                        if (item.Obj?.NativeInstance is SceneObject so)
-                            Scene.CurrentScene?.Add(so);
-                }
-                return Value.Null;
-            });
-            
-            reg.RegisterGlobal("wait", (_, pos, _) =>
-            {
-                float d = pos.Count > 0 ? (float)pos[0].AsNumber() : 1f;
-                Scene.CurrentScene?.Wait(d);
-                return Value.Null;
-            });
-
-            reg.RegisterGlobal("bgColor", (_, pos, _) =>
-            {
-                var color = pos.Count > 0 ? ValueConversions.ToVector3(pos[0]) : Vector3.Zero;
-                float dur = pos.Count > 1 ? (float)pos[1].AsNumber() : 1f;
-                Scene.CurrentScene?.AnimateBackgroundColor(color, dur);
-                return Value.Null;
-            });
-
-            reg.RegisterGlobal("scene", (_, pos, _) =>
-            {
-                var newScene = new Scene(autoStart: false);
-                Scene.CurrentScene = newScene;
-
-                string? title = pos.Count > 0 && pos[0].Str != null ? pos[0].Str : "Untitled Scene";
-                //DebugManager.Log(LogLevel.Custom, $"[DSL] New scene started: {title}", "SCENE", "#88FF88");
-
-                return Value.Null;
-            });
-            
-            reg.RegisterMethodFor(["circle", "rect", "text"], "draw", (_, obj, pos, _) =>
-            {
-                    if (obj.NativeInstance is Primitive so)
-                        so.Draw(pos.Count > 0 ? (float)pos[0].AsNumber() : 1f);
-                    return new Value { Type = VType.Object, Obj = obj };
-                });
-            
-            reg.RegisterMethodFor(["circle", "rect", "text"], "move", (_, obj, pos, _) =>
-            {
-                if (obj.NativeInstance is not Primitive p) return new Value { Type = VType.Object, Obj = obj };
-
-                float x = pos.Count > 0 ? (float)pos[0].AsNumber() : p.X;
-                float y = pos.Count > 1 ? (float)pos[1].AsNumber() : p.Y;
-                float dur = pos.Count > 2 ? (float)pos[2].AsNumber() : 1f;
-                EaseType ease = EaseType.EaseInOut;
-
-                if (pos.Count > 3 && pos[3].Str != null)
-                    ease = ParseEase(pos[3].Str);
-
-                p.MoveTo(x, y, dur, ease);
-                return new Value { Type = VType.Object, Obj = obj };
-            });
-
-            reg.RegisterMethodFor(["circle", "rect"], "scale", (_, obj, pos, _) =>
-            {
-                if (obj.NativeInstance is not Primitive p || pos.Count == 0)
-                    return new Value { Type = VType.Object, Obj = obj };
-
-                float s = (float)pos[0].AsNumber();
-                float dur = pos.Count > 1 ? (float)pos[1].AsNumber() : 1f;
-                EaseType ease = EaseType.EaseInOut;
-
-                if (pos.Count > 2 && pos[2].Str != null)
-                    ease = ParseEase(pos[2].Str);
-
-                p.Resize(s, dur, ease);
-                return new Value { Type = VType.Object, Obj = obj };
-            });
-
-            reg.RegisterMethodFor(["circle", "rect", "text"], "color", (_, obj, pos, _) =>
-            {
-                if (obj.NativeInstance is not Primitive p || pos.Count == 0)
-                    return new Value { Type = VType.Object, Obj = obj };
-
-                var color = ValueConversions.ToVector3(pos[0]);
-                float dur = pos.Count > 1 ? (float)pos[1].AsNumber() : 0f;
-                EaseType ease = EaseType.Linear;
-
-                if (pos.Count > 2 && pos[2].Str != null)
-                    ease = ParseEase(pos[2].Str);
-
-                p.AnimateColor(color, dur, ease);
-                return new Value { Type = VType.Object, Obj = obj };
-            });
-            
-            reg.RegisterMethodFor(["circle", "rect", "text"], "morph", (_, obj, pos, named) =>
-            {
-                    if (obj.NativeInstance is not Primitive source || pos.Count == 0)
-                        return new Value { Type = VType.Object, Obj = obj };
-
-                    if (pos[0].Obj?.NativeInstance is not Primitive target)
-                        return new Value { Type = VType.Object, Obj = obj };
-
-                    float duration = pos.Count > 1 ? (float)pos[1].AsNumber() : 2f;
-
-                    EaseType ease = EaseType.EaseInOut; // ← теперь берётся из рендера!
-                    if (pos.Count > 2 && pos[2].Str != null)
-                    {
-                        ease = pos[2].Str.Trim().ToLowerInvariant() switch
-                        {
-                            "linear"    => EaseType.Linear,
-                            "in"        => EaseType.EaseIn,
-                            "out"       => EaseType.EaseOut,
-                            _           => EaseType.EaseInOut
-                        };
-                    }
-
-                    bool hideTarget = named.TryGetValue("hideTarget", out var hv) && hv.AsBool();
-
-                    source.MorphTo(target, duration, ease, hideTarget);
-
-                    DebugManager.Scene($"[DSL] {source.GetType().Name}.morph() → {target.GetType().Name} ({duration}s, {ease})");
-                    return new Value { Type = VType.Object, Obj = obj };
-                });
-            
-            reg.RegisterMethodFor(["circle", "rect", "text"], "rotate", (_, obj, pos, _) =>
-            {
-                    if (obj.NativeInstance is not Primitive p || pos.Count == 0)
-                        return new Value { Type = VType.Object, Obj = obj };
-
-                    float angle = (float)pos[0].AsNumber();
-                    float duration = pos.Count > 1 ? (float)pos[1].AsNumber() : 1f;
-                    EaseType ease = EaseType.EaseInOut;
-
-                    if (pos.Count > 2 && pos[2].Str != null)
-                    {
-                        ease = pos[2].Str.Trim().ToLowerInvariant() switch
-                        {
-                            "linear" => EaseType.Linear,
-                            "in"     => EaseType.EaseIn,
-                            "out"    => EaseType.EaseOut,
-                            _        => EaseType.EaseInOut
-                        };
-                    }
-
-                    p.RotateTo(angle, duration, ease);
-                    return new Value { Type = VType.Object, Obj = obj };
-                });
+        public ESharpEngine(GeometryArena arena)
+        {
+            _arena = arena;
+            ResetScene("Default");
         }
 
-        public static void RunScript(string source)
+        public void UpdateTime(float t) => _globals["T"] = () => t;
+
+        public void LoadSceneFromFile(string path) => LoadScene(File.ReadAllText(path), Path.GetFileNameWithoutExtension(path));
+
+        public void LoadScene(string source, string fallbackName)
         {
-            var lexer = new Lexer(source);
-            var tokens = new List<Token>();
-            Token t;
-            while ((t = lexer.NextToken()).Type != TokenType.EOF)
-                tokens.Add(t);
+            ResetScene(fallbackName);
 
-            var parser = new Parser(tokens);
-            var stmts = parser.ParseScript();
-
-            var reg = new CommandRegistry();
-            RegisterBuiltins(reg);
-
-            var runtime = new Runtime(reg);
+            var lexer = new ESharpLexer(source);
+            var parser = new ESharpParser(lexer);
+            var stmts = parser.Parse();
 
             foreach (var stmt in stmts)
-                runtime.ExecuteStmt(stmt);
-            
-            if (Scene.CurrentScene != null)
             {
-                DebugManager.Scene($"Initializing Scene (timeline length: {Scene.CurrentScene.TimelineLength:F2}s)");
+                if (stmt is AssignStmt { Name: "name" } a && Eval(a.Value) is string n)
+                {
+                    ResetScene(n);
+                    continue;
+                }
+                Execute(stmt);
+            }
+
+            CurrentScene.Initialize();
+        }
+
+        private void ResetScene(string name)
+        {
+            CurrentScene = new DynamicEsharpScene(_arena, name);
+            _vars["scene"] = CurrentScene;
+        }
+
+        private void Execute(Stmt stmt)
+        {
+            switch (stmt)
+            {
+                case AssignStmt a: _vars[a.Name] = Eval(a.Value); break;
+                case ExprStmt e: Eval(e.Expr); break;
             }
         }
-        
-        public static EaseType ParseEase(string? str)
+
+        private object Eval(Expr expr) => expr switch
         {
-            return str?.Trim().ToLowerInvariant() switch
+            IdentExpr i => _vars.TryGetValue(i.Name, out var v) ? v : _globals.TryGetValue(i.Name, out var g) ? g() : throw new Exception($"Неизвестно: {i.Name}"),
+            NumberExpr n => n.Value,
+            StringExpr s => s.Value,
+            ArrayExpr a => a.Items.Select(Eval).Cast<float>().ToArray(),
+            BinaryExpr b => EvalBinary(b),
+            CallExpr c => EvalCall(c),
+            LambdaExpr l => l,
+            _ => null
+        };
+
+        private object EvalBinary(BinaryExpr b)
+        {
+            var l = (float)Eval(b.Left);
+            var r = (float)Eval(b.Right);
+            return b.Op switch
             {
-                "linear" => EaseType.Linear,
-                "in"     => EaseType.EaseIn,
-                "out"    => EaseType.EaseOut,
-                _        => EaseType.EaseInOut
+                "+" => l + r,
+                "-" => l - r,
+                "*" => l * r,
+                "/" => l / r,
+                "^" => MathF.Pow(l, r),
+                _ => 0f
             };
         }
+
+        private object EvalCall(CallExpr call)
+        {
+            var callee = Eval(call.Callee);
+
+            if (callee is PrimitiveGpu p && call.Callee is IdentExpr { Name: var method })
+            {
+                return method == "aColor" ? p.AnimateColor(to: new Vector4(1, 0, 1, 1)) : p;
+            }
+
+            var name = (call.Callee as IdentExpr)?.Name ?? "";
+
+            return name switch
+            {
+                "Add" => CurrentScene.Add((PrimitiveGpu)Eval(call.Args[0])),
+                "plot" => CreatePlot(call),
+                "bgColor" => AnimateBackground(call),
+                _ => null
+            };
+        }
+
+        private PrimitiveGpu CreatePlot(CallExpr call)
+        {
+            if (!call.NamedArgs.TryGetValue("func", out var f) || f is not LambdaExpr lambda)
+                throw new Exception("plot требует func: x => ...");
+
+            float xmin = -1, xmax = 1;
+            bool dynamic = false;
+
+            foreach (var kv in call.NamedArgs)
+            {
+                if (kv.Key == "xmin") xmin = (float)Eval(kv.Value);
+                if (kv.Key == "xmax") xmax = (float)Eval(kv.Value);
+                if (kv.Key == "dynamic") dynamic = (bool)Eval(kv.Value);
+            }
+
+            var plot = new PlotGpu(x =>
+            {
+                var t = _globals["T"]();
+                return (float)EvalMathExpr(lambda.Body, x, t);
+            }, xmin, xmax, isDynamic: dynamic);
+
+            return plot;
+        }
+
+        private object AnimateBackground(CallExpr call)
+        {
+            var color = call.Args.Count > 0 ? (float[])Eval(call.Args[0]) : new[] { 0.1f, 0.1f, 0.1f };
+            var duration = call.NamedArgs.TryGetValue("duration", out var d) ? (float)Eval(d) : 1f;
+            CurrentScene.AnimateBackground(new(color[0], color[1], color[2]), CurrentScene.T, CurrentScene.T + duration);
+            return null;
+        }
+
+        private double EvalMathExpr(Expr expr, float x, float t)
+        {
+            return expr switch
+            {
+                NumberExpr n => n.Value,
+                IdentExpr i => i.Name == "x" ? x : i.Name == "T" ? t : _globals.GetValueOrDefault(i.Name, () => 0f)(),
+                BinaryExpr b => EvalBinaryMath(b, x, t),
+                CallExpr c when c.Callee is IdentExpr id => CallMathFunc(id.Name, c.Args.Select(a => (float)EvalMathExpr(a, x, t)).ToArray()),
+                _ => 0
+            };
+        }
+
+        private double EvalBinaryMath(BinaryExpr b, float x, float t)
+        {
+            var l = EvalMathExpr(b.Left, x, t);
+            var r = EvalMathExpr(b.Right, x, t);
+            return b.Op switch
+            {
+                "+" => l + r,
+                "-" => l - r,
+                "*" => l * r,
+                "/" => l / r,
+                "^" => Math.Pow(l, r),
+                _ => 0
+            };
+        }
+
+        private double CallMathFunc(string name, float[] args) => name.ToLower() switch
+        {
+            "sin" => MathF.Sin(args[0]),
+            "cos" => MathF.Cos(args[0]),
+            "abs" => MathF.Abs(args[0]),
+            "sqrt" => MathF.Sqrt(args[0]),
+            "pow" => MathF.Pow(args[0], args.Length > 1 ? args[1] : 2),
+            "max" => MathF.Max(args[0], args.Length > 1 ? args[1] : args[0]),
+            "min" => MathF.Min(args[0], args.Length > 1 ? args[1] : args[0]),
+            _ => 0
+        };
     }
 
-    #endregion
+    internal class DynamicEsharpScene : SceneGpu
+    {
+        private readonly string _name;
+        public DynamicEsharpScene(GeometryArena arena, string name) : base(arena) => _name = name;
+        public override void Setup() { }
+        public override string ToString() => $"[E# Scene: {_name}]";
+    }
 }

@@ -15,7 +15,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
         private float _animTime;
-        protected float T => _animTime;
+        public float T => _animTime;
 
         private readonly Queue<BackgroundAnimation> _bgAnimQueue = new();
         private BackgroundAnimation? _currentBgAnim;
@@ -43,13 +43,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Scene($"SceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
         
-        protected T Add<T>(T primitive) where T : PrimitiveGpu
+        public T Add<T>(T primitive) where T : PrimitiveGpu
         {
             AddPrimitive(primitive);
             return primitive;
         }
 
-        protected T Add<T>(T primitive, Action<T> configure) where T : PrimitiveGpu
+        public T Add<T>(T primitive, Action<T> configure) where T : PrimitiveGpu
         {
             configure(primitive);
             AddPrimitive(primitive);

@@ -1,8 +1,7 @@
 ﻿using System.Diagnostics;
+using System.IO;
 using System.Numerics;
 using OpenTK.Graphics.OpenGL4;
-using OpenTK.Windowing.Desktop;
-using OpenTK.Windowing.Common;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 using PhysicsSimulation.Base;
 using PhysicsSimulation.Base.Utilities;
@@ -16,6 +15,7 @@ namespace PhysicsSimulation
         {
             DebugManager.Custom($"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "#A0FF33");
             DebugManager.Custom($"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
+            DebugManager.Custom($"Starting E# Scene Runner", "E#", "#00FFFF");
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
@@ -29,17 +29,24 @@ namespace PhysicsSimulation
             {
                 GL.UseProgram(program);
                 GL.Uniform1(aspectLoc, (float)window.Size.Y / window.Size.X);
-                GL.UseProgram(0);
             }
 
-            // Создаём сцену ДО запуска окна
+            // === ЗАПУСК E# СЦЕНЫ ===
             var arena = new GeometryArena();
-            var scene = new CustomSceneGpuExample(arena);
-
-            scene.Setup();        // ← создаём примитивы
-            scene.Initialize();   // ← ЭТО САМОЕ ГЛАВНОЕ! Создаётся AnimationEngine!
-
+            var esharp = new ESharpEngine(arena);
             var stopwatch = Stopwatch.StartNew();
+
+            // Загружаем и выполняем E# файл
+            string scriptPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Scenes\\Built-In-Scenes", "CustomSceneGpuExample.es");
+            if (!File.Exists(scriptPath))
+            {
+                DebugManager.Error($"E# scene not found: {scriptPath}");
+                return;
+            }
+
+            esharp.LoadSceneFromFile(scriptPath);
+            var scene = esharp.CurrentScene;
+
             double lastTime = 0.0;
 
             window.RenderFrame += _ =>
@@ -50,7 +57,6 @@ namespace PhysicsSimulation
 
                 scene.Update(dt);
                 scene.Render();
-
                 window.SwapBuffers();
             };
 
@@ -63,12 +69,14 @@ namespace PhysicsSimulation
             window.Resize += e =>
             {
                 GL.Viewport(0, 0, window.ClientSize.X, window.ClientSize.Y);
+                if (aspectLoc >= 0)
+                {
+                    GL.UseProgram(program);
+                    GL.Uniform1(aspectLoc, (float)window.Size.Y / window.Size.X);
+                }
             };
 
-            // Устанавливаем viewport один раз
             GL.Viewport(0, 0, window.ClientSize.X, window.ClientSize.Y);
-
-            // Запускаем окно
             window.Run();
         }
     }

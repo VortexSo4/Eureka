@@ -24,6 +24,12 @@
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </None>
     </ItemGroup>
+    
+    <ItemGroup>
+        <None Update="Scenes\Built-In-Scenes\**\*.*">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+    </ItemGroup>
 
     <ItemGroup>
       <Folder Include="Scenes\User-Scenes\" />
