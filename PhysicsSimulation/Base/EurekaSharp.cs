@@ -8,10 +8,7 @@
 //
 // Then engine.LoadScene(source, "fallbackName");
 
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+using System.Globalization;
 using System.Numerics;
 using System.Reflection;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
@@ -126,7 +123,7 @@ namespace PhysicsSimulation.Base
     public class ESharpParser
     {
         private readonly List<Token> _tokens;
-        private int _pos = 0;
+        private int _pos;
         private Token Current => _pos < _tokens.Count ? _tokens[_pos] : new(TokenType.EOF, "", 0);
 
         public ESharpParser(ESharpLexer lexer)
@@ -157,7 +154,7 @@ namespace PhysicsSimulation.Base
 
         private Stmt ParseStatement()
         {
-            if (Current.Type == TokenType.Ident && Peek(1).Type == TokenType.Assign)
+            if (Current.Type == TokenType.Ident && Peek().Type == TokenType.Assign)
             {
                 var name = Advance().Text;
                 Advance(); // skip '='
@@ -252,7 +249,7 @@ namespace PhysicsSimulation.Base
             switch (Current.Type)
             {
                 case TokenType.String: return new StringExpr(Advance().Text);
-                case TokenType.Number: return new NumberExpr(double.Parse(Advance().Text, System.Globalization.CultureInfo.InvariantCulture));
+                case TokenType.Number: return new NumberExpr(double.Parse(Advance().Text, CultureInfo.InvariantCulture));
                 case TokenType.LBracket: return ParseArray();
                 case TokenType.LParen:
                     Advance();
@@ -299,7 +296,7 @@ namespace PhysicsSimulation.Base
             while (Current.Type != TokenType.RParen)
             {
                 // special case: func: x => ...
-                if (Current.Type == TokenType.Ident && Current.Text == "func" && Peek(1).Type == TokenType.Colon)
+                if (Current.Type == TokenType.Ident && Current.Text == "func" && Peek().Type == TokenType.Colon)
                 {
                     Advance(); // func
                     Advance(); // :
@@ -309,7 +306,7 @@ namespace PhysicsSimulation.Base
                     var body = ParseExpression();
                     named["func"] = new LambdaExpr(param, body);
                 }
-                else if (Current.Type == TokenType.Ident && Peek(1).Type == TokenType.Colon)
+                else if (Current.Type == TokenType.Ident && Peek().Type == TokenType.Colon)
                 {
                     var key = Advance().Text;
                     Advance(); // :
@@ -398,7 +395,7 @@ namespace PhysicsSimulation.Base
                 // shape: Func<object[], Dictionary<string,object>, object>
                 if (ps.Length == 2 && ps[0].ParameterType == typeof(object[]) && ps[1].ParameterType == typeof(Dictionary<string, object>))
                 {
-                    try { result = del.DynamicInvoke(new object[] { posArgs, namedArgs }); return true; } catch { }
+                    try { result = del.DynamicInvoke(posArgs, namedArgs); return true; } catch { }
                 }
 
                 // last resort: try to DynamicInvoke directly (posArgs must match)
@@ -414,7 +411,7 @@ namespace PhysicsSimulation.Base
     {
         private readonly GeometryArena _arena;
         public SceneGpu CurrentScene { get; set; }
-        public DslRegistry Registry { get; } = new DslRegistry();
+        public static DslRegistry Registry { get; } = new DslRegistry();
 
         // Optional factory if caller wants engine to create scenes by name
         public Func<GeometryArena, string, SceneGpu> SceneFactory { get; private set; }
@@ -479,7 +476,7 @@ namespace PhysicsSimulation.Base
                 if (args.Length >= 3 && args[0] is float cx)
                 {
                     // user provided center/size/filled
-                    var center = new System.Numerics.Vector2(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]));
+                    var center = new Vector2(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]));
                     float size = Convert.ToSingle(args[2]);
                     bool filled = args.Length > 3 ? Convert.ToBoolean(args[3]) : true;
                     var tri = new TriangleGpu(center, size, filled);
@@ -650,7 +647,7 @@ namespace PhysicsSimulation.Base
                 // attempt to invoke delegate directly. Try common shapes.
                 try { return del.DynamicInvoke(pos); } catch { }
                 try { return del.DynamicInvoke(new object[] { pos }); } catch { }
-                try { return del.DynamicInvoke(new object[] { pos, namedValues }); } catch { }
+                try { return del.DynamicInvoke(pos, namedValues); } catch { }
             }
 
             throw new Exception("Невозможно вызвать выражение как функцию");
@@ -696,30 +693,32 @@ namespace PhysicsSimulation.Base
         // If your PlotGpu signature differs — adjust this method accordingly.
         private PrimitiveGpu CreatePlotFromArgs(object[] pos, Dictionary<string, Expr> namedExprs)
         {
-            // namedExprs contains 'func' => LambdaExpr
             if (namedExprs == null || !namedExprs.TryGetValue("func", out var fexpr) || fexpr is not LambdaExpr lambda)
                 throw new Exception("plot требует func: x => ...");
 
-            float xmin = -1, xmax = 1; bool dynamic = false;
+            float xmin = -1, xmax = 1;
+            bool dynamic = false;
+
             if (namedExprs.TryGetValue("xmin", out var xminE)) xmin = Convert.ToSingle(Eval(xminE));
             if (namedExprs.TryGetValue("xmax", out var xmaxE)) xmax = Convert.ToSingle(Eval(xmaxE));
-            if (namedExprs.TryGetValue("dynamic", out var dynE)) dynamic = Convert.ToBoolean(Eval(dynE));
 
-            // create PlotGpu using the project's implementation
-            try
+            if (namedExprs.TryGetValue("dynamic", out var dynE))
             {
-                var plot = new PlotGpu(x =>
-                {
-                    double t = Convert.ToDouble(Registry.TryGetVar("T", out var tv) ? tv : 0.0);
-                    return (float)EvalMathExpr(lambda.Body, (float)x, (float)t);
-                }, xmin, xmax, isDynamic: dynamic);
-                
-                return plot;
+                var val = Eval(dynE);
+                if (val is bool b) dynamic = b;
+                else if (val is string s && s.Equals("true", StringComparison.OrdinalIgnoreCase)) dynamic = true;
+                else dynamic = false; // любое другое значение остаётся false
             }
-            catch (Exception ex)
+
+            // создаём PlotGpu с лямбдой, которая **каждый кадр берёт T**
+            var plot = new PlotGpu(x =>
             {
-                throw new Exception("Не удалось создать PlotGpu — проверьте сигнатуру конструктора PlotGpu в проекте. " + ex.Message, ex);
-            }
+                if (!Registry.TryGetVar("T", out var tv)) tv = 0.0;
+                double t = Convert.ToDouble(tv);
+                return (float)EvalMathExpr(lambda.Body, (float)x, (float)t);
+            }, xmin, xmax, 80, dynamic);
+
+            return plot;
         }
 
         private double EvalMathExpr(Expr expr, float x, float t)

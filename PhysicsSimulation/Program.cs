@@ -60,6 +60,7 @@ namespace PhysicsSimulation
                 double currentTime = stopwatch.Elapsed.TotalSeconds;
                 float dt = (float)(currentTime - lastTime);
                 lastTime = currentTime;
+                ESharpEngine.Registry.RegisterVar("T", currentTime);
 
                 scene.Update(dt);
                 scene.Render();
