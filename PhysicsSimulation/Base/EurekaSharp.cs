@@ -348,8 +348,7 @@ namespace PhysicsSimulation.Base
         public bool HasFunc(string name) => _funcs.ContainsKey(name);
 
         // Register all public instance methods of an object as functions (bound to that object)
-        public void RegisterInstanceMethods(object target,
-            BindingFlags flags = BindingFlags.Public | BindingFlags.Instance)
+        public void RegisterInstanceMethods(object target, BindingFlags flags = BindingFlags.Public | BindingFlags.Instance)
         {
             if (target == null) return;
             var t = target.GetType();
@@ -360,8 +359,7 @@ namespace PhysicsSimulation.Base
                 {
                     var parameters = m.GetParameters();
                     var callArgs = new object[parameters.Length];
-                    for (int i = 0; i < parameters.Length && i < args.Length; i++)
-                        callArgs[i] = ConvertArg(args[i], parameters[i].ParameterType);
+                    for (int i = 0; i < parameters.Length && i < args.Length; i++) callArgs[i] = ConvertArg(args[i], parameters[i].ParameterType);
                     return m.Invoke(target, callArgs);
                 }));
             }
@@ -371,20 +369,13 @@ namespace PhysicsSimulation.Base
         {
             if (src == null) return null;
             if (targetType.IsInstanceOfType(src)) return src;
-            try
-            {
-                return Convert.ChangeType(src, targetType);
-            }
-            catch
-            {
-                return src;
-            }
+            try { return Convert.ChangeType(src, targetType); } catch { return src; }
         }
 
         // Try to invoke registered function. Supports three delegate shapes:
         // - delegate(object[]) -> object
         // - delegate(object[], Dictionary<string,object>) -> object
-        // - delegates with normal parameter lists (including Func<object, object>, etc.)
+        // - any delegate that can be DynamicInvoke'd with posArgs
         public bool TryInvoke(string name, object[] posArgs, Dictionary<string, object> namedArgs, out object result)
         {
             result = null;
@@ -395,70 +386,20 @@ namespace PhysicsSimulation.Base
                 var m = del.Method;
                 var ps = m.GetParameters();
 
-                // 1) exact shape: Func<object[], object>
+                // shape: Func<object[], object>
                 if (ps.Length == 1 && ps[0].ParameterType == typeof(object[]))
                 {
-                    try
-                    {
-                        result = del.DynamicInvoke(new object[] { posArgs });
-                        return true;
-                    }
-                    catch
-                    {
-                        /* try next */
-                    }
+                    try { result = del.DynamicInvoke(new object[] { posArgs }); return true; } catch { }
                 }
 
-                // 2) exact shape: Func<object[], Dictionary<string,object>, object>
-                if (ps.Length == 2 && ps[0].ParameterType == typeof(object[]) &&
-                    (ps[1].ParameterType == typeof(Dictionary<string, object>) ||
-                     typeof(IDictionary<string, object>).IsAssignableFrom(ps[1].ParameterType)))
+                // shape: Func<object[], Dictionary<string,object>, object>
+                if (ps.Length == 2 && ps[0].ParameterType == typeof(object[]) && ps[1].ParameterType == typeof(Dictionary<string, object>))
                 {
-                    try
-                    {
-                        result = del.DynamicInvoke(posArgs, namedArgs);
-                        return true;
-                    }
-                    catch
-                    {
-                        /* try next */
-                    }
+                    try { result = del.DynamicInvoke(posArgs, namedArgs); return true; } catch { }
                 }
 
-                // 3) delegate with a single non-array parameter (e.g. Func<object, object>) — if script supplied exactly one positional arg, pass it directly
-                if (ps.Length == 1)
-                {
-                    try
-                    {
-                        if (posArgs.Length == 1)
-                        {
-                            // pass the single arg (not the whole array)
-                            result = del.DynamicInvoke(posArgs[0]);
-                            return true;
-                        }
-                        else
-                        {
-                            // try to call with no wrapping (attempt to match multiple parameters)
-                            result = del.DynamicInvoke(posArgs);
-                            return true;
-                        }
-                    }
-                    catch
-                    {
-                        /* try next */
-                    }
-                }
-
-                // 4) last resort: try DynamicInvoke with posArgs as varargs (covers delegates with N parameters)
-                try
-                {
-                    result = del.DynamicInvoke(posArgs);
-                    return true;
-                }
-                catch
-                {
-                    // try next overload / delegate
-                }
+                // last resort: try to DynamicInvoke directly (posArgs must match)
+                try { result = del.DynamicInvoke(posArgs); return true; } catch { }
             }
 
             return false;
@@ -484,197 +425,95 @@ namespace PhysicsSimulation.Base
             Registry.RegisterVar("PI", Math.PI);
             Registry.RegisterVar("T", 0.0);
 
-            // ------------------ Registration helpers ------------------
-            void RegisterPrimitives()
+            // core helper: bgColor (works if scene provided)
+            Registry.RegisterFunc("bgColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
             {
-                Registry.RegisterFunc("bgColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
+                if (CurrentScene == null) throw new Exception("CurrentScene is not set. Call SetScene(...) or RegisterSceneFactory(...).");
+                var color = args.Length > 0 ? (float[])args[0] : new[] { 0.1f, 0.1f, 0.1f };
+                var duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToDouble(d) : 1.0;
+                CurrentScene.AnimateBackground(new Vector3(color[0], color[1], color[2]), CurrentScene.T, CurrentScene.T + (float)duration);
+                return null;
+            }));
+            
+            Registry.RegisterFunc("Add", new Func<object[], object>(args =>
+            {
+                if (args == null || args.Length == 0) throw new Exception("Add требует примитив как аргумент");
+                if (CurrentScene == null) throw new Exception("CurrentScene не установлена");
+                if (args[0] is not PrimitiveGpu prim) throw new Exception("Первый аргумент Add должен быть PrimitiveGpu");
+                CurrentScene.AddPrimitive(prim);
+                return prim;
+            }));
+
+            Registry.RegisterFunc("plot", new Func<object[], object>(_ => throw new Exception("plot handled internally by engine.")));
+            
+            Registry.RegisterFunc("rect", new Func<object[], object>(args =>
+            {
+                float w = args.Length > 0 ? Convert.ToSingle(args[0]) : 1f;
+                float h = args.Length > 1 ? Convert.ToSingle(args[1]) : 1f;
+                bool dyn = args.Length > 2 ? Convert.ToBoolean(args[2]) : false;
+                return new RectGpu(w, h, dyn);
+            }));
+
+            Registry.RegisterFunc("circle", new Func<object[], object>(args =>
+            {
+                float r = args.Length > 0 ? Convert.ToSingle(args[0]) : 0.2f;
+                int seg = args.Length > 1 ? Convert.ToInt32(args[1]) : 80;
+                bool filled = args.Length > 2 ? Convert.ToBoolean(args[2]) : false;
+                bool dyn = args.Length > 3 ? Convert.ToBoolean(args[3]) : false;
+                return new CircleGpu(r, seg, filled, dyn);
+            }));
+
+            Registry.RegisterFunc("line", new Func<object[], object>(args =>
+            {
+                if (args.Length >= 4)
+                    return new LineGpu(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]), Convert.ToSingle(args[2]), Convert.ToSingle(args[3]));
+                return new LineGpu();
+            }));
+
+            Registry.RegisterFunc("triangle", new Func<object[], object>(args =>
+            {
+                // overloads can be extended. simple center/size variant:
+                if (args.Length >= 3 && args[0] is float cx)
                 {
-                    if (CurrentScene == null) throw new Exception("CurrentScene не установлена");
+                    // user provided center/size/filled
+                    var center = new Vector2(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]));
+                    float size = Convert.ToSingle(args[2]);
+                    bool filled = args.Length > 3 ? Convert.ToBoolean(args[3]) : true;
+                    var tri = new TriangleGpu(center, size, filled);
+                    return tri;
+                }
+                return new TriangleGpu();
+            }));
 
-                    Vector3 color = new Vector3(0.1f, 0.1f, 0.1f);
-                    if (args.Length > 0 && args[0] is float[] arr && arr.Length >= 3)
-                        color = new Vector3(arr[0], arr[1], arr[2]);
-
-                    float duration = named != null && named.TryGetValue("duration", out var d)
-                        ? Convert.ToSingle(d)
-                        : 1f;
-                    CurrentScene.AnimateBackground(color, CurrentScene.T, CurrentScene.T + duration);
-                    return null;
-                }));
-
-                Registry.RegisterFunc("Add", new Func<object, object>((arg) =>
+            Registry.RegisterFunc("text", new Func<object[], object>(args =>
+            {
+                string text = args.Length > 0 ? args[0]?.ToString() ?? "" : "";
+                float size = args.Length > 1 ? Convert.ToSingle(args[1]) : 0.1f;
+                string fontKey = args.Length > 2 ? args[2]?.ToString() : null;
+                return new TextGpu(text, size, fontKey);
+            }));
+            
+            Registry.RegisterFunc("aColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
+            {
+                if (args == null || args.Length == 0) throw new Exception("aColor: missing target");
+                if (args[0] is PrimitiveGpu p)
                 {
-                    if (arg is PrimitiveGpu prim)
-                    {
-                        CurrentScene.AddPrimitive(prim);
-                        return prim;
-                    }
-
-                    throw new Exception($"Add: expected PrimitiveGpu, got {arg?.GetType().Name}");
-                }));
-
-                Registry.RegisterFunc("plot", new Func<object[], Dictionary<string, object>, object>((posArgs, named) =>
-                {
-                    var lambda = parseFunc(named, "func");
-                    float xmin = parseFloat(named, "xmin", -1);
-                    float xmax = parseFloat(named, "xmax", 1);
-                    int segments = parseInt(named, "segments", 80);
-                    bool dynamic = parseBool(named, "dynamic");
-
-                    var plot = new PlotGpu(x =>
-                    {
-                        var t = Registry.TryGetVar("T", out var tv) ? Convert.ToDouble(tv) : 0.0;
-                        return (float)EvalMathExpr(lambda.Body, x, (float)t);
-                    }, xmin, xmax, segments, dynamic);
-
-                    CurrentScene?.AddPrimitive(plot);
-                    return plot;
-                }));
-
-                Registry.RegisterFunc("rect", new Func<object[], Dictionary<string, object>, object>((_, named) =>
-                    new RectGpu(
-                        parseFloat(named, "width", 1f),
-                        parseFloat(named, "height", 1f),
-                        parseBool(named, "dynamic")
-                    )
-                ));
-
-                Registry.RegisterFunc("circle", new Func<object[], Dictionary<string, object>, object>((_, named) =>
-                    new CircleGpu(
-                        parseFloat(named, "radius", 0.2f),
-                        parseInt(named, "segments", 80),
-                        parseBool(named, "filled"),
-                        parseBool(named, "dynamic")
-                    )
-                ));
-
-                Registry.RegisterFunc("line", new Func<object[], Dictionary<string, object>, object>((_, named) =>
-                    new LineGpu(
-                        parseFloat(named, "x0"),
-                        parseFloat(named, "y0"),
-                        parseFloat(named, "x1"),
-                        parseFloat(named, "y1")
-                    )
-                ));
-
-                Registry.RegisterFunc("triangle", new Func<object[], Dictionary<string, object>, object>((_, named) =>
-                    new TriangleGpu(
-                        new Vector2(parseFloat(named, "cx"), parseFloat(named, "cy")),
-                        parseFloat(named, "size"),
-                        parseBool(named, "filled", true)
-                    )
-                ));
-
-                Registry.RegisterFunc("text", new Func<object[], Dictionary<string, object>, object>((_, named) =>
-                {
-                    string text = parseString(named, "text");
-                    string font = parseString(named, "font", "");
-                    float size = parseFloat(named, "size", 0.1f);
-                    return new TextGpu(text, size, font);
-                }));
-
-                Registry.RegisterFunc("aColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
-                {
-                    if (args == null || args.Length == 0) throw new Exception("aColor: missing target");
-                    if (args[0] is not PrimitiveGpu p) throw new Exception("aColor: target is not a PrimitiveGpu");
-
-                    Vector4 from = p.Color;
                     Vector4 to = p.Color;
+                    if (named != null && named.TryGetValue("to", out var tv) && tv is float[] arr && arr.Length >= 4)
+                        to = new Vector4(arr[0], arr[1], arr[2], arr[3]);
 
-                    if (named != null)
-                    {
-                        if (named.TryGetValue("from", out var fArr)) from = ConvertToVector4(fArr, p.Color);
-                        if (named.TryGetValue("to", out var tArr)) to = ConvertToVector4(tArr, p.Color);
-                    }
-
-                    float relStart = named != null && named.TryGetValue("start", out var s) ? Convert.ToSingle(s) : 0f;
-                    float duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToSingle(d) : 1f;
-                    float sceneT = CurrentScene != null ? CurrentScene.T : 0f;
-                    float startAbs = sceneT + relStart;
-                    float endAbs = startAbs + duration;
+                    float start = named != null && named.TryGetValue("start", out var s) ? Convert.ToSingle(s) : 0f;
+                    float end = named != null && named.TryGetValue("duration", out var d) ? start + Convert.ToSingle(d) : 1f;
 
                     EaseType ease = EaseType.Linear;
                     if (named != null && named.TryGetValue("ease", out var e) && e is string es)
                         ease = EaseHelper.Parse(es);
 
-                    // 🔹 если анимация должна уже начаться, сразу выставляем from
-                    if (sceneT >= startAbs)
-                        p.Color = from;
-
-                    if (duration <= 0f || sceneT >= endAbs)
-                    {
-                        p.Color = to; // мгновенный переход
-                    }
-                    else
-                    {
-                        // добавляем в систему анимаций GPU
-                        p.AnimateColor(startAbs, endAbs, ease, to);
-                    }
-
+                    p.AnimateColor(start, end, ease, to);
                     return p;
-                }));
-            }
-
-            RegisterPrimitives();
-        }
-
-        private float parseFloat(Dictionary<string, object> named, string key, float defaultValue = 0f)
-        {
-            if (named != null && named.TryGetValue(key, out var val))
-                return Convert.ToSingle(val);
-            return defaultValue;
-        }
-
-        private int parseInt(Dictionary<string, object> named, string key, int defaultValue = 0)
-        {
-            if (named != null && named.TryGetValue(key, out var val))
-                return Convert.ToInt32(val);
-            return defaultValue;
-        }
-
-        private bool parseBool(Dictionary<string, object> named, string key, bool defaultValue = false)
-        {
-            if (named != null && named.TryGetValue(key, out var val))
-            {
-                if (val is bool b) return b;
-                if (val is string s) return s.Equals("true", StringComparison.OrdinalIgnoreCase);
-                if (val is double d) return d != 0;
-                if (val is int i) return i != 0;
-            }
-            return defaultValue;
-        }
-
-        private LambdaExpr parseFunc(Dictionary<string, object> named, string key)
-        {
-            if (named == null || !named.TryGetValue(key, out var val) || val is not LambdaExpr lambda)
-                throw new Exception($"{key} требуется как LambdaExpr: x => ...");
-            return lambda;
-        }
-        
-        private string parseString(Dictionary<string, object> named, string key, string defaultValue = "")
-        {
-            if (named != null && named.TryGetValue(key, out var val))
-            {
-                return val switch
-                {
-                    Expr e => Eval(e)?.ToString() ?? defaultValue,
-                    _ => val?.ToString() ?? defaultValue
-                };
-            }
-            return defaultValue;
-        }
-        
-        private Vector4 ConvertToVector4(object obj, Vector4 defaultValue)
-        {
-            if (obj is float[] fArr && fArr.Length >= 4) return new Vector4(fArr[0], fArr[1], fArr[2], fArr[3]);
-            if (obj is double[] dArr && dArr.Length >= 4) return new Vector4((float)dArr[0], (float)dArr[1], (float)dArr[2], (float)dArr[3]);
-            if (obj is Array a && a.Length >= 4)
-            {
-                float[] tmp = new float[4];
-                for (int i = 0; i < 4; i++) tmp[i] = Convert.ToSingle(a.GetValue(i));
-                return new Vector4(tmp[0], tmp[1], tmp[2], tmp[3]);
-            }
-            return defaultValue;
+                }
+                throw new Exception("aColor: target is not a PrimitiveGpu");
+            }));
         }
 
         // Caller can provide factory if they want engine to build scenes by name
@@ -786,6 +625,12 @@ namespace PhysicsSimulation.Base
             // if callee is an identifier (function name)
             if (call.Callee is IdentExpr ident)
             {
+                // special-case plot: engine-level handling if func lambda provided
+                if (string.Equals(ident.Name, "plot", StringComparison.OrdinalIgnoreCase))
+                {
+                    return CreatePlotFromArgs(pos, namedExprs);
+                }
+
                 if (Registry.TryInvoke(ident.Name, pos, namedValues, out var res)) return res;
 
                 if (Registry.HasFunc(ident.Name))
@@ -812,26 +657,16 @@ namespace PhysicsSimulation.Base
         {
             var target = Eval(call.Target);
             var pos = call.Args.Select(Eval).ToArray();
-            Dictionary<string, object> namedValues = null;
-            if (call.NamedArgs != null)
-            {
-                namedValues = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-                foreach (var kv in call.NamedArgs)
-                    namedValues[kv.Key] = Eval(kv.Value);
-            }
+            var named = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
+
+            // first, try registry-registered function by method name (allows overriding instance methods)
+            if (Registry.TryInvoke(call.Method, PrependArg(target, pos), named, out var res)) return res;
 
             if (target == null) throw new Exception($"Null target for method {call.Method}");
 
-            // --- 🔹 ключевая правка: prepend target к аргументам для глобальной функции
-            if (Registry.TryInvoke(call.Method, PrependArg(target, pos), namedValues, out var res))
-                return res;
-
-            // дальше уже обычный поиск метода на объекте
+            // reflection fallback: find method on target
             var t = target.GetType();
-            var methods = t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                .Where(m => m.Name.Equals(call.Method, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-
+            var methods = t.GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.Name.Equals(call.Method, StringComparison.OrdinalIgnoreCase)).ToArray();
             foreach (var m in methods)
             {
                 var ps = m.GetParameters();
@@ -842,24 +677,7 @@ namespace PhysicsSimulation.Base
                     for (int i = 0; i < ps.Length; i++) args[i] = Convert.ChangeType(pos[i], ps[i].ParameterType);
                     return m.Invoke(target, args);
                 }
-                catch
-                {
-                }
-            }
-
-            foreach (var m in methods)
-            {
-                var ps = m.GetParameters();
-                if (ps.Length != 2 ||
-                    !typeof(object[]).IsAssignableFrom(ps[0].ParameterType) ||
-                    !typeof(IDictionary<string, object>).IsAssignableFrom(ps[1].ParameterType)) continue;
-                try
-                {
-                    return m.Invoke(target, new object[] { pos, namedValues });
-                }
-                catch
-                {
-                }
+                catch { /* try next overload */ }
             }
 
             throw new Exception($"Метод {call.Method} не найден у {target.GetType().Name}");
@@ -867,10 +685,40 @@ namespace PhysicsSimulation.Base
 
         private static object[] PrependArg(object first, object[] rest)
         {
-            var arr = new object[rest.Length + 1];
-            arr[0] = first;
-            Array.Copy(rest, 0, arr, 1, rest.Length);
-            return arr;
+            var arr = new object[rest.Length + 1]; arr[0] = first; Array.Copy(rest, 0, arr, 1, rest.Length); return arr;
+        }
+
+        // ------------------ Plot integration ------------------
+        // Expects that PlotGpu(Func<float,float>, float xmin, float xmax, bool isDynamic) exists in project.
+        // If your PlotGpu signature differs — adjust this method accordingly.
+        private PrimitiveGpu CreatePlotFromArgs(object[] pos, Dictionary<string, Expr> namedExprs)
+        {
+            if (namedExprs == null || !namedExprs.TryGetValue("func", out var fexpr) || fexpr is not LambdaExpr lambda)
+                throw new Exception("plot требует func: x => ...");
+
+            float xmin = -1, xmax = 1;
+            bool dynamic = false;
+
+            if (namedExprs.TryGetValue("xmin", out var xminE)) xmin = Convert.ToSingle(Eval(xminE));
+            if (namedExprs.TryGetValue("xmax", out var xmaxE)) xmax = Convert.ToSingle(Eval(xmaxE));
+
+            if (namedExprs.TryGetValue("dynamic", out var dynE))
+            {
+                var val = Eval(dynE);
+                if (val is bool b) dynamic = b;
+                else if (val is string s && s.Equals("true", StringComparison.OrdinalIgnoreCase)) dynamic = true;
+                else dynamic = false; // любое другое значение остаётся false
+            }
+
+            // создаём PlotGpu с лямбдой, которая **каждый кадр берёт T**
+            var plot = new PlotGpu(x =>
+            {
+                if (!Registry.TryGetVar("T", out var tv)) tv = 0.0;
+                double t = Convert.ToDouble(tv);
+                return (float)EvalMathExpr(lambda.Body, (float)x, (float)t);
+            }, xmin, xmax, 80, dynamic);
+
+            return plot;
         }
 
         private double EvalMathExpr(Expr expr, float x, float t)

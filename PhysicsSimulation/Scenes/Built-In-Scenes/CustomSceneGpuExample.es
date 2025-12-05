@@ -13,6 +13,8 @@ Add(plot(
     dynamic: "true"
 )).aColor(to: [1, 0.7, 0, 1], duration: 1, ease: "inout")
 
+Add(rect())
+
 Add(plot(
     func: x => pow(abs(x), 2/3) + 0.9*sqrt(max(0, 1-x*x))*sin(20*PI*x + T*2),
     xmin: -1,
