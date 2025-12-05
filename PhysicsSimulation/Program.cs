@@ -1,6 +1,7 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using System.IO;
-using System.Numerics;
+using System.Linq;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 using PhysicsSimulation.Base;
@@ -31,20 +32,25 @@ namespace PhysicsSimulation
                 GL.Uniform1(aspectLoc, (float)window.Size.Y / window.Size.X);
             }
 
-            // === ЗАПУСК E# СЦЕНЫ ===
+            // === ЗАПУСК E# СЦЕН ===
             var arena = new GeometryArena();
             var esharp = new ESharpEngine(arena);
             var stopwatch = Stopwatch.StartNew();
 
-            // Загружаем и выполняем E# файл
-            string scriptPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Scenes\\Built-In-Scenes", "CustomSceneGpuExample.es");
-            if (!File.Exists(scriptPath))
+            // Сканируем все .es сцены в папке
+            var scenesDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Scenes\\Built-In-Scenes");
+            var sceneFiles = Directory.GetFiles(scenesDir, "*.es").ToList();
+            if (sceneFiles.Count == 0)
             {
-                DebugManager.Error($"E# scene not found: {scriptPath}");
+                DebugManager.Error($"Нет сцен .es в папке {scenesDir}");
                 return;
             }
 
-            esharp.LoadSceneFromFile(scriptPath);
+            int currentSceneIndex = 0;
+
+            // Загружаем первую сцену
+            esharp.CurrentScene = new SceneGpu(arena); // базовая сцена
+            esharp.LoadSceneFromFile(sceneFiles[currentSceneIndex]);
             var scene = esharp.CurrentScene;
 
             double lastTime = 0.0;
@@ -60,13 +66,24 @@ namespace PhysicsSimulation
                 window.SwapBuffers();
             };
 
-            window.UpdateFrame += args =>
+            window.UpdateFrame += _ =>
             {
                 if (window.KeyboardState.WasKeyDown(Keys.Escape))
                     window.Close();
+
+                // Переключение сцены по пробелу
+                if (window.KeyboardState.IsKeyPressed(Keys.Space))
+                {
+                    currentSceneIndex = (currentSceneIndex + 1) % sceneFiles.Count;
+
+                    // Создаем новый объект сцены и загружаем .es файл
+                    esharp.CurrentScene = new SceneGpu(arena);
+                    esharp.LoadSceneFromFile(sceneFiles[currentSceneIndex]);
+                    scene = esharp.CurrentScene;
+                }
             };
 
-            window.Resize += e =>
+            window.Resize += _ =>
             {
                 GL.Viewport(0, 0, window.ClientSize.X, window.ClientSize.Y);
                 if (aspectLoc >= 0)

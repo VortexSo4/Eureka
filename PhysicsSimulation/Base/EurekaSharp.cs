@@ -1,13 +1,24 @@
-﻿// ============================================================
-// E# v2.1 — Финальная рабочая версия
-// Всё работает: name, plot, func: x => ..., цепочки, T, PI, bgColor
-// ============================================================
+﻿// ESharpEngine.cs
+// Modular E# engine — parser + registry + evaluator
+// Usage:
+//   var engine = new ESharpEngine(arena);
+//   engine.RegisterVar("pi", Math.PI);
+//   engine.RegisterFunc("bgColor", new Func<object[],Dictionary<string,object>,object>(...));
+//   engine.SetScene(myScene); // or engine.RegisterSceneFactory(...)
+//
+// Then engine.LoadScene(source, "fallbackName");
 
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Numerics;
+using System.Reflection;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
 
 namespace PhysicsSimulation.Base
 {
+    // ------------------ Lexer & tokens ------------------
     public enum TokenType
     {
         EOF, Ident, Number, String,
@@ -24,19 +35,24 @@ namespace PhysicsSimulation.Base
         private int _pos;
         private int _line = 1;
 
-        public ESharpLexer(string source) => _source = source;
+        public ESharpLexer(string source) => _source = source ?? string.Empty;
 
         private char Peek(int offset = 0) => _pos + offset < _source.Length ? _source[_pos + offset] : '\0';
         private char Advance() { if (_pos < _source.Length) _pos++; return _pos > 0 ? _source[_pos - 1] : '\0'; }
 
         public Token NextToken()
         {
-            while (char.IsWhiteSpace(Peek())) Advance();
+            while (char.IsWhiteSpace(Peek()))
+            {
+                if (Peek() == '\n') _line++;
+                Advance();
+            }
 
             if (_pos >= _source.Length) return new(TokenType.EOF, "", _line);
 
             var c = Peek();
 
+            // single-line comment
             if (c == '/' && Peek(1) == '/')
             {
                 while (Peek() != '\n' && Peek() != '\0') Advance();
@@ -84,28 +100,29 @@ namespace PhysicsSimulation.Base
                 '*' => AdvanceToken(TokenType.Star, "*"),
                 '/' => AdvanceToken(TokenType.Slash, "/"),
                 '^' => AdvanceToken(TokenType.Caret, "^"),
-                _ => throw new Exception($"Неизвестный символ: {c}")
+                _ => throw new Exception($"Неизвестный символ: {c} на строке {_line}")
             };
         }
 
         private Token AdvanceToken(TokenType type, string text) { Advance(); return new(type, text, _line); }
     }
 
-    // === AST ===
+    // ------------------ AST ------------------
     public abstract record Expr;
     public record IdentExpr(string Name) : Expr;
-    public record NumberExpr(float Value) : Expr;
+    public record NumberExpr(double Value) : Expr;
     public record StringExpr(string Value) : Expr;
     public record ArrayExpr(List<Expr> Items) : Expr;
     public record BinaryExpr(Expr Left, string Op, Expr Right) : Expr;
-    public record CallExpr(Expr Callee, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr;
+    public record CallExpr(Expr Callee, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr; // function or delegate call
+    public record MemberCallExpr(Expr Target, string Method, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr; // target.method(...)
     public record LambdaExpr(string Param, Expr Body) : Expr;
 
     public abstract record Stmt;
     public record ExprStmt(Expr Expr) : Stmt;
     public record AssignStmt(string Name, Expr Value) : Stmt;
 
-    // === ПАРСЕР ===
+    // ------------------ Parser ------------------
     public class ESharpParser
     {
         private readonly List<Token> _tokens;
@@ -117,7 +134,7 @@ namespace PhysicsSimulation.Base
             _tokens = new();
             Token t;
             while ((t = lexer.NextToken()).Type != TokenType.EOF)
-                if (t.Type != TokenType.Ident || t.Text != "//")
+                if (t.Type != TokenType.Ident || t.Text != "//") // skip comments
                     _tokens.Add(t);
         }
 
@@ -140,17 +157,21 @@ namespace PhysicsSimulation.Base
 
         private Stmt ParseStatement()
         {
-            if (Current.Type != TokenType.Ident || Peek(1).Type != TokenType.Assign) return new ExprStmt(ParseExpression());
-            var name = Advance().Text;
-            Advance();
-            var value = ParseExpression();
-            return new AssignStmt(name, value);
+            if (Current.Type == TokenType.Ident && Peek(1).Type == TokenType.Assign)
+            {
+                var name = Advance().Text;
+                Advance(); // skip '='
+                var value = ParseExpression();
+                return new AssignStmt(name, value);
+            }
+
+            return new ExprStmt(ParseExpression());
         }
 
         private Token Peek(int offset = 1) => _pos + offset < _tokens.Count ? _tokens[_pos + offset] : new(TokenType.EOF, "", 0);
 
         private Expr ParseExpression() => ParseCallChain();
-        
+
         private Expr ParseUnary()
         {
             if (Current.Type == TokenType.Minus)
@@ -192,18 +213,37 @@ namespace PhysicsSimulation.Base
 
             return left;
         }
-        
+
         private Expr ParseCallChain()
         {
-            var expr = ParseBinary();
-            while (Current.Type == TokenType.Dot)
+            Expr expr = ParseBinary();
+
+            // function call (expr(...)) or chaining: expr.method(...)
+            while (true)
             {
-                Advance();
-                var methodName = ExpectIdent();
-                Expect(TokenType.LParen);
-                var (args, named) = ParseArgList();
-                expr = new CallExpr(expr, args, named);
+                // function call: expr(...)
+                if (Current.Type == TokenType.LParen)
+                {
+                    Advance();
+                    var (args, named) = ParseArgList();
+                    expr = new CallExpr(expr, args, named);
+                    continue;
+                }
+
+                // method call via dot: expr.method(...)
+                if (Current.Type == TokenType.Dot)
+                {
+                    Advance();
+                    var method = ExpectIdent();
+                    Expect(TokenType.LParen);
+                    var (args, named) = ParseArgList();
+                    expr = new MemberCallExpr(expr, method, args, named);
+                    continue;
+                }
+
+                break;
             }
+
             return expr;
         }
 
@@ -212,7 +252,7 @@ namespace PhysicsSimulation.Base
             switch (Current.Type)
             {
                 case TokenType.String: return new StringExpr(Advance().Text);
-                case TokenType.Number: return new NumberExpr(float.Parse(Advance().Text, System.Globalization.CultureInfo.InvariantCulture));
+                case TokenType.Number: return new NumberExpr(double.Parse(Advance().Text, System.Globalization.CultureInfo.InvariantCulture));
                 case TokenType.LBracket: return ParseArray();
                 case TokenType.LParen:
                     Advance();
@@ -254,34 +294,36 @@ namespace PhysicsSimulation.Base
         private (List<Expr>, Dictionary<string, Expr>) ParseArgList()
         {
             var args = new List<Expr>();
-            var named = new Dictionary<string, Expr>();
-        
+            var named = new Dictionary<string, Expr>(StringComparer.OrdinalIgnoreCase);
+
             while (Current.Type != TokenType.RParen)
             {
+                // special case: func: x => ...
                 if (Current.Type == TokenType.Ident && Current.Text == "func" && Peek(1).Type == TokenType.Colon)
                 {
-                    Advance(); Advance();
+                    Advance(); // func
+                    Advance(); // :
                     var param = ExpectIdent();
                     Expect(TokenType.Arrow);
-                    Advance();
-                    named["func"] = new LambdaExpr(param, ParseExpression());
+                    // body is any expression
+                    var body = ParseExpression();
+                    named["func"] = new LambdaExpr(param, body);
                 }
                 else if (Current.Type == TokenType.Ident && Peek(1).Type == TokenType.Colon)
                 {
                     var key = Advance().Text;
-                    Advance();
+                    Advance(); // :
                     named[key] = ParseExpression();
                 }
                 else
                 {
                     args.Add(ParseExpression());
                 }
-        
-                if (Current.Type == TokenType.Comma)
-                    Advance();  // comma is optional
+
+                if (Current.Type == TokenType.Comma) Advance();
             }
-        
-            Advance(); // RParen
+
+            Advance(); // consume RParen
             return (args, named);
         }
 
@@ -291,32 +333,219 @@ namespace PhysicsSimulation.Base
         }
     }
 
-    // === ДВИЖОК ===
+    // ------------------ DSL registry (modular) ------------------
+    public class DslRegistry
+    {
+        readonly Dictionary<string, object> _vars = new(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, List<Delegate>> _funcs = new(StringComparer.OrdinalIgnoreCase);
+
+        public void RegisterVar(string name, object value) => _vars[name] = value;
+        public bool TryGetVar(string name, out object value) => _vars.TryGetValue(name, out value);
+
+        public void RegisterFunc(string name, Delegate func)
+        {
+            if (!_funcs.TryGetValue(name, out var list)) _funcs[name] = list = new List<Delegate>();
+            list.Add(func);
+        }
+
+        public bool HasFunc(string name) => _funcs.ContainsKey(name);
+
+        // Register all public instance methods of an object as functions (bound to that object)
+        public void RegisterInstanceMethods(object target, BindingFlags flags = BindingFlags.Public | BindingFlags.Instance)
+        {
+            if (target == null) return;
+            var t = target.GetType();
+            foreach (var m in t.GetMethods(flags).Where(x => !x.IsSpecialName))
+            {
+                // wrapper: accepts object[] and optional named args
+                RegisterFunc(m.Name, new Func<object[], Dictionary<string, object>, object>((args, _) =>
+                {
+                    var parameters = m.GetParameters();
+                    var callArgs = new object[parameters.Length];
+                    for (int i = 0; i < parameters.Length && i < args.Length; i++) callArgs[i] = ConvertArg(args[i], parameters[i].ParameterType);
+                    return m.Invoke(target, callArgs);
+                }));
+            }
+        }
+
+        private static object ConvertArg(object src, Type targetType)
+        {
+            if (src == null) return null;
+            if (targetType.IsInstanceOfType(src)) return src;
+            try { return Convert.ChangeType(src, targetType); } catch { return src; }
+        }
+
+        // Try to invoke registered function. Supports three delegate shapes:
+        // - delegate(object[]) -> object
+        // - delegate(object[], Dictionary<string,object>) -> object
+        // - any delegate that can be DynamicInvoke'd with posArgs
+        public bool TryInvoke(string name, object[] posArgs, Dictionary<string, object> namedArgs, out object result)
+        {
+            result = null;
+            if (!_funcs.TryGetValue(name, out var list)) return false;
+
+            foreach (var del in list)
+            {
+                var m = del.Method;
+                var ps = m.GetParameters();
+
+                // shape: Func<object[], object>
+                if (ps.Length == 1 && ps[0].ParameterType == typeof(object[]))
+                {
+                    try { result = del.DynamicInvoke(new object[] { posArgs }); return true; } catch { }
+                }
+
+                // shape: Func<object[], Dictionary<string,object>, object>
+                if (ps.Length == 2 && ps[0].ParameterType == typeof(object[]) && ps[1].ParameterType == typeof(Dictionary<string, object>))
+                {
+                    try { result = del.DynamicInvoke(new object[] { posArgs, namedArgs }); return true; } catch { }
+                }
+
+                // last resort: try to DynamicInvoke directly (posArgs must match)
+                try { result = del.DynamicInvoke(posArgs); return true; } catch { }
+            }
+
+            return false;
+        }
+    }
+
+    // ------------------ Engine ------------------
     public class ESharpEngine
     {
         private readonly GeometryArena _arena;
-        public SceneGpu CurrentScene { get; private set; }
+        public SceneGpu CurrentScene { get; set; }
+        public DslRegistry Registry { get; } = new DslRegistry();
 
-        private readonly Dictionary<string, object> _vars = new();
-        private readonly Dictionary<string, Func<float>> _globals = new()
-        {
-            ["PI"] = () => MathF.PI,
-            ["T"] = () => 0f // будет обновляться каждый кадр
-        };
+        // Optional factory if caller wants engine to create scenes by name
+        public Func<GeometryArena, string, SceneGpu> SceneFactory { get; private set; }
 
-        public ESharpEngine(GeometryArena arena)
+        public ESharpEngine(GeometryArena arena, SceneGpu initialScene = null)
         {
-            _arena = arena;
-            ResetScene("Default");
+            _arena = arena ?? throw new ArgumentNullException(nameof(arena));
+            if (initialScene != null) SetScene(initialScene);
+
+            // default globals
+            Registry.RegisterVar("PI", Math.PI);
+            Registry.RegisterVar("T", 0.0);
+
+            // core helper: bgColor (works if scene provided)
+            Registry.RegisterFunc("bgColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
+            {
+                if (CurrentScene == null) throw new Exception("CurrentScene is not set. Call SetScene(...) or RegisterSceneFactory(...).");
+                var color = args.Length > 0 ? (float[])args[0] : new[] { 0.1f, 0.1f, 0.1f };
+                var duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToDouble(d) : 1.0;
+                CurrentScene.AnimateBackground(new Vector3(color[0], color[1], color[2]), CurrentScene.T, CurrentScene.T + (float)duration);
+                return null;
+            }));
+            
+            Registry.RegisterFunc("Add", new Func<object[], object>(args =>
+            {
+                if (args == null || args.Length == 0) throw new Exception("Add требует примитив как аргумент");
+                if (CurrentScene == null) throw new Exception("CurrentScene не установлена");
+                if (args[0] is not PrimitiveGpu prim) throw new Exception("Первый аргумент Add должен быть PrimitiveGpu");
+                CurrentScene.AddPrimitive(prim);
+                return prim;
+            }));
+
+            Registry.RegisterFunc("plot", new Func<object[], object>(_ => throw new Exception("plot handled internally by engine.")));
+            
+            Registry.RegisterFunc("rect", new Func<object[], object>(args =>
+            {
+                float w = args.Length > 0 ? Convert.ToSingle(args[0]) : 1f;
+                float h = args.Length > 1 ? Convert.ToSingle(args[1]) : 1f;
+                bool dyn = args.Length > 2 ? Convert.ToBoolean(args[2]) : false;
+                return new RectGpu(w, h, dyn);
+            }));
+
+            Registry.RegisterFunc("circle", new Func<object[], object>(args =>
+            {
+                float r = args.Length > 0 ? Convert.ToSingle(args[0]) : 0.2f;
+                int seg = args.Length > 1 ? Convert.ToInt32(args[1]) : 80;
+                bool filled = args.Length > 2 ? Convert.ToBoolean(args[2]) : false;
+                bool dyn = args.Length > 3 ? Convert.ToBoolean(args[3]) : false;
+                return new CircleGpu(r, seg, filled, dyn);
+            }));
+
+            Registry.RegisterFunc("line", new Func<object[], object>(args =>
+            {
+                if (args.Length >= 4)
+                    return new LineGpu(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]), Convert.ToSingle(args[2]), Convert.ToSingle(args[3]));
+                return new LineGpu();
+            }));
+
+            Registry.RegisterFunc("triangle", new Func<object[], object>(args =>
+            {
+                // overloads can be extended. simple center/size variant:
+                if (args.Length >= 3 && args[0] is float cx)
+                {
+                    // user provided center/size/filled
+                    var center = new System.Numerics.Vector2(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]));
+                    float size = Convert.ToSingle(args[2]);
+                    bool filled = args.Length > 3 ? Convert.ToBoolean(args[3]) : true;
+                    var tri = new TriangleGpu(center, size, filled);
+                    return tri;
+                }
+                return new TriangleGpu();
+            }));
+
+            Registry.RegisterFunc("text", new Func<object[], object>(args =>
+            {
+                string text = args.Length > 0 ? args[0]?.ToString() ?? "" : "";
+                float size = args.Length > 1 ? Convert.ToSingle(args[1]) : 0.1f;
+                string fontKey = args.Length > 2 ? args[2]?.ToString() : null;
+                return new TextGpu(text, size, fontKey);
+            }));
+            
+            Registry.RegisterFunc("aColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
+            {
+                if (args == null || args.Length == 0) throw new Exception("aColor: missing target");
+                if (args[0] is PrimitiveGpu p)
+                {
+                    Vector4 to = p.Color;
+                    if (named != null && named.TryGetValue("to", out var tv) && tv is float[] arr && arr.Length >= 4)
+                        to = new Vector4(arr[0], arr[1], arr[2], arr[3]);
+
+                    float start = named != null && named.TryGetValue("start", out var s) ? Convert.ToSingle(s) : 0f;
+                    float end = named != null && named.TryGetValue("duration", out var d) ? start + Convert.ToSingle(d) : 1f;
+
+                    EaseType ease = EaseType.Linear;
+                    if (named != null && named.TryGetValue("ease", out var e) && e is string es)
+                        ease = EaseHelper.Parse(es);
+
+                    p.AnimateColor(start, end, ease, to);
+                    return p;
+                }
+                throw new Exception("aColor: target is not a PrimitiveGpu");
+            }));
         }
 
-        public void UpdateTime(float t) => _globals["T"] = () => t;
+        // Caller can provide factory if they want engine to build scenes by name
+        public void RegisterSceneFactory(Func<GeometryArena, string, SceneGpu> factory) => SceneFactory = factory;
+
+        // Or set scene manually (preferred if you have a concrete scene instance)
+        public void SetScene(SceneGpu scene)
+        {
+            CurrentScene = scene ?? throw new ArgumentNullException(nameof(scene));
+            Registry.RegisterVar("scene", CurrentScene);
+            Registry.RegisterInstanceMethods(CurrentScene);
+        }
+
+        public void UpdateTime(double t) => Registry.RegisterVar("T", t);
 
         public void LoadSceneFromFile(string path) => LoadScene(File.ReadAllText(path), Path.GetFileNameWithoutExtension(path));
 
         public void LoadScene(string source, string fallbackName)
         {
-            ResetScene(fallbackName);
+            // Создаем сцену через фабрику, если текущая сцена не установлена
+            if (CurrentScene == null)
+            {
+                if (SceneFactory == null)
+                    throw new Exception("No scene set and no SceneFactory registered. Call SetScene(...) or RegisterSceneFactory(...).");
+
+                CurrentScene = SceneFactory(_arena, fallbackName);
+                Registry.RegisterVar("scene", CurrentScene);
+                Registry.RegisterInstanceMethods(CurrentScene);
+            }
 
             var lexer = new ESharpLexer(source);
             var parser = new ESharpParser(lexer);
@@ -324,109 +553,173 @@ namespace PhysicsSimulation.Base
 
             foreach (var stmt in stmts)
             {
+                // Если DSL задает новое имя сцены, создаем новую через фабрику
                 if (stmt is AssignStmt { Name: "name" } a && Eval(a.Value) is string n)
                 {
-                    ResetScene(n);
+                    if (SceneFactory != null)
+                    {
+                        CurrentScene = SceneFactory(_arena, n);
+                        Registry.RegisterVar("scene", CurrentScene);
+                        Registry.RegisterInstanceMethods(CurrentScene);
+                    }
                     continue;
                 }
+
                 Execute(stmt);
             }
 
             CurrentScene.Initialize();
         }
 
-        private void ResetScene(string name)
-        {
-            CurrentScene = new DynamicEsharpScene(_arena, name);
-            _vars["scene"] = CurrentScene;
-        }
-
         private void Execute(Stmt stmt)
         {
             switch (stmt)
             {
-                case AssignStmt a: _vars[a.Name] = Eval(a.Value); break;
+                case AssignStmt a: Registry.RegisterVar(a.Name, Eval(a.Value)); break;
                 case ExprStmt e: Eval(e.Expr); break;
             }
         }
 
+        // ------------------ Evaluator ------------------
         private object Eval(Expr expr) => expr switch
         {
-            IdentExpr i => _vars.TryGetValue(i.Name, out var v) ? v : _globals.TryGetValue(i.Name, out var g) ? g() : throw new Exception($"Неизвестно: {i.Name}"),
+            IdentExpr i => EvaluateIdent(i.Name),
             NumberExpr n => n.Value,
             StringExpr s => s.Value,
-            ArrayExpr a => a.Items.Select(Eval).Cast<float>().ToArray(),
+            ArrayExpr a => a.Items.Select(Eval).Select(Convert.ToDouble).Select(d => (float)d).ToArray(),
             BinaryExpr b => EvalBinary(b),
             CallExpr c => EvalCall(c),
+            MemberCallExpr m => EvalMemberCall(m),
             LambdaExpr l => l,
             _ => null
         };
 
+        private object EvaluateIdent(string name)
+        {
+            if (Registry.TryGetVar(name, out var v)) return v;
+            // unknown identifier -> try to find 0-arg function and call it
+            if (Registry.TryInvoke(name, new object[0], null, out var res)) return res;
+            throw new Exception($"Неизвестно: {name}");
+        }
+
         private object EvalBinary(BinaryExpr b)
         {
-            var l = (float)Eval(b.Left);
-            var r = (float)Eval(b.Right);
+            var l = Convert.ToDouble(Eval(b.Left));
+            var r = Convert.ToDouble(Eval(b.Right));
             return b.Op switch
             {
                 "+" => l + r,
                 "-" => l - r,
                 "*" => l * r,
                 "/" => l / r,
-                "^" => MathF.Pow(l, r),
-                _ => 0f
+                "^" => Math.Pow(l, r),
+                _ => 0.0
             };
         }
 
         private object EvalCall(CallExpr call)
         {
-            var callee = Eval(call.Callee);
+            // evaluate positional args
+            var pos = call.Args.Select(Eval).ToArray();
+            // evaluate named args into values for engine-level helpers; keep Expr map for plot special-case
+            var namedValues = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
+            var namedExprs = call.NamedArgs; // keep exprs if needed (plot)
 
-            if (callee is PrimitiveGpu p && call.Callee is IdentExpr { Name: var method })
+            // if callee is an identifier (function name)
+            if (call.Callee is IdentExpr ident)
             {
-                return method == "aColor" ? p.AnimateColor(to: new Vector4(1, 0, 1, 1)) : p;
+                // special-case plot: engine-level handling if func lambda provided
+                if (string.Equals(ident.Name, "plot", StringComparison.OrdinalIgnoreCase))
+                {
+                    return CreatePlotFromArgs(pos, namedExprs);
+                }
+
+                if (Registry.TryInvoke(ident.Name, pos, namedValues, out var res)) return res;
+
+                if (Registry.HasFunc(ident.Name))
+                    throw new Exception($"Вызов функции {ident.Name} не удался: сигнатуры не подошли");
+
+                throw new Exception($"Неизвестно: {ident.Name}");
             }
 
-            var name = (call.Callee as IdentExpr)?.Name ?? "";
+            // callee is an expression that should evaluate to a delegate/object
+            var calleeObj = Eval(call.Callee);
 
-            return name switch
+            if (calleeObj is Delegate del)
             {
-                "Add" => CurrentScene.Add((PrimitiveGpu)Eval(call.Args[0])),
-                "plot" => CreatePlot(call),
-                "bgColor" => AnimateBackground(call),
-                _ => null
-            };
+                // attempt to invoke delegate directly. Try common shapes.
+                try { return del.DynamicInvoke(pos); } catch { }
+                try { return del.DynamicInvoke(new object[] { pos }); } catch { }
+                try { return del.DynamicInvoke(new object[] { pos, namedValues }); } catch { }
+            }
+
+            throw new Exception("Невозможно вызвать выражение как функцию");
         }
 
-        private PrimitiveGpu CreatePlot(CallExpr call)
+        private object EvalMemberCall(MemberCallExpr call)
         {
-            if (!call.NamedArgs.TryGetValue("func", out var f) || f is not LambdaExpr lambda)
+            var target = Eval(call.Target);
+            var pos = call.Args.Select(Eval).ToArray();
+            var named = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
+
+            // first, try registry-registered function by method name (allows overriding instance methods)
+            if (Registry.TryInvoke(call.Method, PrependArg(target, pos), named, out var res)) return res;
+
+            if (target == null) throw new Exception($"Null target for method {call.Method}");
+
+            // reflection fallback: find method on target
+            var t = target.GetType();
+            var methods = t.GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.Name.Equals(call.Method, StringComparison.OrdinalIgnoreCase)).ToArray();
+            foreach (var m in methods)
+            {
+                var ps = m.GetParameters();
+                if (ps.Length != pos.Length) continue;
+                try
+                {
+                    var args = new object[ps.Length];
+                    for (int i = 0; i < ps.Length; i++) args[i] = Convert.ChangeType(pos[i], ps[i].ParameterType);
+                    return m.Invoke(target, args);
+                }
+                catch { /* try next overload */ }
+            }
+
+            throw new Exception($"Метод {call.Method} не найден у {target.GetType().Name}");
+        }
+
+        private static object[] PrependArg(object first, object[] rest)
+        {
+            var arr = new object[rest.Length + 1]; arr[0] = first; Array.Copy(rest, 0, arr, 1, rest.Length); return arr;
+        }
+
+        // ------------------ Plot integration ------------------
+        // Expects that PlotGpu(Func<float,float>, float xmin, float xmax, bool isDynamic) exists in project.
+        // If your PlotGpu signature differs — adjust this method accordingly.
+        private PrimitiveGpu CreatePlotFromArgs(object[] pos, Dictionary<string, Expr> namedExprs)
+        {
+            // namedExprs contains 'func' => LambdaExpr
+            if (namedExprs == null || !namedExprs.TryGetValue("func", out var fexpr) || fexpr is not LambdaExpr lambda)
                 throw new Exception("plot требует func: x => ...");
 
-            float xmin = -1, xmax = 1;
-            bool dynamic = false;
+            float xmin = -1, xmax = 1; bool dynamic = false;
+            if (namedExprs.TryGetValue("xmin", out var xminE)) xmin = Convert.ToSingle(Eval(xminE));
+            if (namedExprs.TryGetValue("xmax", out var xmaxE)) xmax = Convert.ToSingle(Eval(xmaxE));
+            if (namedExprs.TryGetValue("dynamic", out var dynE)) dynamic = Convert.ToBoolean(Eval(dynE));
 
-            foreach (var kv in call.NamedArgs)
+            // create PlotGpu using the project's implementation
+            try
             {
-                if (kv.Key == "xmin") xmin = (float)Eval(kv.Value);
-                if (kv.Key == "xmax") xmax = (float)Eval(kv.Value);
-                if (kv.Key == "dynamic") dynamic = (bool)Eval(kv.Value);
+                var plot = new PlotGpu(x =>
+                {
+                    double t = Convert.ToDouble(Registry.TryGetVar("T", out var tv) ? tv : 0.0);
+                    return (float)EvalMathExpr(lambda.Body, (float)x, (float)t);
+                }, xmin, xmax, isDynamic: dynamic);
+                
+                return plot;
             }
-
-            var plot = new PlotGpu(x =>
+            catch (Exception ex)
             {
-                var t = _globals["T"]();
-                return (float)EvalMathExpr(lambda.Body, x, t);
-            }, xmin, xmax, isDynamic: dynamic);
-
-            return plot;
-        }
-
-        private object AnimateBackground(CallExpr call)
-        {
-            var color = call.Args.Count > 0 ? (float[])Eval(call.Args[0]) : new[] { 0.1f, 0.1f, 0.1f };
-            var duration = call.NamedArgs.TryGetValue("duration", out var d) ? (float)Eval(d) : 1f;
-            CurrentScene.AnimateBackground(new(color[0], color[1], color[2]), CurrentScene.T, CurrentScene.T + duration);
-            return null;
+                throw new Exception("Не удалось создать PlotGpu — проверьте сигнатуру конструктора PlotGpu в проекте. " + ex.Message, ex);
+            }
         }
 
         private double EvalMathExpr(Expr expr, float x, float t)
@@ -434,7 +727,7 @@ namespace PhysicsSimulation.Base
             return expr switch
             {
                 NumberExpr n => n.Value,
-                IdentExpr i => i.Name == "x" ? x : i.Name == "T" ? t : _globals.GetValueOrDefault(i.Name, () => 0f)(),
+                IdentExpr i => i.Name == "x" ? x : i.Name == "T" ? t : (Registry.TryGetVar(i.Name, out var v) ? Convert.ToDouble(v) : 0.0),
                 BinaryExpr b => EvalBinaryMath(b, x, t),
                 CallExpr c when c.Callee is IdentExpr id => CallMathFunc(id.Name, c.Args.Select(a => (float)EvalMathExpr(a, x, t)).ToArray()),
                 _ => 0
@@ -458,22 +751,33 @@ namespace PhysicsSimulation.Base
 
         private double CallMathFunc(string name, float[] args) => name.ToLower() switch
         {
-            "sin" => MathF.Sin(args[0]),
-            "cos" => MathF.Cos(args[0]),
-            "abs" => MathF.Abs(args[0]),
-            "sqrt" => MathF.Sqrt(args[0]),
-            "pow" => MathF.Pow(args[0], args.Length > 1 ? args[1] : 2),
-            "max" => MathF.Max(args[0], args.Length > 1 ? args[1] : args[0]),
-            "min" => MathF.Min(args[0], args.Length > 1 ? args[1] : args[0]),
+            "sin" => Math.Sin(args[0]),
+            "cos" => Math.Cos(args[0]),
+            "abs" => Math.Abs(args[0]),
+            "sqrt" => Math.Sqrt(args[0]),
+            "pow" => Math.Pow(args[0], args.Length > 1 ? args[1] : 2),
+            "max" => Math.Max(args[0], args.Length > 1 ? args[1] : args[0]),
+            "min" => Math.Min(args[0], args.Length > 1 ? args[1] : args[0]),
             _ => 0
         };
     }
-
-    internal class DynamicEsharpScene : SceneGpu
+    
+    public static class EaseHelper
     {
-        private readonly string _name;
-        public DynamicEsharpScene(GeometryArena arena, string name) : base(arena) => _name = name;
-        public override void Setup() { }
-        public override string ToString() => $"[E# Scene: {_name}]";
+        public static EaseType Parse(string ease)
+        {
+            if (string.IsNullOrWhiteSpace(ease))
+                return EaseType.Linear;
+
+            switch (ease.Trim().ToLower())
+            {
+                case "linear": return EaseType.Linear;
+                case "in": return EaseType.EaseIn;
+                case "out": return EaseType.EaseOut;
+                case "inout":
+                case "easeinout": return EaseType.EaseInOut;
+                default: return EaseType.Linear; // fallback на Linear
+            }
+        }
     }
 }

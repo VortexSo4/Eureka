@@ -7,7 +7,7 @@ using PhysicsSimulation.Base;
 
 namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 {
-    public abstract class SceneGpu : IDisposable
+    public class SceneGpu : IDisposable
     {
         protected List<PrimitiveGpu> _primitives = [];
         protected AnimationEngine _animationEngine;
@@ -23,7 +23,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         private record struct BackgroundAnimation(Vector3 TargetColor, float StartTime, float EndTime);
 
-        protected SceneGpu(GeometryArena arena)
+        public SceneGpu(GeometryArena arena)
         {
             _arena = arena ?? throw new ArgumentNullException(nameof(arena));
         }
@@ -56,7 +56,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             return primitive;
         }
 
-        public abstract void Setup();
+        public virtual void Setup() { }
 
         public virtual void Initialize()
         {
