@@ -9,9 +9,12 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Numerics;
 using System.Reflection;
+using OpenTK.Mathematics;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
+using Vector2 = System.Numerics.Vector2;
+using Vector3 = System.Numerics.Vector3;
+using Vector4 = System.Numerics.Vector4;
 
 namespace PhysicsSimulation.Base
 {
@@ -814,7 +817,7 @@ namespace PhysicsSimulation.Base
             IdentExpr i => EvaluateIdent(i.Name),
             NumberExpr n => n.Value,
             StringExpr s => s.Value,
-            ArrayExpr a => a.Items.Select(Eval).Select(Convert.ToDouble).Select(d => (float)d).ToArray(),
+            ArrayExpr a => a.Items.Select(Eval).ToArray(),
             BinaryExpr b => EvalBinary(b),
             CallExpr c => EvalCall(c),
             MemberCallExpr m => EvalMemberCall(m),
@@ -903,6 +906,21 @@ namespace PhysicsSimulation.Base
             var pos = call.Args.Select(Eval).ToArray();
             var named = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
 
+            if (target is object[] targets)
+            {
+                var results = new List<object>();
+                foreach (var t1 in targets)
+                {
+                    var posWithTarget = call.Args.Select(Eval).Prepend(t1).ToArray();
+                    var namedArgs = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value),
+                        StringComparer.OrdinalIgnoreCase);
+                    if (Registry.TryInvoke(call.Method, posWithTarget, namedArgs, out var res1))
+                        results.Add(res1);
+                }
+
+                return results.Count == 1 ? results[0] : results.ToArray();
+            }
+
             // first, try registry-registered function by method name (allows overriding instance methods)
             if (Registry.TryInvoke(call.Method, PrependArg(target, pos), named, out var res)) return res;
 
@@ -985,7 +1003,6 @@ namespace PhysicsSimulation.Base
         // ------------------ Builtin registration ------------------
         private void RegisterBuiltinFunctions()
         {
-            // bgColor(to: [r,g,b] OR positional [r,g,b], duration: n)
             Registry.RegisterFunc("bgColor", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (CurrentScene == null)
@@ -1003,8 +1020,6 @@ namespace PhysicsSimulation.Base
                 CurrentScene.AnimateBackground(colorVec, CurrentScene.T, CurrentScene.T + (float)duration);
                 return null;
             }));
-
-            // Add(primitive)
             Registry.RegisterFunc("Add", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (pos == null || pos.Length == 0) throw new Exception("Add требует примитив как аргумент");
@@ -1015,7 +1030,8 @@ namespace PhysicsSimulation.Base
                 return prim;
             }));
 
-            // plot(func: x => ..., xmin: n, xmax: m, dynamic: true/false)
+
+
             Registry.RegisterFunc("plot", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 var ctx = new CallContext(pos, named, this);
@@ -1035,8 +1051,6 @@ namespace PhysicsSimulation.Base
 
                 return plot;
             }));
-
-            // rect(width = 1, height = 1, isDynamic = false)
             Registry.RegisterFunc("rect", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 var ctx = new CallContext(pos, named, this);
@@ -1045,8 +1059,6 @@ namespace PhysicsSimulation.Base
                 bool dyn = ctx.ParseBool(2, true);
                 return new RectGpu(w, h, dyn);
             }));
-
-            // circle(radius=0.2, segments=80, filled=false, dynamic=false)
             Registry.RegisterFunc("circle", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 var ctx = new CallContext(pos, named, this);
@@ -1056,8 +1068,6 @@ namespace PhysicsSimulation.Base
                 bool dyn = ctx.ParseBool(3, true);
                 return new CircleGpu(r, seg, filled, dyn);
             }));
-
-            // line(x1,y1,x2,y2) or line()
             Registry.RegisterFunc("line", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 var ctx = new CallContext(pos, named, this);
@@ -1066,10 +1076,6 @@ namespace PhysicsSimulation.Base
                         Convert.ToSingle(pos[3]));
                 return new LineGpu();
             }));
-
-            // triangle(...) - support multiple overloads:
-            // triangle(centerX, centerY, size, filled=true)
-            // triangle(a:[x,y], b:[x,y], c:[x,y], filled=true)
             Registry.RegisterFunc("triangle", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 var ctx = new CallContext(pos, named, this);
@@ -1094,8 +1100,6 @@ namespace PhysicsSimulation.Base
 
                 return new TriangleGpu();
             }));
-
-            // text(string, size = 0.1, fontKey = null)
             Registry.RegisterFunc("text", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 var ctx = new CallContext(pos, named, this);
@@ -1104,6 +1108,96 @@ namespace PhysicsSimulation.Base
                 string fontKey = ctx.ParseString(2, null);
                 return new TextGpu(text, size, fontKey);
             }));
+            Registry.RegisterFunc("ellipse", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                float w = ctx.ParseFloat(0, 1f);
+                float h = ctx.ParseFloat(1, 0.6f);
+                int seg = ctx.ParseInt("segments", 80);
+                bool filled = ctx.ParseBool("filled", false);
+                bool dynamic = ctx.ParseBool("dynamic", true);
+
+                return new EllipseGpu(w, h, seg, filled, dynamic);
+            }));
+            Registry.RegisterFunc("arc", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                float r = ctx.ParseFloat(2, 0.5f);
+                float start = ctx.ParseFloat(3, 0f);
+                float end = ctx.ParseFloat(4, 360f);
+                int seg = ctx.ParseInt("segments", 64);
+                bool dynamic = ctx.ParseBool("dynamic", true);
+
+                return new ArcGpu(r,
+                    MathHelper.DegreesToRadians(start),
+                    MathHelper.DegreesToRadians(end),
+                    seg, dynamic);
+            }));
+            Registry.RegisterFunc("arrow", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+
+                Vector2 from = ctx.ParseVector2("from", new Vector2(-0.3f, -0.3f));
+                Vector2 to   = ctx.ParseVector2("to",   new Vector2( 0.3f,  0.3f));
+                float headSize = ctx.ParseFloat("headSize", 0.12f);
+                float headAngle = ctx.ParseFloat("headAngle", 30f);
+                bool dynamic = ctx.ParseBool("dynamic", true);
+
+                return new ArrowGpu(from, to, headSize, headAngle, dynamic);
+            }));
+            Registry.RegisterFunc("bezier", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+
+                Vector2 p0, p1, p2, p3 = Vector2.Zero;
+                int segments = ctx.ParseInt("segments", 64);
+                bool dynamic = ctx.ParseBool("dynamic", true);
+
+                if (pos != null && pos.Length > 0 && pos[0] is object[] arr && arr.Length >= 3)
+                {
+                    // Вариант: bezier([[x,y], [x,y], [x,y], [x,y]?])
+                    p0 = ParseVec(arr[0]);
+                    p1 = ParseVec(arr[1]);
+                    p2 = ParseVec(arr[2]);
+                }
+                else
+                {
+                    p0 = ctx.ParseVector2(0, Vector2.Zero);
+                    p1 = ctx.ParseVector2(1, new Vector2(0.5f, 1f));
+                    p2 = ctx.ParseVector2(2, new Vector2(-0.5f, -1f));
+                }
+
+                return new BezierCurveGpu(p0, p1, p2, segments, dynamic);
+
+                Vector2 ParseVec(object o) => o switch
+                {
+                    Vector2 v => v,
+                    float[] fa when fa.Length >= 2 => new Vector2(fa[0], fa[1]),
+                    object[] oa when oa.Length >= 2 => new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1])),
+                    _ => Vector2.Zero
+                };
+            }));
+            Registry.RegisterFunc("grid", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                int cx = ctx.ParseInt(0, 10);
+                int cy = ctx.ParseInt(1, 10);
+                float size = ctx.ParseFloat("size", 1f);
+                bool dynamic = ctx.ParseBool("dynamic", true);
+
+                return new GridGpu(cx, cy, size, dynamic);
+            }));
+            Registry.RegisterFunc("axis", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                float size = ctx.ParseFloat(0, 1f);
+                bool dynamic = ctx.ParseBool("dynamic", true);
+
+                return new AxisGpu(size, dynamic);
+            }));
+
+
+
             Registry.RegisterFunc("aColor", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (pos == null || pos.Length == 0) throw new Exception("aColor: missing target");
@@ -1146,7 +1240,6 @@ namespace PhysicsSimulation.Base
                 p.AnimateColor(start, duration, ease, to);
                 return p;
             }));
-
             Registry.RegisterFunc("aScale", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (pos == null || pos.Length == 0) throw new Exception("aScale: missing target");
@@ -1168,7 +1261,6 @@ namespace PhysicsSimulation.Base
                 p.AnimateScale(start, duration, ease, to);
                 return p;
             }));
-
             Registry.RegisterFunc("aMove", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (pos == null || pos.Length == 0) throw new Exception("aMove: missing target");
@@ -1215,7 +1307,6 @@ namespace PhysicsSimulation.Base
                 p.AnimatePosition(start, duration, ease, to);
                 return p;
             }));
-
             Registry.RegisterFunc("aRot", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (pos == null || pos.Length == 0) throw new Exception("aRot: missing target");

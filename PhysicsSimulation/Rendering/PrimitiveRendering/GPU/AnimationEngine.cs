@@ -491,7 +491,7 @@ namespace PhysicsSimulation.Rendering.GPU
         // local_size_x must match the dispatch groups calculation (we used 64)
         private const string ANIMATION_COMPUTE_SRC = @"
 #version 430
-layout(local_size_x = 1) in;
+layout(local_size_x = 64) in;
 
 struct AnimEntry {
     ivec4 meta; // type, pid, r2, r3

@@ -14,7 +14,6 @@ using Vector4 = System.Numerics.Vector4;
 
 namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 {
-    #region Enums & Flags
 
     public enum AnimType
     {
@@ -45,10 +44,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         UseGlobalCoords = 1 << 2,
         // add dashed/hatch flags later if helpful
     }
-
-    #endregion
-
-    #region CPU-side SSBO structs (plain-old-data views)
 
     public struct AnimEntryCpu
     {
@@ -140,10 +135,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public Vector4 DashInfo; // filledLen, emptyLen, offset, reserved
     }
 
-    #endregion
-
-    #region GeometryArena
-
     public class GeometryArena
     {
         private int _nextOffset = 0;
@@ -187,10 +178,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             return list.ToArray();
         }
     }
-
-    #endregion
-
-    #region PrimitiveGPU base
 
     public abstract class PrimitiveGpu
     {
@@ -242,8 +229,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Geometry($"PrimitiveGpu.ctor: Primitive created.");
         }
 
-        #region Geometry registration helpers
-
         internal void EnsureGeometryRegistered(GeometryArena arena)
         {
             if (IsGeometryRegistered) return;
@@ -287,10 +272,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Geometry(
                 $"PrimitiveGpu.RegisterMorphTarget: Morph targets registered: A={VertexOffsetA}, B={VertexOffsetB}, M={VertexOffsetM}, count={len}.");
         }
-
-        #endregion
-
-        #region Animation helpers
 
         public PrimitiveGpu AnimatePosition(float start, float duration, EaseType ease, Vector2 to)
         {
@@ -360,10 +341,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             IsDynamic = true;
             return this;
         }
-
-        #endregion
-
-        #region Serialization helpers
 
         public RenderInstanceCpu ToRenderInstanceCpu()
         {
@@ -473,59 +450,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Anim("PrimitiveGpu.BuildAnimIndex: Index built.");
             return result;
         }
-
-        public static List<AnimEntryCpu> AggregateEntries(IEnumerable<PrimitiveGpu> primitives)
-        {
-            DebugManager.Anim("PrimitiveGpu.AggregateEntries: Aggregating entries from primitives.");
-            var outList = new List<AnimEntryCpu>();
-            foreach (var p in primitives.OrderBy(p => p.PrimitiveId))
-            {
-                if (p.PendingAnimations.Count == 0) continue;
-                outList.AddRange(p.PendingAnimations);
-            }
-
-            DebugManager.Anim($"PrimitiveGpu.AggregateEntries: Aggregated {outList.Count} entries.");
-            return outList;
-        }
-
-        public static List<AnimEntryCpu> AggregateNewEntries(IEnumerable<PrimitiveGpu> primitives)
-        {
-            DebugManager.Anim("PrimitiveGpu.AggregateNewEntries: Aggregating new entries from primitives.");
-            var outList = new List<AnimEntryCpu>();
-            foreach (var p in primitives.OrderBy(p => p.PrimitiveId))
-            {
-                foreach (var e in p.PendingAnimations)
-                    if (e.PendingOnGpu)
-                        outList.Add(e);
-            }
-
-            DebugManager.Anim($"PrimitiveGpu.AggregateNewEntries: Aggregated {outList.Count} new entries.");
-            return outList;
-        }
-
-        public static void MarkEntriesUploaded(List<AnimEntryCpu> entries)
-        {
-            for (int i = 0; i < entries.Count; i++)
-            {
-                var entry = entries[i];
-                entry.PendingOnGpu = true;
-                entries[i] = entry;
-            }
-        }
-
-        #endregion
     }
-
-    #endregion
-
-    #region PolygonGPU & RectGPU
 
     public class PolygonGpu : PrimitiveGpu
     {
         public IReadOnlyList<List<Vector2>> Contours => _contours;
         protected readonly List<List<Vector2>> _contours = [];
 
-        protected PolygonGpu(IReadOnlyList<List<Vector2>> contours, bool isDynamic = false)
+        public PolygonGpu(IReadOnlyList<List<Vector2>> contours, bool isDynamic = false)
         {
             if (contours != null && contours.Count > 0)
                 SetContours(contours);
@@ -600,8 +532,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         }
     }
 
-    #region LineGpu
-
     public class LineGpu : PolygonGpu
     {
         public LineGpu(float x1 = 0f, float y1 = 0f, float x2 = 0.5f, float y2 = 0f)
@@ -615,10 +545,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public LineGpu(Vector2 from, Vector2 to)
             : this(from.X, from.Y, to.X, to.Y) { }
     }
-
-    #endregion
-
-    #region TriangleGpu
 
     public class TriangleGpu : PolygonGpu
     {
@@ -651,10 +577,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         }
     }
 
-    #endregion
-
-    #region CircleGpu
-
     public class CircleGpu : PolygonGpu
     {
         public int Segments { get; }
@@ -682,10 +604,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             return points;
         }
     }
-
-    #endregion
-
-    #region PlotGpu — САМЫЙ КРУТОЙ
 
     public class PlotGpu : PolygonGpu
     {
@@ -747,12 +665,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             RegisterRawGeometry(arena, flat);
         }
     }
-
-    #endregion
-
-    #endregion
-
-    #region TextGPU (basic, glyph contours are provided by engine/CharMap)
 
     public class TextGpu : PrimitiveGpu
     {
@@ -837,6 +749,172 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Geometry($"TextGpu.InitGlyphContours: Done. Text ready for rendering.");
         }
     }
+    
+    public class EllipseGpu : PolygonGpu
+    {
+        public float RadiusX { get; }
+        public float RadiusY { get; }
+        public int Segments { get; }
 
-    #endregion
+        public EllipseGpu(float radiusX = 0.3f, float radiusY = 0.2f, int segments = 64, bool filled = false, bool isDynamic = false)
+            : base([])
+        {
+            RadiusX = radiusX;
+            RadiusY = radiusY;
+            Segments = Math.Max(8, segments);
+
+            SetContours([GenerateEllipse()]);
+            Flags = filled ? PrimitiveFlags.Filled | PrimitiveFlags.Closed : PrimitiveFlags.Closed;
+            IsDynamic = isDynamic;
+        }
+
+        private List<Vector2> GenerateEllipse()
+        {
+            var pts = new List<Vector2>(Segments + 1);
+            for (int i = 0; i < Segments; i++)
+            {
+                float a = 2f * MathF.PI * i / Segments;
+                pts.Add(new Vector2(MathF.Cos(a) * RadiusX, MathF.Sin(a) * RadiusY));
+            }
+            pts.Add(pts[0]);
+            return pts;
+        }
+    }
+
+    public class ArcGpu : PolygonGpu
+    {
+        public float Radius { get; }
+        public float StartAngle { get; }
+        public float EndAngle { get; }
+        public int Segments { get; }
+
+        public ArcGpu(float radius = 0.3f, float startAngleRad = 0f, float endAngleRad = MathF.PI, int segments = 64, bool isDynamic = false)
+            : base([])
+        {
+            Radius = radius;
+            StartAngle = startAngleRad;
+            EndAngle = endAngleRad;
+            Segments = Math.Max(2, segments);
+
+            SetContours([GenerateArc()]);
+            Flags = PrimitiveFlags.None;
+            IsDynamic = isDynamic;
+        }
+
+        private List<Vector2> GenerateArc()
+        {
+            var pts = new List<Vector2>(Segments + 1);
+            for (int i = 0; i <= Segments; i++)
+            {
+                float t = i / (float)Segments;
+                float a = MathHelper.Lerp(StartAngle, EndAngle, t);
+                pts.Add(new Vector2(MathF.Cos(a) * Radius, MathF.Sin(a) * Radius));
+            }
+            return pts;
+        }
+    }
+
+    public class ArrowGpu : PolygonGpu
+    {
+        public ArrowGpu(Vector2 from, Vector2 to, float headSize = 0.1f, float headAngleDeg = 25f, bool isDynamic = false)
+            : base([])
+        {
+            SetContours([GenerateArrow(from, to, headSize, headAngleDeg)]);
+            Flags = PrimitiveFlags.None;
+            IsDynamic = isDynamic;
+        }
+
+        private static List<Vector2> GenerateArrow(Vector2 from, Vector2 to, float headSize, float angleDeg)
+        {
+            var dir = Vector2.Normalize(to - from);
+            var back = to - dir * headSize;
+            float a = MathHelper.DegreesToRadians(angleDeg);
+
+            Vector2 left = Rotate(dir, +a);
+            Vector2 right = Rotate(dir, -a);
+
+            return new List<Vector2>
+            {
+                from,
+                to,
+                back + left * headSize,
+                to,
+                back + right * headSize
+            };
+        }
+
+        private static Vector2 Rotate(Vector2 v, float a)
+            => new(
+                v.X * MathF.Cos(a) - v.Y * MathF.Sin(a),
+                v.X * MathF.Sin(a) + v.Y * MathF.Cos(a)
+            );
+    }
+
+    public class BezierCurveGpu : PolygonGpu
+    {
+        public BezierCurveGpu(Vector2 p0, Vector2 p1, Vector2 p2, int segments = 64, bool isDynamic = false)
+            : base([])
+        {
+            SetContours([Generate(p0, p1, p2, segments)]);
+            Flags = PrimitiveFlags.None;
+            IsDynamic = isDynamic;
+        }
+
+        private static List<Vector2> Generate(Vector2 p0, Vector2 p1, Vector2 p2, int seg)
+        {
+            var pts = new List<Vector2>(seg + 1);
+            for (int i = 0; i <= seg; i++)
+            {
+                float t = i / (float)seg;
+                float u = 1f - t;
+                pts.Add(u * u * p0 + 2f * u * t * p1 + t * t * p2);
+            }
+            return pts;
+        }
+    }
+
+    public class GridGpu : PolygonGpu
+    {
+        public GridGpu(int cellsX = 10, int cellsY = 10, float size = 1f, bool isDynamic = false)
+            : base([])
+        {
+            SetContours(GenerateGrid(cellsX, cellsY, size));
+            Flags = PrimitiveFlags.None;
+            IsDynamic = isDynamic;
+        }
+
+        private static List<List<Vector2>> GenerateGrid(int x, int y, float size)
+        {
+            var contours = new List<List<Vector2>>();
+            float hx = size * 0.5f;
+            float hy = size * 0.5f;
+
+            for (int i = 0; i <= x; i++)
+            {
+                float tx = MathHelper.Lerp(-hx, hx, i / (float)x);
+                contours.Add([new Vector2(tx, -hy), new Vector2(tx, hy)]);
+            }
+
+            for (int j = 0; j <= y; j++)
+            {
+                float ty = MathHelper.Lerp(-hy, hy, j / (float)y);
+                contours.Add([new Vector2(-hx, ty), new Vector2(hx, ty)]);
+            }
+
+            return contours;
+        }
+    }
+
+    public class AxisGpu : PolygonGpu
+    {
+        public AxisGpu(float size = 1f, bool isDynamic = false)
+            : base([
+                [new Vector2(-size, 0f), new Vector2(size, 0f)],
+                [new Vector2(0f, -size), new Vector2(0f, size)]
+            ])
+        {
+            Flags = PrimitiveFlags.None;
+            IsDynamic = isDynamic;
+        }
+    }
 }
