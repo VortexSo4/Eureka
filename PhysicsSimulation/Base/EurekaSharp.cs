@@ -296,7 +296,7 @@ namespace PhysicsSimulation.Base
             while (Current.Type != TokenType.RParen)
             {
                 // special case: func: x => ...
-                if (Current.Type == TokenType.Ident && Current.Text == "func" && Peek().Type == TokenType.Colon)
+                if (Current is { Type: TokenType.Ident, Text: "func" } && Peek().Type == TokenType.Colon)
                 {
                     Advance(); // func
                     Advance(); // :
@@ -435,10 +435,20 @@ namespace PhysicsSimulation.Base
             // Helpers: Try get by name first, then by positional index if name looks like integer or param not found.
             private bool TryGetByNameOrIndex(string name, out object value)
             {
-                if (string.IsNullOrEmpty(name)) { value = null; return false; }
+                if (string.IsNullOrEmpty(name))
+                {
+                    value = null;
+                    return false;
+                }
+
                 if (Named != null && Named.TryGetValue(name, out value)) return true;
                 // if name is integer index
-                if (int.TryParse(name, out var idx) && idx >= 0 && idx < Pos.Length) { value = Pos[idx]; return true; }
+                if (int.TryParse(name, out var idx) && idx >= 0 && idx < Pos.Length)
+                {
+                    value = Pos[idx];
+                    return true;
+                }
+
                 // fallback: try interpret name as single-letter param a/b/c mapping to positional 0/1/2 (convention)
                 if (name.Length == 1)
                 {
@@ -446,10 +456,16 @@ namespace PhysicsSimulation.Base
                     if (char.IsLetter(ch))
                     {
                         int idx2 = char.ToLower(ch) - 'a';
-                        if (idx2 >= 0 && idx2 < Pos.Length) { value = Pos[idx2]; return true; }
+                        if (idx2 >= 0 && idx2 < Pos.Length)
+                        {
+                            value = Pos[idx2];
+                            return true;
+                        }
                     }
                 }
-                value = null; return false;
+
+                value = null;
+                return false;
             }
 
             public object GetPosOrNamed(int idx)
@@ -468,15 +484,30 @@ namespace PhysicsSimulation.Base
             {
                 var v = GetPosOrNamed(idx);
                 if (v == null) return def;
-                try { return Convert.ToSingle(v); } catch { return def; }
+                try
+                {
+                    return Convert.ToSingle(v);
+                }
+                catch
+                {
+                    return def;
+                }
             }
 
             public float ParseFloat(string name, float def = 0f)
             {
                 if (TryGetByNameOrIndex(name, out var v))
                 {
-                    try { return Convert.ToSingle(v); } catch { return def; }
+                    try
+                    {
+                        return Convert.ToSingle(v);
+                    }
+                    catch
+                    {
+                        return def;
+                    }
                 }
+
                 return def;
             }
 
@@ -484,15 +515,30 @@ namespace PhysicsSimulation.Base
             {
                 var v = GetPosOrNamed(idx);
                 if (v == null) return def;
-                try { return Convert.ToInt32(v); } catch { return def; }
+                try
+                {
+                    return Convert.ToInt32(v);
+                }
+                catch
+                {
+                    return def;
+                }
             }
 
             public int ParseInt(string name, int def = 0)
             {
                 if (TryGetByNameOrIndex(name, out var v))
                 {
-                    try { return Convert.ToInt32(v); } catch { return def; }
+                    try
+                    {
+                        return Convert.ToInt32(v);
+                    }
+                    catch
+                    {
+                        return def;
+                    }
                 }
+
                 return def;
             }
 
@@ -507,7 +553,15 @@ namespace PhysicsSimulation.Base
                     if (s.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
                     if (s.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
                 }
-                try { return Convert.ToBoolean(v); } catch { return def; }
+
+                try
+                {
+                    return Convert.ToBoolean(v);
+                }
+                catch
+                {
+                    return def;
+                }
             }
 
             public bool ParseBool(string name, bool def = false)
@@ -521,8 +575,17 @@ namespace PhysicsSimulation.Base
                         if (s.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
                         if (s.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
                     }
-                    try { return Convert.ToBoolean(v); } catch { return def; }
+
+                    try
+                    {
+                        return Convert.ToBoolean(v);
+                    }
+                    catch
+                    {
+                        return def;
+                    }
                 }
+
                 return def;
             }
 
@@ -531,9 +594,10 @@ namespace PhysicsSimulation.Base
                 var v = GetPosOrNamed(idx);
                 if (v == null) return def ?? Vector2.Zero;
                 if (v is Vector2 vv) return vv;
-                if (v is float[] fa && fa.Length >= 2) return new Vector2(fa[0], fa[1]);
-                if (v is double[] da && da.Length >= 2) return new Vector2((float)da[0], (float)da[1]);
-                if (v is object[] oa && oa.Length >= 2) return new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]));
+                if (v is float[] { Length: >= 2 } fa) return new Vector2(fa[0], fa[1]);
+                if (v is double[] { Length: >= 2 } da) return new Vector2((float)da[0], (float)da[1]);
+                if (v is object[] { Length: >= 2 } oa)
+                    return new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]));
                 return def ?? Vector2.Zero;
             }
 
@@ -542,10 +606,12 @@ namespace PhysicsSimulation.Base
                 if (TryGetByNameOrIndex(name, out var v))
                 {
                     if (v is Vector2 vv) return vv;
-                    if (v is float[] fa && fa.Length >= 2) return new Vector2(fa[0], fa[1]);
-                    if (v is double[] da && da.Length >= 2) return new Vector2((float)da[0], (float)da[1]);
-                    if (v is object[] oa && oa.Length >= 2) return new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]));
+                    if (v is float[] { Length: >= 2 } fa) return new Vector2(fa[0], fa[1]);
+                    if (v is double[] { Length: >= 2 } da) return new Vector2((float)da[0], (float)da[1]);
+                    if (v is object[] { Length: >= 2 } oa)
+                        return new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]));
                 }
+
                 return def ?? Vector2.Zero;
             }
 
@@ -554,9 +620,10 @@ namespace PhysicsSimulation.Base
                 var v = GetPosOrNamed(idx);
                 if (v == null) return def ?? Vector3.Zero;
                 if (v is Vector3 vv) return vv;
-                if (v is float[] fa && fa.Length >= 3) return new Vector3(fa[0], fa[1], fa[2]);
-                if (v is double[] da && da.Length >= 3) return new Vector3((float)da[0], (float)da[1], (float)da[2]);
-                if (v is object[] oa && oa.Length >= 3) return new Vector3(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]));
+                if (v is float[] { Length: >= 3 } fa) return new Vector3(fa[0], fa[1], fa[2]);
+                if (v is double[] { Length: >= 3 } da) return new Vector3((float)da[0], (float)da[1], (float)da[2]);
+                if (v is object[] { Length: >= 3 } oa)
+                    return new Vector3(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]));
                 return def ?? Vector3.Zero;
             }
 
@@ -565,10 +632,12 @@ namespace PhysicsSimulation.Base
                 if (TryGetByNameOrIndex(name, out var v))
                 {
                     if (v is Vector3 vv) return vv;
-                    if (v is float[] fa && fa.Length >= 3) return new Vector3(fa[0], fa[1], fa[2]);
-                    if (v is double[] da && da.Length >= 3) return new Vector3((float)da[0], (float)da[1], (float)da[2]);
-                    if (v is object[] oa && oa.Length >= 3) return new Vector3(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]));
+                    if (v is float[] { Length: >= 3 } fa) return new Vector3(fa[0], fa[1], fa[2]);
+                    if (v is double[] { Length: >= 3 } da) return new Vector3((float)da[0], (float)da[1], (float)da[2]);
+                    if (v is object[] { Length: >= 3 } oa)
+                        return new Vector3(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]));
                 }
+
                 return def ?? Vector3.Zero;
             }
 
@@ -577,9 +646,12 @@ namespace PhysicsSimulation.Base
                 var v = GetPosOrNamed(idx);
                 if (v == null) return def ?? Vector4.Zero;
                 if (v is Vector4 vv) return vv;
-                if (v is float[] fa && fa.Length >= 4) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
-                if (v is double[] da && da.Length >= 4) return new Vector4((float)da[0], (float)da[1], (float)da[2], (float)da[3]);
-                if (v is object[] oa && oa.Length >= 4) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3]));
+                if (v is float[] { Length: >= 4 } fa) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
+                if (v is double[] { Length: >= 4 } da)
+                    return new Vector4((float)da[0], (float)da[1], (float)da[2], (float)da[3]);
+                if (v is object[] { Length: >= 4 } oa)
+                    return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]),
+                        Convert.ToSingle(oa[3]));
                 return def ?? Vector4.Zero;
             }
 
@@ -588,10 +660,14 @@ namespace PhysicsSimulation.Base
                 if (TryGetByNameOrIndex(name, out var v))
                 {
                     if (v is Vector4 vv) return vv;
-                    if (v is float[] fa && fa.Length >= 4) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
-                    if (v is double[] da && da.Length >= 4) return new Vector4((float)da[0], (float)da[1], (float)da[2], (float)da[3]);
-                    if (v is object[] oa && oa.Length >= 4) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3]));
+                    if (v is float[] { Length: >= 4 } fa) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
+                    if (v is double[] { Length: >= 4 } da)
+                        return new Vector4((float)da[0], (float)da[1], (float)da[2], (float)da[3]);
+                    if (v is object[] { Length: >= 4 } oa)
+                        return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]),
+                            Convert.ToSingle(oa[3]));
                 }
+
                 return def ?? Vector4.Zero;
             }
 
@@ -607,13 +683,19 @@ namespace PhysicsSimulation.Base
                         if (fa.Length >= 4) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
                         if (fa.Length >= 3) return new Vector4(fa[0], fa[1], fa[2], 1f);
                     }
+
                     if (v is object[] oa)
                     {
-                        if (oa.Length >= 4) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3]));
-                        if (oa.Length >= 3) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), 1f);
+                        if (oa.Length >= 4)
+                            return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]),
+                                Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3]));
+                        if (oa.Length >= 3)
+                            return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]),
+                                Convert.ToSingle(oa[2]), 1f);
                     }
                 }
-                return def ?? new Vector4(0,0,0,1);
+
+                return def ?? new Vector4(0, 0, 0, 1);
             }
 
             public string ParseString(int idx, string def = "")
@@ -629,6 +711,7 @@ namespace PhysicsSimulation.Base
                 {
                     return v?.ToString() ?? def;
                 }
+
                 return def;
             }
 
@@ -674,7 +757,8 @@ namespace PhysicsSimulation.Base
 
         public void UpdateTime(double t) => Registry.RegisterVar("T", t);
 
-        public void LoadSceneFromFile(string path) => LoadScene(File.ReadAllText(path), Path.GetFileNameWithoutExtension(path));
+        public void LoadSceneFromFile(string path) =>
+            LoadScene(File.ReadAllText(path), Path.GetFileNameWithoutExtension(path));
 
         public void LoadScene(string source, string fallbackName)
         {
@@ -682,7 +766,8 @@ namespace PhysicsSimulation.Base
             if (CurrentScene == null)
             {
                 if (SceneFactory == null)
-                    throw new Exception("No scene set and no SceneFactory registered. Call SetScene(...) or RegisterSceneFactory(...).");
+                    throw new Exception(
+                        "No scene set and no SceneFactory registered. Call SetScene(...) or RegisterSceneFactory(...).");
 
                 CurrentScene = SceneFactory(_arena, fallbackName);
                 Registry.RegisterVar("scene", CurrentScene);
@@ -704,6 +789,7 @@ namespace PhysicsSimulation.Base
                         Registry.RegisterVar("scene", CurrentScene);
                         Registry.RegisterInstanceMethods(CurrentScene);
                     }
+
                     continue;
                 }
 
@@ -764,7 +850,8 @@ namespace PhysicsSimulation.Base
             // evaluate positional args
             var pos = call.Args.Select(Eval).ToArray();
             // evaluate named args into values (LambdaExpr stays LambdaExpr because Eval(lambda) returns LambdaExpr)
-            var namedValues = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
+            var namedValues =
+                call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
             // if callee is an identifier (function name)
             if (call.Callee is IdentExpr ident)
             {
@@ -782,9 +869,29 @@ namespace PhysicsSimulation.Base
             if (calleeObj is Delegate del)
             {
                 // attempt to invoke delegate directly. Try common shapes.
-                try { return del.DynamicInvoke(pos); } catch { }
-                try { return del.DynamicInvoke(new object[] { pos }); } catch { }
-                try { return del.DynamicInvoke(pos, namedValues); } catch { }
+                try
+                {
+                    return del.DynamicInvoke(pos);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    return del.DynamicInvoke(new object[] { pos });
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    return del.DynamicInvoke(pos, namedValues);
+                }
+                catch
+                {
+                }
             }
 
             throw new Exception("Невозможно вызвать выражение как функцию");
@@ -803,7 +910,8 @@ namespace PhysicsSimulation.Base
 
             // reflection fallback: find method on target
             var t = target.GetType();
-            var methods = t.GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.Name.Equals(call.Method, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var methods = t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .Where(m => m.Name.Equals(call.Method, StringComparison.OrdinalIgnoreCase)).ToArray();
             foreach (var m in methods)
             {
                 var ps = m.GetParameters();
@@ -814,7 +922,10 @@ namespace PhysicsSimulation.Base
                     for (int i = 0; i < ps.Length; i++) args[i] = Convert.ChangeType(pos[i], ps[i].ParameterType);
                     return m.Invoke(target, args);
                 }
-                catch { /* try next overload */ }
+                catch
+                {
+                    /* try next overload */
+                }
             }
 
             throw new Exception($"Метод {call.Method} не найден у {target.GetType().Name}");
@@ -822,7 +933,10 @@ namespace PhysicsSimulation.Base
 
         private static object[] PrependArg(object first, object[] rest)
         {
-            var arr = new object[rest.Length + 1]; arr[0] = first; Array.Copy(rest, 0, arr, 1, rest.Length); return arr;
+            var arr = new object[rest.Length + 1];
+            arr[0] = first;
+            Array.Copy(rest, 0, arr, 1, rest.Length);
+            return arr;
         }
 
         // ------------------ Plot & Math evaluation ------------------
@@ -832,9 +946,11 @@ namespace PhysicsSimulation.Base
             return expr switch
             {
                 NumberExpr n => n.Value,
-                IdentExpr i => i.Name == "x" ? x : i.Name == "T" ? t : (Registry.TryGetVar(i.Name, out var v) ? Convert.ToDouble(v) : 0.0),
+                IdentExpr i => i.Name == "x" ? x :
+                    i.Name == "T" ? t : (Registry.TryGetVar(i.Name, out var v) ? Convert.ToDouble(v) : 0.0),
                 BinaryExpr b => EvalBinaryMath(b, x, t),
-                CallExpr c when c.Callee is IdentExpr id => CallMathFunc(id.Name, c.Args.Select(a => (float)EvalMathExpr(a, x, t)).ToArray()),
+                CallExpr { Callee: IdentExpr id } c => CallMathFunc(id.Name,
+                    c.Args.Select(a => (float)EvalMathExpr(a, x, t)).ToArray()),
                 _ => 0
             };
         }
@@ -872,15 +988,17 @@ namespace PhysicsSimulation.Base
             // bgColor(to: [r,g,b] OR positional [r,g,b], duration: n)
             Registry.RegisterFunc("bgColor", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
-                if (CurrentScene == null) throw new Exception("CurrentScene is not set. Call SetScene(...) or RegisterSceneFactory(...).");
+                if (CurrentScene == null)
+                    throw new Exception("CurrentScene is not set. Call SetScene(...) or RegisterSceneFactory(...).");
                 var ctx = new CallContext(pos, named, this);
                 var colorVec = ctx.ParseVector3(0);
                 // allow named "to" override
                 if (named != null && named.TryGetValue("to", out var tv))
                 {
-                    if (tv is float[] arr && arr.Length >= 3) colorVec = new Vector3(arr[0], arr[1], arr[2]);
+                    if (tv is float[] { Length: >= 3 } arr) colorVec = new Vector3(arr[0], arr[1], arr[2]);
                     else if (tv is Vector3 v3) colorVec = v3;
                 }
+
                 var duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToDouble(d) : 1.0;
                 CurrentScene.AnimateBackground(colorVec, CurrentScene.T, CurrentScene.T + (float)duration);
                 return null;
@@ -891,7 +1009,8 @@ namespace PhysicsSimulation.Base
             {
                 if (pos == null || pos.Length == 0) throw new Exception("Add требует примитив как аргумент");
                 if (CurrentScene == null) throw new Exception("CurrentScene не установлена");
-                if (pos[0] is not PrimitiveGpu prim) throw new Exception("Первый аргумент Add должен быть PrimitiveGpu");
+                if (pos[0] is not PrimitiveGpu prim)
+                    throw new Exception("Первый аргумент Add должен быть PrimitiveGpu");
                 CurrentScene.AddPrimitive(prim);
                 return prim;
             }));
@@ -942,8 +1061,9 @@ namespace PhysicsSimulation.Base
             Registry.RegisterFunc("line", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 var ctx = new CallContext(pos, named, this);
-                if (pos != null && pos.Length >= 4)
-                    return new LineGpu(Convert.ToSingle(pos[0]), Convert.ToSingle(pos[1]), Convert.ToSingle(pos[2]), Convert.ToSingle(pos[3]));
+                if (pos is { Length: >= 4 })
+                    return new LineGpu(Convert.ToSingle(pos[0]), Convert.ToSingle(pos[1]), Convert.ToSingle(pos[2]),
+                        Convert.ToSingle(pos[3]));
                 return new LineGpu();
             }));
 
@@ -964,7 +1084,7 @@ namespace PhysicsSimulation.Base
                 }
 
                 // fallback: centerX, centerY, size, filled
-                if (pos != null && pos.Length >= 3)
+                if (pos is { Length: >= 3 })
                 {
                     var center = new Vector2(Convert.ToSingle(pos[0]), Convert.ToSingle(pos[1]));
                     float size = Convert.ToSingle(pos[2]);
@@ -984,33 +1104,161 @@ namespace PhysicsSimulation.Base
                 string fontKey = ctx.ParseString(2, null);
                 return new TextGpu(text, size, fontKey);
             }));
-
-            // aColor(target, to: [r,g,b,a], start: n, duration: n, ease: "inout")
             Registry.RegisterFunc("aColor", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (pos == null || pos.Length == 0) throw new Exception("aColor: missing target");
-                var target = pos[0];
-                if (target is PrimitiveGpu p)
+                if (pos[0] is not PrimitiveGpu p) throw new Exception("aColor: target is not PrimitiveGpu");
+
+                Vector4 to = p.Color;
+                if (pos.Length > 1)
                 {
-                    var ctx = new CallContext(pos, named, this);
-                    Vector4 to = p.Color;
-                    if (named != null && named.TryGetValue("to", out var tv))
+                    var arg = pos[1];
+                    to = arg switch
                     {
-                        if (tv is float[] arr && arr.Length >= 4) to = new Vector4(arr[0], arr[1], arr[2], arr[3]);
-                        else if (tv is Vector4 v4) to = v4;
-                    }
-
-                    float start = named != null && named.TryGetValue("start", out var s) ? Convert.ToSingle(s) : 0f;
-                    float end = named != null && named.TryGetValue("duration", out var d) ? start + Convert.ToSingle(d) : 1f;
-
-                    EaseType ease = EaseType.Linear;
-                    if (named != null && named.TryGetValue("ease", out var e) && e is string es)
-                        ease = EaseHelper.Parse(es);
-
-                    p.AnimateColor(start, end, ease, to);
-                    return p;
+                        Vector4 v => v,
+                        float[] fa when fa.Length >= 4 => new Vector4(fa[0], fa[1], fa[2], fa[3]),
+                        object[] oa when oa.Length >= 4 => new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]),
+                            Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3])),
+                        _ => to
+                    };
                 }
-                throw new Exception("aColor: target is not a PrimitiveGpu");
+                else if (named != null && named.TryGetValue("to", out var tv))
+                {
+                    to = tv switch
+                    {
+                        Vector4 v => v,
+                        float[] fa when fa.Length >= 4 => new Vector4(fa[0], fa[1], fa[2], fa[3]),
+                        object[] oa when oa.Length >= 4 => new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]),
+                            Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3])),
+                        _ => to
+                    };
+                }
+
+                float start = named != null && named.TryGetValue("start", out var s)
+                    ? Convert.ToSingle(s)
+                    : (CurrentScene?.T ?? 0f);
+                float duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToSingle(d) : 1f;
+
+                EaseType ease = EaseType.Linear;
+                if (named != null && named.TryGetValue("ease", out var e) && e is string es)
+                    ease = EaseHelper.Parse(es);
+
+                p.AnimateColor(start, duration, ease, to);
+                return p;
+            }));
+
+            Registry.RegisterFunc("aScale", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos == null || pos.Length == 0) throw new Exception("aScale: missing target");
+                if (pos[0] is not PrimitiveGpu p) throw new Exception("aScale: target is not PrimitiveGpu");
+
+                float to = p.Scale;
+                if (pos.Length > 1) to = Convert.ToSingle(pos[1]);
+                else if (named != null && named.TryGetValue("to", out var tv)) to = Convert.ToSingle(tv);
+
+                float start = named != null && named.TryGetValue("start", out var s)
+                    ? Convert.ToSingle(s)
+                    : (CurrentScene?.T ?? 0f);
+                float duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToSingle(d) : 1f;
+
+                EaseType ease = EaseType.Linear;
+                if (named != null && named.TryGetValue("ease", out var e) && e is string es)
+                    ease = EaseHelper.Parse(es);
+
+                p.AnimateScale(start, duration, ease, to);
+                return p;
+            }));
+
+            Registry.RegisterFunc("aMove", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos == null || pos.Length == 0) throw new Exception("aMove: missing target");
+                if (pos[0] is not PrimitiveGpu p) throw new Exception("aMove: target is not PrimitiveGpu");
+
+                Vector2 to = p.Position;
+                if (pos.Length >= 3)
+                    to = new Vector2(Convert.ToSingle(pos[1]), Convert.ToSingle(pos[2]));
+                else if (pos.Length >= 2)
+                {
+                    var arg = pos[1];
+                    to = arg switch
+                    {
+                        Vector2 v => v,
+                        float[] fa when fa.Length >= 2 => new Vector2(fa[0], fa[1]),
+                        double[] da when da.Length >= 2 => new Vector2((float)da[0], (float)da[1]),
+                        object[] oa when oa.Length >= 2 =>
+                            new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1])),
+                        _ => to
+                    };
+                }
+                else if (named != null && named.TryGetValue("to", out var tv))
+                {
+                    to = tv switch
+                    {
+                        Vector2 v => v,
+                        float[] fa when fa.Length >= 2 => new Vector2(fa[0], fa[1]),
+                        double[] da when da.Length >= 2 => new Vector2((float)da[0], (float)da[1]),
+                        object[] oa when oa.Length >= 2 =>
+                            new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1])),
+                        _ => to
+                    };
+                }
+
+                float start = named != null && named.TryGetValue("start", out var s)
+                    ? Convert.ToSingle(s)
+                    : (CurrentScene?.T ?? 0f);
+                float duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToSingle(d) : 1f;
+
+                EaseType ease = EaseType.Linear;
+                if (named != null && named.TryGetValue("ease", out var e) && e is string es)
+                    ease = EaseHelper.Parse(es);
+
+                p.AnimatePosition(start, duration, ease, to);
+                return p;
+            }));
+
+            Registry.RegisterFunc("aRot", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos == null || pos.Length == 0) throw new Exception("aRot: missing target");
+                if (pos[0] is not PrimitiveGpu p) throw new Exception("aRot: target is not PrimitiveGpu");
+
+                float to = p.Rotation;
+                if (pos.Length > 1) to = Convert.ToSingle(pos[1]);
+                else if (named != null && named.TryGetValue("to", out var tv)) to = Convert.ToSingle(tv);
+
+                float start = named != null && named.TryGetValue("start", out var s)
+                    ? Convert.ToSingle(s)
+                    : (CurrentScene?.T ?? 0f);
+                float duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToSingle(d) : 1f;
+
+                EaseType ease = EaseType.Linear;
+                if (named != null && named.TryGetValue("ease", out var e) && e is string es)
+                    ease = EaseHelper.Parse(es);
+
+                p.AnimateRotation(start, duration, ease, to);
+                return p;
+            }));
+            Registry.RegisterFunc("aMorph", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos == null || pos.Length == 0)
+                    throw new Exception("aMorph: missing target");
+
+                if (pos[0] is not PrimitiveGpu p)
+                    throw new Exception("aMorph: target is not a PrimitiveGpu");
+
+                int offsetA = named.TryGetValue("offsetA", out var a) ? Convert.ToInt32(a) : 0;
+                int offsetB = named.TryGetValue("offsetB", out var b) ? Convert.ToInt32(b) : 0;
+                int offsetM = named.TryGetValue("offsetM", out var m) ? Convert.ToInt32(m) : 0;
+                int vertexCount = named.TryGetValue("vertexCount", out var v) ? Convert.ToInt32(v) : 0;
+
+                float start = named.TryGetValue("start", out var s) ? Convert.ToSingle(s) : 0f;
+                float end = named.TryGetValue("duration", out var d) ? start + Convert.ToSingle(d) : 1f;
+
+                EaseType ease = EaseType.EaseInOut;
+                if (named.TryGetValue("ease", out var e) && e is string es)
+                    ease = EaseHelper.Parse(es);
+
+                p.AnimateMorph(start, end, ease, offsetA, offsetB, offsetM, vertexCount);
+                return p;
             }));
         }
 

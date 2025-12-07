@@ -229,8 +229,9 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         // convenience user slot
         public object? Tag;
-        
+
         private static int _counter = 0;
+
         protected PrimitiveGpu(bool isDynamic = false)
         {
             var id = Interlocked.Increment(ref _counter);
@@ -251,22 +252,26 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             RegisterGeometryInternal(arena);
             MarkGeometryRegistered();
 
-            DebugManager.Geometry($"PrimitiveGpu.EnsureGeometryRegistered: Registered. Offset={VertexOffsetRaw}, Count={VertexCount}");
+            DebugManager.Geometry(
+                $"PrimitiveGpu.EnsureGeometryRegistered: Registered. Offset={VertexOffsetRaw}, Count={VertexCount}");
         }
 
         protected void RegisterRawGeometry(GeometryArena arena, Vector2[] flatVertices)
         {
-            DebugManager.Geometry($"PrimitiveGpu.RegisterRawGeometry: Registering raw geometry for primitive '{Name}', {flatVertices.Length} vertices.");
+            DebugManager.Geometry(
+                $"PrimitiveGpu.RegisterRawGeometry: Registering raw geometry for primitive '{Name}', {flatVertices.Length} vertices.");
             if (arena == null) throw new ArgumentNullException(nameof(arena));
             if (flatVertices == null || flatVertices.Length == 0) return;
             VertexOffsetRaw = arena.Allocate(flatVertices.Length);
             VertexCount = flatVertices.Length;
-            DebugManager.Geometry($"PrimitiveGpu.RegisterRawGeometry: Registered at offset {VertexOffsetRaw}, count {VertexCount}.");
+            DebugManager.Geometry(
+                $"PrimitiveGpu.RegisterRawGeometry: Registered at offset {VertexOffsetRaw}, count {VertexCount}.");
         }
 
         public void RegisterMorphTarget(GeometryArena arena, Vector2[] verticesA, Vector2[] verticesB)
         {
-            DebugManager.Geometry($"PrimitiveGpu.RegisterMorphTarget: Registering morph targets for primitive '{Name}'.");
+            DebugManager.Geometry(
+                $"PrimitiveGpu.RegisterMorphTarget: Registering morph targets for primitive '{Name}'.");
             if (arena == null) throw new ArgumentNullException(nameof(arena));
             if (verticesA == null || verticesB == null || verticesA.Length != verticesB.Length ||
                 verticesA.Length == 0)
@@ -279,79 +284,80 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             VertexCount = len;
 
             // Note: actual vertex data upload happens in engine.UploadGeometryFromPrimitives
-            DebugManager.Geometry($"PrimitiveGpu.RegisterMorphTarget: Morph targets registered: A={VertexOffsetA}, B={VertexOffsetB}, M={VertexOffsetM}, count={len}.");
+            DebugManager.Geometry(
+                $"PrimitiveGpu.RegisterMorphTarget: Morph targets registered: A={VertexOffsetA}, B={VertexOffsetB}, M={VertexOffsetM}, count={len}.");
         }
 
         #endregion
 
         #region Animation helpers
 
-        public PrimitiveGpu AnimatePosition(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, Vector2 to = default)
+        public PrimitiveGpu AnimatePosition(float start, float duration, EaseType ease, Vector2 to)
         {
-            Vector2 from = Position;
-            DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Adding position animation for '{Name}' from {from} to {to}.");
+            float end = start + duration;
+            DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Adding position animation for '{Name}' to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Translate, PrimitiveId, start, end, ease,
-                new Vector4(from, 0f, 0f), new Vector4(to, 0f, 0f)));
+                Vector4.Zero, new Vector4(to.X, to.Y, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Position animation added.");
+            IsDynamic = true;
             return this;
         }
 
-        public PrimitiveGpu AnimateRotation(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, float to = 0)
+        public PrimitiveGpu AnimateRotation(float start, float duration, EaseType ease, float toDegrees)
         {
-            float from = Rotation;
-            DebugManager.Anim($"PrimitiveGpu.AnimateRotation: Adding rotation animation for '{Name}' from {from} to {to}.");
+            float end = start + duration;
+            float toRad = MathHelper.DegreesToRadians(toDegrees);
+            DebugManager.Anim(
+                $"PrimitiveGpu.AnimateRotation: Adding rotation animation for '{Name}' to {toDegrees} degrees.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Rotate, PrimitiveId, start, end, ease,
-                new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
+                Vector4.Zero, new Vector4(toRad, 0f, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimateRotation: Rotation animation added.");
+            IsDynamic = true;
             return this;
         }
 
-        public PrimitiveGpu AnimateScale(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, float to = 1)
+        public PrimitiveGpu AnimateScale(float start, float duration, EaseType ease, float to)
         {
-            float from = Scale;
-            DebugManager.Anim($"PrimitiveGpu.AnimateScale: Adding scale animation for '{Name}' from {from} to {to}.");
+            float end = start + duration;
+            DebugManager.Anim($"PrimitiveGpu.AnimateScale: Adding scale animation for '{Name}' to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Scale, PrimitiveId, start, end, ease,
-                new Vector4(from, 0f, 0f, 0f), new Vector4(to, 0f, 0f, 0f)));
+                Vector4.Zero, new Vector4(to, 0f, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimateScale: Scale animation added.");
+            IsDynamic = true;
             return this;
         }
 
-        public PrimitiveGpu AnimateColor(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, Vector4 to = default)
+        public PrimitiveGpu AnimateColor(float start, float duration, EaseType ease, Vector4 to)
         {
-            Vector4 from = Color;
-            DebugManager.Anim($"PrimitiveGpu.AnimateColor: Adding color animation for '{Name}' from {from} to {to}.");
-            PendingAnimations.Add(new AnimEntryCpu(AnimType.Color, PrimitiveId, start, end, ease, from, to));
+            float end = start + duration;
+            DebugManager.Anim($"PrimitiveGpu.AnimateColor: Adding color animation for '{Name}' to {to}.");
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.Color, PrimitiveId, start, end, ease,
+                Vector4.Zero, to));
             DebugManager.Anim($"PrimitiveGpu.AnimateColor: Color animation added.");
+            IsDynamic = true;
             return this;
         }
 
-        public PrimitiveGpu AnimateMorph(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, int offsetA = 0, int offsetB = 0, int offsetM = 0,
-            int vertexCount = 0)
+        public PrimitiveGpu AnimateMorph(float start, float duration, EaseType ease, int offsetA, int offsetB,
+            int offsetM, int vertexCount)
         {
+            float end = start + duration;
             DebugManager.Anim($"PrimitiveGpu.AnimateMorph: Adding morph animation for '{Name}'.");
-            PendingAnimations.Add(new AnimEntryCpu(AnimType.Morph, PrimitiveId, start, end, ease, Vector4.Zero,
-                Vector4.Zero, offsetA, offsetB, offsetM, vertexCount));
+            PendingAnimations.Add(new AnimEntryCpu(AnimType.Morph, PrimitiveId, start, end, ease,
+                Vector4.Zero, Vector4.Zero, offsetA, offsetB, offsetM, vertexCount));
             DebugManager.Anim($"PrimitiveGpu.AnimateMorph: Morph animation added.");
+            IsDynamic = true;
             return this;
         }
 
-        public PrimitiveGpu AnimateDash(float start = 0f, float end = 1f, EaseType ease = EaseType.EaseInOut, Vector2 fromLengths = default, Vector2 toLengths = default)
+        public PrimitiveGpu AnimateDash(float start, float duration, EaseType ease, Vector2 toLengths)
         {
-            DebugManager.Anim($"PrimitiveGpu.AnimateDash: Adding dash animation for '{Name}' from {fromLengths} to {toLengths}.");
+            float end = start + duration;
+            DebugManager.Anim($"PrimitiveGpu.AnimateDash: Adding dash animation for '{Name}' to {toLengths}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.DashLengths, PrimitiveId, start, end, ease,
-                new Vector4(fromLengths, 0f, 0f), new Vector4(toLengths, 0f, 0f)));
+                Vector4.Zero, new Vector4(toLengths.X, toLengths.Y, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimateDash: Dash animation added.");
-            return this;
-        }
-
-        // ScheduleAnimation (generic for other types)
-        public PrimitiveGpu ScheduleAnimation(AnimType type, float start, float end, EaseType ease, Vector4 from, Vector4 to,
-            int morphA = 0, int morphB = 0, int morphM = 0, int morphCount = 0)
-        {
-            DebugManager.Anim($"PrimitiveGpu.ScheduleAnimation: Scheduling {type} animation for '{Name}'.");
-            PendingAnimations.Add(new AnimEntryCpu(type, PrimitiveId, start, end, ease, from, to, morphA, morphB,
-                morphM, morphCount));
-            DebugManager.Anim($"PrimitiveGpu.ScheduleAnimation: Animation scheduled.");
+            IsDynamic = true;
             return this;
         }
 
@@ -427,7 +433,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public static AnimIndexCpu[] BuildAnimIndex(List<AnimEntryCpu> allEntries, int primitiveCount)
         {
-            DebugManager.Anim($"PrimitiveGpu.BuildAnimIndex: Building index for {primitiveCount} primitives, {allEntries.Count} entries.");
+            DebugManager.Anim(
+                $"PrimitiveGpu.BuildAnimIndex: Building index for {primitiveCount} primitives, {allEntries.Count} entries.");
             var result = new AnimIndexCpu[primitiveCount];
             if (allEntries == null || allEntries.Count == 0)
             {
@@ -713,16 +720,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             }
             SetContours([points]);
             InvalidateGeometry();
-        }
-
-        // Удобные методы для анимации
-        public void AnimateRange(float toMin, float toMax, float duration = 1f, EaseType ease = EaseType.EaseInOut)
-        {
-            float fromMin = XMin;
-            float fromMax = XMax;
-            ScheduleAnimation(AnimType.Morph, 0, duration, ease,
-                new Vector4(fromMin, fromMax, Resolution, 0),
-                new Vector4(toMin, toMax, Resolution, 0));
         }
         
         protected override void RegisterGeometryInternal(GeometryArena arena)

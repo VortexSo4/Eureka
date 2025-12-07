@@ -491,35 +491,30 @@ namespace PhysicsSimulation.Rendering.GPU
         // local_size_x must match the dispatch groups calculation (we used 64)
         private const string ANIMATION_COMPUTE_SRC = @"
 #version 430
-layout(local_size_x = 64) in;
+layout(local_size_x = 1) in;
 
 struct AnimEntry {
-    ivec4 meta;   // type, primId, r2, r3
-    vec4 times;   // start, end, ease, r
+    ivec4 meta; // type, pid, r2, r3
+    vec4 times; // start, end, ease, r
     vec4 from;
     vec4 to;
-    ivec4 morph;  // offsetA, offsetB, offsetM, vertexCount
+    ivec4 morph; // offA, offB, offM, vcount
 };
-layout(std430, binding = 0) buffer AnimEntries { AnimEntry entries[]; };
 
-struct AnimIndex { ivec2 startCount; ivec2 r; };
-layout(std430, binding = 1) buffer AnimIndexSB { AnimIndex animIndex[]; };
-
-struct MorphDesc { float currentT; float easeType; float r0; float r1; ivec4 offsets; }; // offsets: a,b,m,count
-layout(std430, binding = 2) buffer MorphDescSB { MorphDesc morphs[]; };
-
+struct MorphDesc { float currentT; float easeType; float r0; float r1; ivec4 offsets; };
 struct RenderInstance {
-    vec4 row0; // transform row0
-    vec4 row1; // transform row1
-    vec4 row2; // transform row2
-    vec4 color; // color
-    ivec4 meta; // offsetM, vertexCount, flags, reserved
-    vec4 dash; // filledLen, emptyLen, offset, reserved
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    vec4 color;
+    ivec4 meta;
+    vec4 dash;
 };
 
-layout(std430, binding = 4) buffer RenderInstances {
-    RenderInstance instances[];
-};
+layout(std430, binding = 0) buffer AnimEntries { AnimEntry entries[]; };
+layout(std430, binding = 1) buffer AnimIndex { ivec4 index[]; };
+layout(std430, binding = 2) buffer MorphDescSB { MorphDesc morphs[]; };
+layout(std430, binding = 4) buffer RenderInstances { RenderInstance instances[]; };
 
 uniform float u_time;
 
@@ -532,84 +527,82 @@ float easeVal(float t, int e) {
 }
 
 void main() {
-    uint pid = gl_GlobalInvocationID.x;
-    if (pid >= animIndex.length()) return;
+    int pid = int(gl_GlobalInvocationID.x);
+    if (pid >= index.length()) return;
 
-    // Read initial values from RenderInstances (uploaded from CPU)
+    ivec4 idx = index[pid];
+    int start = idx.x;
+    int count = idx.y;
+
     RenderInstance inst = instances[pid];
-    vec4 initRow0 = inst.row0;
-    vec4 initRow1 = inst.row1;
-    vec4 initRow2 = inst.row2;
-    vec4 color = inst.color;
-    ivec4 meta = inst.meta;
-    vec4 dash = inst.dash;
-
-    // Extract initials (reverse engineer from rows)
-    float initScale = length(initRow0.xy); // assuming uniform scale
-    float initRot = atan(initRow0.y, initRow0.x); // corrected atan2(sin, cos)
-    vec2 initPos = initRow2.xy;
-
-    // Start with initials
-    vec2 pos = initPos;
-    float rot = initRot;
-    float scale = initScale;
-
-    AnimIndex idx = animIndex[pid];
-    int start = idx.startCount.x;
-    int count = idx.startCount.y;
-
     MorphDesc mdesc = morphs[pid];
+
+    // Extract initial values from instance
+    vec2 pos = inst.row2.xy;
+    float rot = atan(inst.row1.y, inst.row1.x); // derive from matrix
+    float scale = length(inst.row0.xy);
+    vec4 color = inst.color;
+    vec4 dash = inst.dash;
+    ivec4 meta = inst.meta;
 
     for (int i = 0; i < count; i++) {
         AnimEntry e = entries[start + i];
-        int type = e.meta.x;
         float st = e.times.x;
         float et = e.times.y;
         int easeI = int(e.times.z + 0.5);
+        int type = e.meta.x;
 
-        if (u_time < st) continue; // Skip if animation hasn't started yet
-
-        float progress = 0.0;
-        if (u_time >= et) {
-            progress = 1.0;
-        } else {
-            progress = easeVal((u_time - st) / max(1e-6, et - st), easeI);
+        if (u_time < st) continue; // skip future
+        if (u_time > et) { // already finished - apply final value
+            if (type == 1) pos = e.to.xy;
+            else if (type == 2) rot = e.to.x;
+            else if (type == 3) scale = e.to.x;
+            else if (type == 4) color = e.to;
+            else if (type == 5) {
+                mdesc.currentT = 1.0;
+                mdesc.easeType = e.times.z;
+                mdesc.offsets = e.morph;
+            }
+            else if (type == 6) dash.xy = e.to.xy;
+            continue;
         }
 
-        if (type == 1) { // Translate (absolute)
-            pos = mix(e.from.xy, e.to.xy, progress);
-        } else if (type == 2) { // Rotate (absolute)
-            rot = mix(e.from.x, e.to.x, progress);
-        } else if (type == 3) { // Scale (absolute)
-            scale = mix(e.from.x, e.to.x, progress);
-        } else if (type == 4) { // Color (absolute)
-            color = mix(e.from, e.to, progress);
+        float progress = (u_time - st) / max(1e-6, et - st);
+        progress = clamp(progress, 0.0, 1.0);
+        progress = easeVal(progress, easeI);
+
+        if (type == 1) { // Translate
+            pos = mix(pos, e.to.xy, progress);
+        } else if (type == 2) { // Rotate
+            rot = mix(rot, e.to.x, progress);
+        } else if (type == 3) { // Scale
+            scale = mix(scale, e.to.x, progress);
+        } else if (type == 4) { // Color
+            color = mix(color, e.to, progress);
         } else if (type == 5) { // Morph
             mdesc.currentT = progress;
             mdesc.easeType = e.times.z;
             mdesc.offsets = e.morph;
-        } else if (type == 6) { // Dash (absolute)
-            dash.xy = mix(e.from.xy, e.to.xy, progress);
+        } else if (type == 6) { // Dash
+            dash.xy = mix(dash.xy, e.to.xy, progress);
         }
     }
 
-    // Rebuild transform rows
+    // Rebuild transform matrix
     float c = cos(rot);
     float s = sin(rot);
     vec4 row0 = vec4(scale * c, scale * s, 0.0, 0.0);
     vec4 row1 = vec4(-scale * s, scale * c, 0.0, 0.0);
     vec4 row2 = vec4(pos.x, pos.y, 1.0, 0.0);
 
-    // Write back to instance
+    // Write back
     inst.row0 = row0;
     inst.row1 = row1;
     inst.row2 = row2;
     inst.color = color;
-    inst.meta = ivec4(mdesc.offsets.z, mdesc.offsets.w, meta.z, meta.w); // Preserve flags/reserved
     inst.dash = dash;
     instances[pid] = inst;
 
-    // Write morph desc back
     morphs[pid] = mdesc;
 }
 ";
