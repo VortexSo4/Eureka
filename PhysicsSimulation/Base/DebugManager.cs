@@ -29,7 +29,7 @@ namespace PhysicsSimulation.Base
                 ["Draw"]     = new("DRAW",     "#00FFAA", true),
                 ["Scene"]    = new("SCENE",    "#00AA88", true),
                 ["Font"]     = new("FONT",     "#AA33FF", true),
-                ["Custom"]   = new("CUSTOM",   "#FFFFFF", false)
+                ["Custom"]   = new("CUSTOM",   "#FFFFFF", true)
             });
 
         private static readonly ConcurrentDictionary<string, bool> Enabled = new();

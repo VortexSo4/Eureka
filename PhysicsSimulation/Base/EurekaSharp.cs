@@ -1,14 +1,14 @@
 ﻿// ESharpEngine.cs
-// Modular E# engine — parser + registry + evaluator
-// Usage:
-//   var engine = new ESharpEngine(arena);
-//   engine.RegisterVar("pi", Math.PI);
-//   engine.RegisterFunc("bgColor", new Func<object[],Dictionary<string,object>,object>(...));
-//   engine.SetScene(myScene); // or engine.RegisterSceneFactory(...)
-//
-// Then engine.LoadScene(source, "fallbackName");
+// Refactored — unified call parsing via CallContext, removed plot special-casing,
+// added convenient parsing helpers for arguments (ParseFloat/Bool/Vector2/etc.)
+// Usage: Registry.RegisterFunc("mycmd", new Func<object[], Dictionary<string, object>, object>((pos, named) => { var ctx = new CallContext(pos, named, this); ... }));
+// Or use the provided builtins registered in the constructor which use CallContext.
 
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Reflection;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
@@ -416,6 +416,238 @@ namespace PhysicsSimulation.Base
         // Optional factory if caller wants engine to create scenes by name
         public Func<GeometryArena, string, SceneGpu> SceneFactory { get; private set; }
 
+        // ---------------- CallContext ----------------
+        // Удобный контекст, который создаётся при каждом вызове зарегистрированной функции.
+        // Позволяет безопасно и удобно парсить positional / named аргументы.
+        public class CallContext
+        {
+            public object[] Pos { get; }
+            public Dictionary<string, object> Named { get; }
+            private readonly ESharpEngine _engine;
+
+            public CallContext(object[] pos, Dictionary<string, object> named, ESharpEngine engine)
+            {
+                Pos = pos ?? Array.Empty<object>();
+                Named = named ?? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                _engine = engine;
+            }
+
+            // Helpers: Try get by name first, then by positional index if name looks like integer or param not found.
+            private bool TryGetByNameOrIndex(string name, out object value)
+            {
+                if (string.IsNullOrEmpty(name)) { value = null; return false; }
+                if (Named != null && Named.TryGetValue(name, out value)) return true;
+                // if name is integer index
+                if (int.TryParse(name, out var idx) && idx >= 0 && idx < Pos.Length) { value = Pos[idx]; return true; }
+                // fallback: try interpret name as single-letter param a/b/c mapping to positional 0/1/2 (convention)
+                if (name.Length == 1)
+                {
+                    var ch = name[0];
+                    if (char.IsLetter(ch))
+                    {
+                        int idx2 = char.ToLower(ch) - 'a';
+                        if (idx2 >= 0 && idx2 < Pos.Length) { value = Pos[idx2]; return true; }
+                    }
+                }
+                value = null; return false;
+            }
+
+            public object GetPosOrNamed(int idx)
+            {
+                if (idx >= 0 && idx < Pos.Length) return Pos[idx];
+                return null;
+            }
+
+            public object GetNamed(string name)
+            {
+                if (Named != null && Named.TryGetValue(name, out var v)) return v;
+                return null;
+            }
+
+            public float ParseFloat(int idx, float def = 0f)
+            {
+                var v = GetPosOrNamed(idx);
+                if (v == null) return def;
+                try { return Convert.ToSingle(v); } catch { return def; }
+            }
+
+            public float ParseFloat(string name, float def = 0f)
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    try { return Convert.ToSingle(v); } catch { return def; }
+                }
+                return def;
+            }
+
+            public int ParseInt(int idx, int def = 0)
+            {
+                var v = GetPosOrNamed(idx);
+                if (v == null) return def;
+                try { return Convert.ToInt32(v); } catch { return def; }
+            }
+
+            public int ParseInt(string name, int def = 0)
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    try { return Convert.ToInt32(v); } catch { return def; }
+                }
+                return def;
+            }
+
+            public bool ParseBool(int idx, bool def = false)
+            {
+                var v = GetPosOrNamed(idx);
+                if (v == null) return def;
+                if (v is bool b) return b;
+                if (v is string s)
+                {
+                    if (bool.TryParse(s, out var r)) return r;
+                    if (s.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+                    if (s.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
+                }
+                try { return Convert.ToBoolean(v); } catch { return def; }
+            }
+
+            public bool ParseBool(string name, bool def = false)
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    if (v is bool b) return b;
+                    if (v is string s)
+                    {
+                        if (bool.TryParse(s, out var r)) return r;
+                        if (s.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+                        if (s.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    try { return Convert.ToBoolean(v); } catch { return def; }
+                }
+                return def;
+            }
+
+            public Vector2 ParseVector2(int idx, Vector2? def = null)
+            {
+                var v = GetPosOrNamed(idx);
+                if (v == null) return def ?? Vector2.Zero;
+                if (v is Vector2 vv) return vv;
+                if (v is float[] fa && fa.Length >= 2) return new Vector2(fa[0], fa[1]);
+                if (v is double[] da && da.Length >= 2) return new Vector2((float)da[0], (float)da[1]);
+                if (v is object[] oa && oa.Length >= 2) return new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]));
+                return def ?? Vector2.Zero;
+            }
+
+            public Vector2 ParseVector2(string name, Vector2? def = null)
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    if (v is Vector2 vv) return vv;
+                    if (v is float[] fa && fa.Length >= 2) return new Vector2(fa[0], fa[1]);
+                    if (v is double[] da && da.Length >= 2) return new Vector2((float)da[0], (float)da[1]);
+                    if (v is object[] oa && oa.Length >= 2) return new Vector2(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]));
+                }
+                return def ?? Vector2.Zero;
+            }
+
+            public Vector3 ParseVector3(int idx, Vector3? def = null)
+            {
+                var v = GetPosOrNamed(idx);
+                if (v == null) return def ?? Vector3.Zero;
+                if (v is Vector3 vv) return vv;
+                if (v is float[] fa && fa.Length >= 3) return new Vector3(fa[0], fa[1], fa[2]);
+                if (v is double[] da && da.Length >= 3) return new Vector3((float)da[0], (float)da[1], (float)da[2]);
+                if (v is object[] oa && oa.Length >= 3) return new Vector3(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]));
+                return def ?? Vector3.Zero;
+            }
+
+            public Vector3 ParseVector3(string name, Vector3? def = null)
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    if (v is Vector3 vv) return vv;
+                    if (v is float[] fa && fa.Length >= 3) return new Vector3(fa[0], fa[1], fa[2]);
+                    if (v is double[] da && da.Length >= 3) return new Vector3((float)da[0], (float)da[1], (float)da[2]);
+                    if (v is object[] oa && oa.Length >= 3) return new Vector3(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]));
+                }
+                return def ?? Vector3.Zero;
+            }
+
+            public Vector4 ParseVector4(int idx, Vector4? def = null)
+            {
+                var v = GetPosOrNamed(idx);
+                if (v == null) return def ?? Vector4.Zero;
+                if (v is Vector4 vv) return vv;
+                if (v is float[] fa && fa.Length >= 4) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
+                if (v is double[] da && da.Length >= 4) return new Vector4((float)da[0], (float)da[1], (float)da[2], (float)da[3]);
+                if (v is object[] oa && oa.Length >= 4) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3]));
+                return def ?? Vector4.Zero;
+            }
+
+            public Vector4 ParseVector4(string name, Vector4? def = null)
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    if (v is Vector4 vv) return vv;
+                    if (v is float[] fa && fa.Length >= 4) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
+                    if (v is double[] da && da.Length >= 4) return new Vector4((float)da[0], (float)da[1], (float)da[2], (float)da[3]);
+                    if (v is object[] oa && oa.Length >= 4) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3]));
+                }
+                return def ?? Vector4.Zero;
+            }
+
+            // Color is represented as Vector3 or Vector4; prefer Vector4 if alpha present
+            public Vector4 ParseColor(string name, Vector4? def = null)
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    if (v is Vector4 vv) return vv;
+                    if (v is Vector3 v3) return new Vector4(v3, 1f);
+                    if (v is float[] fa)
+                    {
+                        if (fa.Length >= 4) return new Vector4(fa[0], fa[1], fa[2], fa[3]);
+                        if (fa.Length >= 3) return new Vector4(fa[0], fa[1], fa[2], 1f);
+                    }
+                    if (v is object[] oa)
+                    {
+                        if (oa.Length >= 4) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), Convert.ToSingle(oa[3]));
+                        if (oa.Length >= 3) return new Vector4(Convert.ToSingle(oa[0]), Convert.ToSingle(oa[1]), Convert.ToSingle(oa[2]), 1f);
+                    }
+                }
+                return def ?? new Vector4(0,0,0,1);
+            }
+
+            public string ParseString(int idx, string def = "")
+            {
+                var v = GetPosOrNamed(idx);
+                if (v == null) return def;
+                return v.ToString() ?? def;
+            }
+
+            public string ParseString(string name, string def = "")
+            {
+                if (TryGetByNameOrIndex(name, out var v))
+                {
+                    return v?.ToString() ?? def;
+                }
+                return def;
+            }
+
+            public LambdaExpr GetLambda(string name)
+            {
+                if (TryGetByNameOrIndex(name, out var v) && v is LambdaExpr le) return le;
+                return null;
+            }
+
+            // Engine access: evaluate math lambda expressions using engine-private EvalMathExpr
+            public double EvalMathExpr(LambdaExpr lambda, float x, float t)
+            {
+                if (lambda == null) return 0;
+                return _engine.EvalMathExpr(lambda.Body, x, t);
+            }
+        }
+
+        // ---------------- End CallContext ----------------
+
         public ESharpEngine(GeometryArena arena, SceneGpu initialScene = null)
         {
             _arena = arena ?? throw new ArgumentNullException(nameof(arena));
@@ -425,98 +657,11 @@ namespace PhysicsSimulation.Base
             Registry.RegisterVar("PI", Math.PI);
             Registry.RegisterVar("T", 0.0);
 
-            // core helper: bgColor (works if scene provided)
-            Registry.RegisterFunc("bgColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
-            {
-                if (CurrentScene == null) throw new Exception("CurrentScene is not set. Call SetScene(...) or RegisterSceneFactory(...).");
-                var color = args.Length > 0 ? (float[])args[0] : new[] { 0.1f, 0.1f, 0.1f };
-                var duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToDouble(d) : 1.0;
-                CurrentScene.AnimateBackground(new Vector3(color[0], color[1], color[2]), CurrentScene.T, CurrentScene.T + (float)duration);
-                return null;
-            }));
-            
-            Registry.RegisterFunc("Add", new Func<object[], object>(args =>
-            {
-                if (args == null || args.Length == 0) throw new Exception("Add требует примитив как аргумент");
-                if (CurrentScene == null) throw new Exception("CurrentScene не установлена");
-                if (args[0] is not PrimitiveGpu prim) throw new Exception("Первый аргумент Add должен быть PrimitiveGpu");
-                CurrentScene.AddPrimitive(prim);
-                return prim;
-            }));
-
-            Registry.RegisterFunc("plot", new Func<object[], object>(_ => throw new Exception("plot handled internally by engine.")));
-            
-            Registry.RegisterFunc("rect", new Func<object[], object>(args =>
-            {
-                float w = args.Length > 0 ? Convert.ToSingle(args[0]) : 1f;
-                float h = args.Length > 1 ? Convert.ToSingle(args[1]) : 1f;
-                bool dyn = args.Length > 2 ? Convert.ToBoolean(args[2]) : false;
-                return new RectGpu(w, h, dyn);
-            }));
-
-            Registry.RegisterFunc("circle", new Func<object[], object>(args =>
-            {
-                float r = args.Length > 0 ? Convert.ToSingle(args[0]) : 0.2f;
-                int seg = args.Length > 1 ? Convert.ToInt32(args[1]) : 80;
-                bool filled = args.Length > 2 ? Convert.ToBoolean(args[2]) : false;
-                bool dyn = args.Length > 3 ? Convert.ToBoolean(args[3]) : false;
-                return new CircleGpu(r, seg, filled, dyn);
-            }));
-
-            Registry.RegisterFunc("line", new Func<object[], object>(args =>
-            {
-                if (args.Length >= 4)
-                    return new LineGpu(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]), Convert.ToSingle(args[2]), Convert.ToSingle(args[3]));
-                return new LineGpu();
-            }));
-
-            Registry.RegisterFunc("triangle", new Func<object[], object>(args =>
-            {
-                // overloads can be extended. simple center/size variant:
-                if (args.Length >= 3 && args[0] is float cx)
-                {
-                    // user provided center/size/filled
-                    var center = new Vector2(Convert.ToSingle(args[0]), Convert.ToSingle(args[1]));
-                    float size = Convert.ToSingle(args[2]);
-                    bool filled = args.Length > 3 ? Convert.ToBoolean(args[3]) : true;
-                    var tri = new TriangleGpu(center, size, filled);
-                    return tri;
-                }
-                return new TriangleGpu();
-            }));
-
-            Registry.RegisterFunc("text", new Func<object[], object>(args =>
-            {
-                string text = args.Length > 0 ? args[0]?.ToString() ?? "" : "";
-                float size = args.Length > 1 ? Convert.ToSingle(args[1]) : 0.1f;
-                string fontKey = args.Length > 2 ? args[2]?.ToString() : null;
-                return new TextGpu(text, size, fontKey);
-            }));
-            
-            Registry.RegisterFunc("aColor", new Func<object[], Dictionary<string, object>, object>((args, named) =>
-            {
-                if (args == null || args.Length == 0) throw new Exception("aColor: missing target");
-                if (args[0] is PrimitiveGpu p)
-                {
-                    Vector4 to = p.Color;
-                    if (named != null && named.TryGetValue("to", out var tv) && tv is float[] arr && arr.Length >= 4)
-                        to = new Vector4(arr[0], arr[1], arr[2], arr[3]);
-
-                    float start = named != null && named.TryGetValue("start", out var s) ? Convert.ToSingle(s) : 0f;
-                    float end = named != null && named.TryGetValue("duration", out var d) ? start + Convert.ToSingle(d) : 1f;
-
-                    EaseType ease = EaseType.Linear;
-                    if (named != null && named.TryGetValue("ease", out var e) && e is string es)
-                        ease = EaseHelper.Parse(es);
-
-                    p.AnimateColor(start, end, ease, to);
-                    return p;
-                }
-                throw new Exception("aColor: target is not a PrimitiveGpu");
-            }));
+            // Register builtin functions using CallContext to parse args in a consistent manner.
+            RegisterBuiltinFunctions();
         }
 
-        // Caller can provide factory if they want engine to build scenes by name
+        // Caller can provide factory if caller wants engine to create scenes by name
         public void RegisterSceneFactory(Func<GeometryArena, string, SceneGpu> factory) => SceneFactory = factory;
 
         // Or set scene manually (preferred if you have a concrete scene instance)
@@ -618,19 +763,11 @@ namespace PhysicsSimulation.Base
         {
             // evaluate positional args
             var pos = call.Args.Select(Eval).ToArray();
-            // evaluate named args into values for engine-level helpers; keep Expr map for plot special-case
+            // evaluate named args into values (LambdaExpr stays LambdaExpr because Eval(lambda) returns LambdaExpr)
             var namedValues = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
-            var namedExprs = call.NamedArgs; // keep exprs if needed (plot)
-
             // if callee is an identifier (function name)
             if (call.Callee is IdentExpr ident)
             {
-                // special-case plot: engine-level handling if func lambda provided
-                if (string.Equals(ident.Name, "plot", StringComparison.OrdinalIgnoreCase))
-                {
-                    return CreatePlotFromArgs(pos, namedExprs);
-                }
-
                 if (Registry.TryInvoke(ident.Name, pos, namedValues, out var res)) return res;
 
                 if (Registry.HasFunc(ident.Name))
@@ -688,39 +825,8 @@ namespace PhysicsSimulation.Base
             var arr = new object[rest.Length + 1]; arr[0] = first; Array.Copy(rest, 0, arr, 1, rest.Length); return arr;
         }
 
-        // ------------------ Plot integration ------------------
-        // Expects that PlotGpu(Func<float,float>, float xmin, float xmax, bool isDynamic) exists in project.
-        // If your PlotGpu signature differs — adjust this method accordingly.
-        private PrimitiveGpu CreatePlotFromArgs(object[] pos, Dictionary<string, Expr> namedExprs)
-        {
-            if (namedExprs == null || !namedExprs.TryGetValue("func", out var fexpr) || fexpr is not LambdaExpr lambda)
-                throw new Exception("plot требует func: x => ...");
-
-            float xmin = -1, xmax = 1;
-            bool dynamic = false;
-
-            if (namedExprs.TryGetValue("xmin", out var xminE)) xmin = Convert.ToSingle(Eval(xminE));
-            if (namedExprs.TryGetValue("xmax", out var xmaxE)) xmax = Convert.ToSingle(Eval(xmaxE));
-
-            if (namedExprs.TryGetValue("dynamic", out var dynE))
-            {
-                var val = Eval(dynE);
-                if (val is bool b) dynamic = b;
-                else if (val is string s && s.Equals("true", StringComparison.OrdinalIgnoreCase)) dynamic = true;
-                else dynamic = false; // любое другое значение остаётся false
-            }
-
-            // создаём PlotGpu с лямбдой, которая **каждый кадр берёт T**
-            var plot = new PlotGpu(x =>
-            {
-                if (!Registry.TryGetVar("T", out var tv)) tv = 0.0;
-                double t = Convert.ToDouble(tv);
-                return (float)EvalMathExpr(lambda.Body, (float)x, (float)t);
-            }, xmin, xmax, 80, dynamic);
-
-            return plot;
-        }
-
+        // ------------------ Plot & Math evaluation ------------------
+        // EvalMathExpr остается приватным помощником для вычисления лямбд в Plot и т.п.
         private double EvalMathExpr(Expr expr, float x, float t)
         {
             return expr switch
@@ -759,8 +865,158 @@ namespace PhysicsSimulation.Base
             "min" => Math.Min(args[0], args.Length > 1 ? args[1] : args[0]),
             _ => 0
         };
+
+        // ------------------ Builtin registration ------------------
+        private void RegisterBuiltinFunctions()
+        {
+            // bgColor(to: [r,g,b] OR positional [r,g,b], duration: n)
+            Registry.RegisterFunc("bgColor", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (CurrentScene == null) throw new Exception("CurrentScene is not set. Call SetScene(...) or RegisterSceneFactory(...).");
+                var ctx = new CallContext(pos, named, this);
+                var colorVec = ctx.ParseVector3(0);
+                // allow named "to" override
+                if (named != null && named.TryGetValue("to", out var tv))
+                {
+                    if (tv is float[] arr && arr.Length >= 3) colorVec = new Vector3(arr[0], arr[1], arr[2]);
+                    else if (tv is Vector3 v3) colorVec = v3;
+                }
+                var duration = named != null && named.TryGetValue("duration", out var d) ? Convert.ToDouble(d) : 1.0;
+                CurrentScene.AnimateBackground(colorVec, CurrentScene.T, CurrentScene.T + (float)duration);
+                return null;
+            }));
+
+            // Add(primitive)
+            Registry.RegisterFunc("Add", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos == null || pos.Length == 0) throw new Exception("Add требует примитив как аргумент");
+                if (CurrentScene == null) throw new Exception("CurrentScene не установлена");
+                if (pos[0] is not PrimitiveGpu prim) throw new Exception("Первый аргумент Add должен быть PrimitiveGpu");
+                CurrentScene.AddPrimitive(prim);
+                return prim;
+            }));
+
+            // plot(func: x => ..., xmin: n, xmax: m, dynamic: true/false)
+            Registry.RegisterFunc("plot", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                var lambda = ctx.GetLambda("func");
+                if (lambda == null) throw new Exception("plot требует func: x => ...");
+
+                float xmin = named != null && named.TryGetValue("xmin", out var xm) ? Convert.ToSingle(xm) : -1f;
+                float xmax = named != null && named.TryGetValue("xmax", out var xM) ? Convert.ToSingle(xM) : 1f;
+                bool dynamic = named != null && named.TryGetValue("dynamic", out var dv) && Convert.ToBoolean(dv);
+
+                var plot = new PlotGpu((float x) =>
+                {
+                    if (!Registry.TryGetVar("T", out var tv)) tv = 0.0;
+                    double t = Convert.ToDouble(tv);
+                    return (float)EvalMathExpr(lambda.Body, x, (float)t);
+                }, xmin, xmax, 80, dynamic);
+
+                return plot;
+            }));
+
+            // rect(width = 1, height = 1, isDynamic = false)
+            Registry.RegisterFunc("rect", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                float w = ctx.ParseFloat(0, 1f);
+                float h = ctx.ParseFloat(1, 1f);
+                bool dyn = ctx.ParseBool(2, true);
+                return new RectGpu(w, h, dyn);
+            }));
+
+            // circle(radius=0.2, segments=80, filled=false, dynamic=false)
+            Registry.RegisterFunc("circle", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                float r = ctx.ParseFloat(0, 0.2f);
+                int seg = ctx.ParseInt(1, 80);
+                bool filled = ctx.ParseBool(2, false);
+                bool dyn = ctx.ParseBool(3, true);
+                return new CircleGpu(r, seg, filled, dyn);
+            }));
+
+            // line(x1,y1,x2,y2) or line()
+            Registry.RegisterFunc("line", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                if (pos != null && pos.Length >= 4)
+                    return new LineGpu(Convert.ToSingle(pos[0]), Convert.ToSingle(pos[1]), Convert.ToSingle(pos[2]), Convert.ToSingle(pos[3]));
+                return new LineGpu();
+            }));
+
+            // triangle(...) - support multiple overloads:
+            // triangle(centerX, centerY, size, filled=true)
+            // triangle(a:[x,y], b:[x,y], c:[x,y], filled=true)
+            Registry.RegisterFunc("triangle", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                // case: named vertices a/b/c provided
+                if (named != null && (named.ContainsKey("a") || named.ContainsKey("b") || named.ContainsKey("c")))
+                {
+                    var a = ctx.ParseVector2("a");
+                    var b = ctx.ParseVector2("b");
+                    var c = ctx.ParseVector2("c");
+                    bool filled = ctx.ParseBool("filled", true);
+                    return new TriangleGpu(a, b, c, filled); // assuming TriangleGpu has such ctor
+                }
+
+                // fallback: centerX, centerY, size, filled
+                if (pos != null && pos.Length >= 3)
+                {
+                    var center = new Vector2(Convert.ToSingle(pos[0]), Convert.ToSingle(pos[1]));
+                    float size = Convert.ToSingle(pos[2]);
+                    bool filled = pos.Length > 3 ? Convert.ToBoolean(pos[3]) : true;
+                    return new TriangleGpu(center, size, filled);
+                }
+
+                return new TriangleGpu();
+            }));
+
+            // text(string, size = 0.1, fontKey = null)
+            Registry.RegisterFunc("text", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                var ctx = new CallContext(pos, named, this);
+                string text = ctx.ParseString(0, "");
+                float size = ctx.ParseFloat(1, 0.1f);
+                string fontKey = ctx.ParseString(2, null);
+                return new TextGpu(text, size, fontKey);
+            }));
+
+            // aColor(target, to: [r,g,b,a], start: n, duration: n, ease: "inout")
+            Registry.RegisterFunc("aColor", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos == null || pos.Length == 0) throw new Exception("aColor: missing target");
+                var target = pos[0];
+                if (target is PrimitiveGpu p)
+                {
+                    var ctx = new CallContext(pos, named, this);
+                    Vector4 to = p.Color;
+                    if (named != null && named.TryGetValue("to", out var tv))
+                    {
+                        if (tv is float[] arr && arr.Length >= 4) to = new Vector4(arr[0], arr[1], arr[2], arr[3]);
+                        else if (tv is Vector4 v4) to = v4;
+                    }
+
+                    float start = named != null && named.TryGetValue("start", out var s) ? Convert.ToSingle(s) : 0f;
+                    float end = named != null && named.TryGetValue("duration", out var d) ? start + Convert.ToSingle(d) : 1f;
+
+                    EaseType ease = EaseType.Linear;
+                    if (named != null && named.TryGetValue("ease", out var e) && e is string es)
+                        ease = EaseHelper.Parse(es);
+
+                    p.AnimateColor(start, end, ease, to);
+                    return p;
+                }
+                throw new Exception("aColor: target is not a PrimitiveGpu");
+            }));
+        }
+
+        // ------------------ End Builtin registration ------------------
     }
-    
+
     public static class EaseHelper
     {
         public static EaseType Parse(string ease)

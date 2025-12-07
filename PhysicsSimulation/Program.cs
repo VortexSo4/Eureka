@@ -16,7 +16,7 @@ namespace PhysicsSimulation
         {
             DebugManager.Custom($"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "#A0FF33");
             DebugManager.Custom($"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
-            DebugManager.Custom($"Starting E# Scene Runner", "E#", "#00FFFF");
+            DebugManager.Custom($"Starting E# Scene Runner", "E#", "#A0FF33");
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
