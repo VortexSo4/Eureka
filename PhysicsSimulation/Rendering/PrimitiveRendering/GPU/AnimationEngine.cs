@@ -235,16 +235,6 @@ namespace PhysicsSimulation.Rendering.GPU
                         allData[idx + 1] = flat[k].Y;
                     }
                 }
-                else if (p is TextGpu txt)
-                {
-                    var flat = GeometryArena.FlattenContours(txt.GlyphContours.SelectMany(g => g).ToList());
-                    for (int k = 0; k < flat.Length; k++)
-                    {
-                        int idx = (p.VertexOffsetRaw + k) * 2;
-                        allData[idx + 0] = flat[k].X;
-                        allData[idx + 1] = flat[k].Y;
-                    }
-                }
                 else
                 {
                     // Generic: we cannot extract raw flattened data unless primitive offers it.

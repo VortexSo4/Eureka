@@ -120,7 +120,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 foreach (var p in _primitives)
                     p.EnsureGeometryRegistered(_arena);
 
-                _animationEngine.UploadGeometryFromPrimitives();
                 _animationEngine.RebuildAllDescriptors();
             }
 

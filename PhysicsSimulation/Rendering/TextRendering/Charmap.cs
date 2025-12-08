@@ -1,5 +1,5 @@
 ﻿using System.Collections.Concurrent;
-using OpenTK.Mathematics;
+using System.Numerics;
 using SkiaSharp;
 
 namespace PhysicsSimulation.Rendering.TextRendering

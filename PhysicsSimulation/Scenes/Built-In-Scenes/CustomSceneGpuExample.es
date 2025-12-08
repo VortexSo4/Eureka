@@ -37,6 +37,8 @@ grid = Add(grid(3, 3, "true"))
 grid.aColor(to: [0.5, 0.5, 1, 1], start: 4, duration: 3, ease: "linear")
 grid.aScale(1.1, start: 4, duration: 2, ease: "inout")
 
+text = Add(text("something"))
+
 // ——— ОСИ ———
 axis = Add(axis(1.0, 1.0, "true"))
 axis.aColor(to: [1, 0.7, 0.2, 1], start: 5, duration: 3, ease: "out")

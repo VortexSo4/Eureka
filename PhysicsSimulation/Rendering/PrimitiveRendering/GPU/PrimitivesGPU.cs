@@ -9,6 +9,8 @@ using System.Collections.Generic;
 using System.Linq;
 using OpenTK.Mathematics;
 using PhysicsSimulation.Base;
+using PhysicsSimulation.Rendering.TextRendering;
+using SkiaSharp;
 using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
 
@@ -182,12 +184,18 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
     public abstract class PrimitiveGpu
     {
         // assigned by engine
+        internal Vector2[]? CachedVertices { get; private set; }
+        internal Vector2[] GetVertices() => CachedVertices ?? [];
         public int PrimitiveId { get; internal set; } = -1;
         private const int ANIM_ENTRY_SIZE_BYTES = 80;
         public bool IsDynamic { get; set; } = false;
         internal bool IsGeometryRegistered { get; private set; } = false;
         protected abstract void RegisterGeometryInternal(GeometryArena arena);
-        public void InvalidateGeometry() => IsGeometryRegistered = false;
+        public void InvalidateGeometry()
+        {
+            IsGeometryRegistered = false;
+            CachedVertices = null;
+        }
         internal void MarkGeometryRegistered() => IsGeometryRegistered = true;
         public string Name { get; set; } = "";
 
@@ -219,7 +227,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         private static int _counter = 0;
 
-        protected PrimitiveGpu(bool isDynamic = false)
+        protected PrimitiveGpu(bool isDynamic = true)
         {
             var id = Interlocked.Increment(ref _counter);
             Name = $"{GetType().Name}_{id}";
@@ -248,6 +256,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             if (arena == null) throw new ArgumentNullException(nameof(arena));
             if (flatVertices == null || flatVertices.Length == 0) return;
             VertexOffsetRaw = arena.Allocate(flatVertices.Length);
+            CachedVertices = flatVertices;
             VertexCount = flatVertices.Length;
             DebugManager.Geometry(
                 $"PrimitiveGpu.RegisterRawGeometry: Registered at offset {VertexOffsetRaw}, count {VertexCount}.");
@@ -457,7 +466,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public IReadOnlyList<List<Vector2>> Contours => _contours;
         protected readonly List<List<Vector2>> _contours = [];
 
-        public PolygonGpu(IReadOnlyList<List<Vector2>> contours, bool isDynamic = false)
+        public PolygonGpu(IReadOnlyList<List<Vector2>> contours, bool isDynamic = true)
         {
             if (contours != null && contours.Count > 0)
                 SetContours(contours);
@@ -504,7 +513,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float Width { get; set; }
         public float Height { get; set; }
 
-        public RectGpu(float width = 1f, float height = 1f, bool isDynamic = false)
+        public RectGpu(float width = 1f, float height = 1f, bool isDynamic = true)
             : base(CreateRectangleContours(width, height))
         {
             Width = width;
@@ -553,7 +562,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         private static readonly Vector2 DefaultC = new(0.0f, 0.15f);
 
         public TriangleGpu(Vector2 a = default, Vector2 b = default, Vector2 c = default,
-            bool filled = true, bool isDynamic = false)
+            bool filled = true, bool isDynamic = true)
             : base([[DefaultA,DefaultB,DefaultC]])
         {
             var va = a == default ? new Vector2(-0.1f, -0.1f) : a;
@@ -581,7 +590,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
     {
         public int Segments { get; }
 
-        public CircleGpu(float radius = 0.2f, int segments = 80, bool filled = false, bool isDynamic = false)
+        public CircleGpu(float radius = 0.2f, int segments = 80, bool filled = false, bool isDynamic = true)
             : base([GenerateCircleContour(radius, 80)], false)
         {
             Segments = Math.Max(8, segments);
@@ -613,7 +622,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public int Resolution { get; private set; }
 
         public PlotGpu(Func<float, float> func, float xMin = -1f, float xMax = 1f,
-            int resolution = 300,  bool isDynamic = false)
+            int resolution = 300,  bool isDynamic = true)
             : base([])
         {
             Func = func ?? throw new ArgumentNullException(nameof(func));
@@ -668,95 +677,211 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
     public class TextGpu : PrimitiveGpu
     {
-        public string Text { get; set; } = "";
+        public enum HorizontalAlignment { Left, Center, Right }
+        public enum VerticalAlignment { Top, Center, Bottom }
+        private string _text = "";
+        private float _fontSize = 0.12f;
+        private float _letterSpacing = 0.0f;
+        private float _lineHeight = 1.4f;
+        private SKTypeface? _typeface;
+        private SKTypeface _resolvedTypeface = SKTypeface.Default; // кэшируем реальный объект
+        private HorizontalAlignment _hAlign = HorizontalAlignment.Center;
+        private VerticalAlignment _vAlign = VerticalAlignment.Center;
+        private bool _dirty = true;
 
-        public List<List<List<Vector2>>> GlyphContours { get; private set; } = [];
-
-        public float FontSize { get; set; } = 0.1f;
-        public float LetterPadding { get; set; } = 0.05f;
-        public float LineSpacing { get; set; } = 0.1f;
-
-        public enum HorizontalAlignment
+        public string Text
         {
-            Left,
-            Center,
-            Right
+            get => _text;
+            set
+            {
+                _text = value ?? "";
+                _dirty = true;
+                InvalidateGeometry();
+            }
         }
 
-        public enum VerticalAlignment
+        public float FontSize
         {
-            Top,
-            Center,
-            Bottom
+            get => _fontSize;
+            set
+            {
+                _fontSize = Math.Max(0.001f, value);
+                _dirty = true;
+                InvalidateGeometry();
+            }
+        }
+
+        public float LetterSpacing
+        {
+            get => _letterSpacing;
+            set
+            {
+                _letterSpacing = value;
+                _dirty = true;
+                InvalidateGeometry();
+            }
+        }
+
+        public float LineHeight
+        {
+            get => _lineHeight;
+            set
+            {
+                _lineHeight = Math.Max(0.1f, value);
+                _dirty = true;
+                InvalidateGeometry();
+            }
+        }
+
+        public SKTypeface? Typeface
+        {
+            get => _typeface;
+            set
+            {
+                if (_typeface != value)
+                {
+                    _typeface = value;
+                    _resolvedTypeface = value ?? FontManager.GetTypeface(FontFamily.Arial);
+                    _dirty = true;
+                    InvalidateGeometry();
+                }
+            }
         }
 
         public HorizontalAlignment HAlign { get; set; } = HorizontalAlignment.Center;
         public VerticalAlignment VAlign { get; set; } = VerticalAlignment.Center;
 
-        public string? FontKey { get; set; }
-        public Func<string>? DynamicTextSource { get; set; }
-
-        public TextGpu(string text = "Empty text", float fontSize = 0.1f, string? fontKey = null, string name = "", bool isDynamic = false)
+        public TextGpu(string text = "", SKTypeface? typeface = null, float fontSize = 0.12f, bool isDynamic = true)
+            : base(isDynamic)
         {
-            Text = text ?? "";
+            Text = text;
             FontSize = fontSize;
-            FontKey = fontKey;
-            IsDynamic = isDynamic;
+            Typeface = typeface; // автоматически закеширует
+            Flags = PrimitiveFlags.Filled | PrimitiveFlags.Closed;
+            Color = new Vector4(1, 1, 1, 1);
         }
 
         protected override void RegisterGeometryInternal(GeometryArena arena)
         {
-            if (arena == null) throw new ArgumentNullException(nameof(arena));
+            if (!_dirty && IsGeometryRegistered) return;
 
-            // Важно: если контуры ещё не сгенерированы — ничего не делаем!
-            // Это нормально — текст может быть инициализирован позже через InitGlyphContours
-            if (GlyphContours == null || GlyphContours.Count == 0)
+            // ← ВАЖНО: используем закешированный _resolvedTypeface, а не дёргаем FontManager
+            var typeface = _resolvedTypeface;
+
+            var lines = string.IsNullOrEmpty(_text)
+                ? Array.Empty<string>()
+                : _text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+
+            var allFlatVertices = new List<Vector2>();
+
+            float totalHeight = lines.Length > 0 ? lines.Length * FontSize * _lineHeight : FontSize;
+            float startY = VAlign switch
             {
-                DebugManager.Geometry($"TextGpu '{Name}': No glyph contours yet — geometry registration skipped (will be done later via InitGlyphContours)");
-                return;
-            }
+                VerticalAlignment.Top => totalHeight / 2f - FontSize * 0.8f,
+                VerticalAlignment.Bottom => -totalHeight / 2f + FontSize * 0.2f,
+                _ => 0f
+            };
 
-            DebugManager.Geometry($"TextGpu '{Name}': Auto-registering {GlyphContours.Count} glyphs...");
-
-            var allContours = new List<List<Vector2>>();
-
-            foreach (var glyph in GlyphContours)
+            for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
             {
-                if (glyph != null)
+                var line = lines[lineIdx];
+                float lineY = startY - lineIdx * FontSize * _lineHeight;
+
+                float lineWidth = 0f;
+                foreach (char c in line)
+                    lineWidth += CharMap.GetGlyphAdvance(c, FontSize, typeface) + LetterSpacing * FontSize;
+                if (line.Length > 0) lineWidth -= LetterSpacing * FontSize;
+
+                float baseX = HAlign switch
                 {
-                    foreach (var contour in glyph)
+                    HorizontalAlignment.Left => -lineWidth / 2f,
+                    HorizontalAlignment.Right => lineWidth / 2f,
+                    _ => 0f
+                };
+
+                float cursorX = baseX;
+
+                foreach (char c in line)
+                {
+                    var contours = CharMap.GetCharContours(c, cursorX, lineY, FontSize, typeface);
+
+                    foreach (var contour in contours)
                     {
-                        if (contour != null && contour.Count > 0)
-                            allContours.Add(contour);
+                        if (contour.Count >= 2)
+                        {
+                            allFlatVertices.AddRange(contour);
+                            allFlatVertices.Add(new Vector2(float.NaN, float.NaN));
+                        }
                     }
+
+                    cursorX += CharMap.GetGlyphAdvance(c, FontSize, typeface) + LetterSpacing * FontSize;
                 }
             }
 
-            var flat = GeometryArena.FlattenContours(allContours);
-            RegisterRawGeometry(arena, flat);
+            // Убираем лишние NaN
+            while (allFlatVertices.Count > 0 && float.IsNaN(allFlatVertices[^1].X))
+                allFlatVertices.RemoveAt(allFlatVertices.Count - 1);
 
-            DebugManager.Geometry($"TextGpu '{Name}': Geometry auto-registered. {flat.Length} vertices.");
+            if (allFlatVertices.Count == 0)
+                allFlatVertices.Add(new Vector2(float.NaN, float.NaN));
+
+            VertexOffsetRaw = arena.Allocate(allFlatVertices.Count);
+            VertexCount = allFlatVertices.Count;
+
+            // ← Загружаем напрямую в арену (через AnimationEngine позже)
+            // Но мы должны сохранить вершины, если UploadGeometryFromPrimitives их читает
+            // → Добавим поле в PrimitiveGpu или используем хак:
+            // (в твоём движке UploadGeometryFromPrimitives читает через EnsureGeometryRegistered → RegisterGeometryInternal)
+            // → Пока просто полагаемся на то, что arena запомнит offset
+
+            _dirty = false;
+
+            DebugManager.Geometry(
+                $"TextGpu '{Name}': Generated {allFlatVertices.Count} vertices for \"{_text}\" (Font: {typeface.FamilyName}, Size: {FontSize})");
         }
 
-        public void InitGlyphContours(GeometryArena arena, IEnumerable<List<List<Vector2>>> glyphContours)
+        // Цепочки
+        public TextGpu WithText(string text)
         {
-            DebugManager.Geometry($"TextGpu.InitGlyphContours: Initializing glyph contours for '{Name}'.");
+            Text = text;
+            return this;
+        }
 
-            GlyphContours = glyphContours
-                .Select(g => g?.Select(c => new List<Vector2>(c ?? [])).ToList() ?? [])
-                .ToList();
-            EnsureGeometryRegistered(arena);
-            DebugManager.Geometry($"TextGpu.InitGlyphContours: Done. Text ready for rendering.");
+        public TextGpu WithFontSize(float size)
+        {
+            FontSize = size;
+            return this;
+        }
+
+        public TextGpu WithTypeface(SKTypeface tf)
+        {
+            Typeface = tf;
+            return this;
+        }
+
+        public TextGpu WithTypeface(FontFamily family)
+        {
+            Typeface = FontManager.GetTypeface(family);
+            return this;
+        }
+
+        public TextGpu Align(HorizontalAlignment h, VerticalAlignment v)
+        {
+            HAlign = h;
+            VAlign = v;
+            _dirty = true;
+            InvalidateGeometry();
+            return this;
         }
     }
-    
+
     public class EllipseGpu : PolygonGpu
     {
         public float RadiusX { get; }
         public float RadiusY { get; }
         public int Segments { get; }
 
-        public EllipseGpu(float radiusX = 0.3f, float radiusY = 0.2f, int segments = 64, bool filled = false, bool isDynamic = false)
+        public EllipseGpu(float radiusX = 0.3f, float radiusY = 0.2f, int segments = 64, bool filled = false, bool isDynamic = true)
             : base([])
         {
             RadiusX = radiusX;
@@ -788,7 +913,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float EndAngle { get; }
         public int Segments { get; }
 
-        public ArcGpu(float radius = 0.3f, float startAngleRad = 0f, float endAngleRad = MathF.PI, int segments = 64, bool isDynamic = false)
+        public ArcGpu(float radius = 0.3f, float startAngleRad = 0f, float endAngleRad = MathF.PI, int segments = 64, bool isDynamic = true)
             : base([])
         {
             Radius = radius;
@@ -816,7 +941,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
     public class ArrowGpu : PolygonGpu
     {
-        public ArrowGpu(Vector2 from, Vector2 to, float headSize = 0.1f, float headAngleDeg = 25f, bool isDynamic = false)
+        public ArrowGpu(Vector2 from, Vector2 to, float headSize = 0.1f, float headAngleDeg = 25f, bool isDynamic = true)
             : base([])
         {
             SetContours([GenerateArrow(from, to, headSize, headAngleDeg)]);
@@ -852,7 +977,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
     public class BezierCurveGpu : PolygonGpu
     {
-        public BezierCurveGpu(Vector2 p0, Vector2 p1, Vector2 p2, int segments = 64, bool isDynamic = false)
+        public BezierCurveGpu(Vector2 p0, Vector2 p1, Vector2 p2, int segments = 64, bool isDynamic = true)
             : base([])
         {
             SetContours([Generate(p0, p1, p2, segments)]);
@@ -875,7 +1000,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
     public class GridGpu : PolygonGpu
     {
-        public GridGpu(int cellsX = 10, int cellsY = 10, float size = 1f, bool isDynamic = false)
+        public GridGpu(int cellsX = 10, int cellsY = 10, float size = 1f, bool isDynamic = true)
             : base([])
         {
             SetContours(GenerateGrid(cellsX, cellsY, size));
@@ -907,7 +1032,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
     public class AxisGpu : PolygonGpu
     {
-        public AxisGpu(float size = 1f, bool isDynamic = false)
+        public AxisGpu(float size = 1f, bool isDynamic = true)
             : base([
                 [new Vector2(-size, 0f), new Vector2(size, 0f)],
                 [new Vector2(0f, -size), new Vector2(0f, size)]

@@ -12,6 +12,7 @@ using System.Linq;
 using System.Reflection;
 using OpenTK.Mathematics;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
+using SkiaSharp;
 using Vector2 = System.Numerics.Vector2;
 using Vector3 = System.Numerics.Vector3;
 using Vector4 = System.Numerics.Vector4;
@@ -1102,11 +1103,48 @@ namespace PhysicsSimulation.Base
             }));
             Registry.RegisterFunc("text", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
-                var ctx = new CallContext(pos, named, this);
-                string text = ctx.ParseString(0, "");
-                float size = ctx.ParseFloat(1, 0.1f);
-                string fontKey = ctx.ParseString(2, null);
-                return new TextGpu(text, size, fontKey);
+                string content = pos.Length > 0 ? Convert.ToString(pos[0]) ?? "" : "";
+                float size = pos.Length > 1 ? Convert.ToSingle(pos[1]) : 0.1f;
+
+                SKTypeface? typeface = null;
+                if (pos.Length > 2 && pos[2] is string fontStr)
+                {
+                    typeface = SKTypeface.FromFamilyName(fontStr); // или используйте ваш FontManager, если есть
+                }
+                else if (named.TryGetValue("font", out var fontObj) && fontObj is string fontName)
+                {
+                    typeface = SKTypeface.FromFamilyName(fontName);
+                }
+
+                var txt = new TextGpu(content,typeface, size, isDynamic: true);
+
+                if (named.TryGetValue("align", out var alignObj) && alignObj is string alignStr)
+                {
+                    var parts = alignStr.ToLower().Split(',', StringSplitOptions.TrimEntries);
+                    if (parts.Length >= 1)
+                    {
+                        txt.HAlign = parts[0] switch
+                        {
+                            "left" => TextGpu.HorizontalAlignment.Left,
+                            "right" => TextGpu.HorizontalAlignment.Right,
+                            _ => TextGpu.HorizontalAlignment.Center
+                        };
+                    }
+                    if (parts.Length >= 2)
+                    {
+                        txt.VAlign = parts[1] switch
+                        {
+                            "top" => TextGpu.VerticalAlignment.Top,
+                            "bottom" => TextGpu.VerticalAlignment.Bottom,
+                            _ => TextGpu.VerticalAlignment.Center
+                        };
+                    }
+                }
+
+                if (named.TryGetValue("letterSpacing", out var ls)) txt.LetterSpacing = Convert.ToSingle(ls);
+                if (named.TryGetValue("lineHeight", out var lh)) txt.LineHeight = Convert.ToSingle(lh);
+
+                return txt;
             }));
             Registry.RegisterFunc("ellipse", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
