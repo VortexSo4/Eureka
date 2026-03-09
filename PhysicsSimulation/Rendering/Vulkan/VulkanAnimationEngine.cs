@@ -224,36 +224,152 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
         }
 
-        private void AllocateAndUpdateDescriptorSets()
+        private unsafe void AllocateAndUpdateDescriptorSets()
+{
+    // Проверка на null / invalid
+    if (_bufAnimEntries?.Handle.Handle == 0 ||
+        _bufAnimIndex?.Handle.Handle == 0 ||
+        _bufMorphDesc?.Handle.Handle == 0 ||
+        _bufGeometry?.Handle.Handle == 0 ||
+        _bufRenderInstances?.Handle.Handle == 0 ||
+        _bufUniforms?.Handle.Handle == 0)
+    {
+        DebugManager.Warn("Cannot update descriptors — one or more buffers are null or invalid");
+        return;
+    }
+
+    // Сначала выделяем дескриптор сет - используем fixed для поля класса
+    fixed (DescriptorSetLayout* pLayout = &_descriptorSetLayout)
+    {
+        var allocInfo = new DescriptorSetAllocateInfo
         {
-            fixed (DescriptorSetLayout* pLayout = &_descriptorSetLayout)
-            {
-                var allocInfo = new DescriptorSetAllocateInfo
-                {
-                    SType              = StructureType.DescriptorSetAllocateInfo,
-                    DescriptorPool     = _descriptorPool,
-                    DescriptorSetCount = 1,
-                    PSetLayouts        = pLayout
-                };
-                VulkanContext.Check(
-                    _ctx.Vk.AllocateDescriptorSets(_ctx.Device, &allocInfo, out _descriptorSet),
-                    "AllocateDescriptorSets");
-            }
+            SType = StructureType.DescriptorSetAllocateInfo,
+            DescriptorPool = _descriptorPool,
+            DescriptorSetCount = 1,
+            PSetLayouts = pLayout
+        };
 
-            // Привязываем буферы к descriptor set
-            var writes = new WriteDescriptorSet[]
-            {
-                MakeStorageWrite(BINDING_ANIM_ENTRIES,  _bufAnimEntries),
-                MakeStorageWrite(BINDING_ANIM_INDEX,    _bufAnimIndex),
-                MakeStorageWrite(BINDING_MORPH_DESC,    _bufMorphDesc),
-                MakeStorageWrite(BINDING_GEOMETRY,      _bufGeometry),
-                MakeStorageWrite(BINDING_RENDER_INST,   _bufRenderInstances),
-                MakeUniformWrite(5, _bufUniforms)
-            };
+        VulkanContext.Check(
+            _ctx.Vk.AllocateDescriptorSets(_ctx.Device, &allocInfo, out _descriptorSet),
+            "AllocateDescriptorSets");
+    }
 
-            fixed (WriteDescriptorSet* p = writes)
-                _ctx.Vk.UpdateDescriptorSets(_ctx.Device, (uint)writes.Length, p, 0, null);
-        }
+    // Подготавливаем структуры DescriptorBufferInfo
+    DescriptorBufferInfo biAnimEntries = new() 
+    { 
+        Buffer = _bufAnimEntries.Handle, 
+        Offset = 0, 
+        Range = _bufAnimEntries.Size 
+    };
+    
+    DescriptorBufferInfo biAnimIndex = new() 
+    { 
+        Buffer = _bufAnimIndex.Handle, 
+        Offset = 0, 
+        Range = _bufAnimIndex.Size 
+    };
+    
+    DescriptorBufferInfo biMorphDesc = new() 
+    { 
+        Buffer = _bufMorphDesc.Handle, 
+        Offset = 0, 
+        Range = _bufMorphDesc.Size 
+    };
+    
+    DescriptorBufferInfo biGeometry = new() 
+    { 
+        Buffer = _bufGeometry.Handle, 
+        Offset = 0, 
+        Range = _bufGeometry.Size 
+    };
+    
+    DescriptorBufferInfo biRenderInstances = new() 
+    { 
+        Buffer = _bufRenderInstances.Handle, 
+        Offset = 0, 
+        Range = _bufRenderInstances.Size 
+    };
+    
+    DescriptorBufferInfo biUniforms = new() 
+    { 
+        Buffer = _bufUniforms.Handle, 
+        Offset = 0, 
+        Range = _bufUniforms.Size 
+    };
+
+    // Создаем массив WriteDescriptorSet в стеке
+    var writes = stackalloc WriteDescriptorSet[6];
+
+    writes[0] = new WriteDescriptorSet
+    {
+        SType = StructureType.WriteDescriptorSet,
+        DstSet = _descriptorSet,
+        DstBinding = BINDING_ANIM_ENTRIES,
+        DescriptorCount = 1,
+        DescriptorType = DescriptorType.StorageBuffer,
+        PBufferInfo = &biAnimEntries
+    };
+
+    writes[1] = new WriteDescriptorSet
+    {
+        SType = StructureType.WriteDescriptorSet,
+        DstSet = _descriptorSet,
+        DstBinding = BINDING_ANIM_INDEX,
+        DescriptorCount = 1,
+        DescriptorType = DescriptorType.StorageBuffer,
+        PBufferInfo = &biAnimIndex
+    };
+
+    writes[2] = new WriteDescriptorSet
+    {
+        SType = StructureType.WriteDescriptorSet,
+        DstSet = _descriptorSet,
+        DstBinding = BINDING_MORPH_DESC,
+        DescriptorCount = 1,
+        DescriptorType = DescriptorType.StorageBuffer,
+        PBufferInfo = &biMorphDesc
+    };
+
+    writes[3] = new WriteDescriptorSet
+    {
+        SType = StructureType.WriteDescriptorSet,
+        DstSet = _descriptorSet,
+        DstBinding = BINDING_GEOMETRY,
+        DescriptorCount = 1,
+        DescriptorType = DescriptorType.StorageBuffer,
+        PBufferInfo = &biGeometry
+    };
+
+    writes[4] = new WriteDescriptorSet
+    {
+        SType = StructureType.WriteDescriptorSet,
+        DstSet = _descriptorSet,
+        DstBinding = BINDING_RENDER_INST,
+        DescriptorCount = 1,
+        DescriptorType = DescriptorType.StorageBuffer,
+        PBufferInfo = &biRenderInstances
+    };
+
+    writes[5] = new WriteDescriptorSet
+    {
+        SType = StructureType.WriteDescriptorSet,
+        DstSet = _descriptorSet,
+        DstBinding = 5,   // uniform buffer binding
+        DescriptorCount = 1,
+        DescriptorType = DescriptorType.UniformBuffer,
+        PBufferInfo = &biUniforms
+    };
+
+    _ctx.Vk.UpdateDescriptorSets(
+        _ctx.Device,
+        descriptorWriteCount: 6,
+        pDescriptorWrites: writes,
+        descriptorCopyCount: 0,
+        pDescriptorCopies: null
+    );
+
+    DebugManager.Memory($"Descriptors updated OK (6 bindings)");
+}
 
         private WriteDescriptorSet MakeStorageWrite(uint binding, VulkanBuffer buf)
         {
@@ -608,25 +724,19 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         private void UpdateGeometryDescriptor()
         {
-            // Обновляем только geometry binding (BINDING_GEOMETRY = 3)
-            // после пересоздания буфера геометрии
-            var bufInfos = new DescriptorBufferInfo[]
+            var bufInfo = new DescriptorBufferInfo { Buffer = _bufGeometry.Handle, Offset = 0, Range = _bufGeometry.Size };
+
+            var write = new WriteDescriptorSet
             {
-                new() { Buffer = _bufGeometry.Handle, Offset = 0, Range = _bufGeometry.Size }
+                SType           = StructureType.WriteDescriptorSet,
+                DstSet          = _descriptorSet,
+                DstBinding      = BINDING_GEOMETRY,
+                DescriptorCount = 1,
+                DescriptorType  = DescriptorType.StorageBuffer,
+                PBufferInfo     = &bufInfo
             };
-            fixed (DescriptorBufferInfo* pInfo = bufInfos)
-            {
-                var write = new WriteDescriptorSet
-                {
-                    SType           = StructureType.WriteDescriptorSet,
-                    DstSet          = _descriptorSet,
-                    DstBinding      = BINDING_GEOMETRY,
-                    DescriptorCount = 1,
-                    DescriptorType  = DescriptorType.StorageBuffer,
-                    PBufferInfo     = pInfo
-                };
-                _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 1, &write, 0, null);
-            }
+
+            _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 1, &write, 0, null);
         }
 
         // ── Descriptor rebuild (аналог AnimationEngine.RebuildAllDescriptors) ──
@@ -701,14 +811,18 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _bufAnimEntries.Dispose();
                 _bufAnimEntries = _vma.CreateStorageBuffer(required * 2);
                 // Обновляем descriptor
-                var bi = new DescriptorBufferInfo { Buffer = _bufAnimEntries.Handle, Range = required * 2 };
+                var bi = new DescriptorBufferInfo { Buffer = _bufAnimEntries.Handle, Offset = 0, Range = required * 2 };
+
                 var wr = new WriteDescriptorSet
                 {
-                    SType = StructureType.WriteDescriptorSet,
-                    DstSet = _descriptorSet, DstBinding = BINDING_ANIM_ENTRIES,
-                    DescriptorCount = 1, DescriptorType = DescriptorType.StorageBuffer,
-                    PBufferInfo = &bi
+                    SType           = StructureType.WriteDescriptorSet,
+                    DstSet          = _descriptorSet,
+                    DstBinding      = BINDING_ANIM_ENTRIES,
+                    DescriptorCount = 1,
+                    DescriptorType  = DescriptorType.StorageBuffer,
+                    PBufferInfo     = &bi
                 };
+
                 _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 1, &wr, 0, null);
             }
 

@@ -13,22 +13,22 @@ namespace PhysicsSimulation.Base
         private static readonly ConcurrentDictionary<string, LogChannel> Channels = new(
             new Dictionary<string, LogChannel>(StringComparer.OrdinalIgnoreCase)
             {
-                ["Info"]     = new("INFO",     "#A0A0A0", false),
-                ["Warn"]     = new("WARN",     "#FFD800", false),
-                ["Error"]    = new("ERROR",    "#FF0000", false),
-                ["Stats"]    = new("STATS",    "#00CC44", false),
-                ["Morph"]    = new("MORPH",    "#FF55AA", false),
-                ["Render"]   = new("RENDER",   "#004BFF", false),
-                ["Memory"]   = new("MEMORY",   "#FF8800", false),
-                ["Alloc"]    = new("ALLOC",    "#44AA44", false),
-                ["Geometry"] = new("GEOM",     "#00AADD", false),
-                ["Anim"]     = new("ANIM",     "#FFAA00", false),
-                ["Dispatch"] = new("DISP",     "#AA88FF", false),
-                ["Buffer"]   = new("BUFFER",   "#88AAAA", false),
-                ["Shader"]   = new("SHADER",   "#FF6666", false),
-                ["Draw"]     = new("DRAW",     "#00FFAA", false),
-                ["Scene"]    = new("SCENE",    "#00AA88", false),
-                ["Font"]     = new("FONT",     "#AA33FF", false),
+                ["Info"]     = new("INFO",     "#A0A0A0", true),
+                ["Warn"]     = new("WARN",     "#FFD800", true),
+                ["Error"]    = new("ERROR",    "#FF0000", true),
+                ["Stats"]    = new("STATS",    "#00CC44", true),
+                ["Morph"]    = new("MORPH",    "#FF55AA", true),
+                ["Render"]   = new("RENDER",   "#004BFF", true),
+                ["Memory"]   = new("MEMORY",   "#FF8800", true),
+                ["Alloc"]    = new("ALLOC",    "#44AA44", true),
+                ["Geometry"] = new("GEOM",     "#00AADD", true),
+                ["Anim"]     = new("ANIM",     "#FFAA00", true),
+                ["Dispatch"] = new("DISP",     "#AA88FF", true),
+                ["Buffer"]   = new("BUFFER",   "#88AAAA", true),
+                ["Shader"]   = new("SHADER",   "#FF6666", true),
+                ["Draw"]     = new("DRAW",     "#00FFAA", true),
+                ["Scene"]    = new("SCENE",    "#00AA88", true),
+                ["Font"]     = new("FONT",     "#AA33FF", true),
                 ["Custom"]   = new("CUSTOM",   "#FFFFFF", true)
             });
 
