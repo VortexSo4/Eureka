@@ -130,6 +130,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public virtual void Render()
         {
+            // Читаем текущий viewport чтобы всегда иметь актуальный aspect ratio
+            int[] vp = new int[4];
+            OpenTK.Graphics.OpenGL4.GL.GetInteger(OpenTK.Graphics.OpenGL4.GetPName.Viewport, vp);
+            int vpWidth  = vp[2];
+            int vpHeight = vp[3];
+            if (vpHeight > 0 && vpWidth > 0)
+                _animationEngine.AspectRatio = (float)vpWidth / vpHeight;
+
             GL.ClearColor(_bgColor.X, _bgColor.Y, _bgColor.Z, 1f);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
             _animationEngine.RenderAll();

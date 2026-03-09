@@ -1,4 +1,4 @@
-﻿﻿// File: AnimationEngine.cs
+﻿// File: AnimationEngine.cs
 // Requires OpenTK 4.x (OpenTK.Graphics.OpenGL4)
 // Place near PrimitivesGPU.cs (same namespace recommended)
 
@@ -352,23 +352,53 @@ namespace PhysicsSimulation.Rendering.GPU
 
         #region Render
 
+        // Aspect ratio передаётся снаружи (из SceneGpu или главного цикла)
+        public float AspectRatio { get; set; } = 16f / 9f;
+
         public void RenderAll()
         {
             GL.UseProgram(_programRender);
             GL.BindVertexArray(_vao);
 
-            int primLoc = GL.GetUniformLocation(_programRender, "u_primIndex");
+            int primLoc   = GL.GetUniformLocation(_programRender, "u_primIndex");
+            int aspectLoc = GL.GetUniformLocation(_programRender, "u_aspectRatio");
+            GL.Uniform1(aspectLoc, AspectRatio);
 
             for (int pid = 0; pid < _primitiveCount; pid++)
             {
                 var md = _morphDescs[pid];
                 if (md.VertexCount <= 0) continue;
 
-                int offset = md.OffsetM; // Use morphed geometry if available
-                int count = md.VertexCount;
-
                 GL.Uniform1(primLoc, pid);
-                GL.DrawArrays(PrimitiveType.LineStrip, offset, count);
+
+                // Split contours at NaN separators using cached CPU vertices.
+                // Each contour is drawn as its own LineStrip — NaN points never
+                // appear inside a strip, so no spurious lines to any corner.
+                var verts = _primitives[pid].GetVertices();
+                int baseOffset = md.OffsetM >= 0 ? md.OffsetM : md.OffsetA;
+
+                if (verts != null && verts.Length > 0)
+                {
+                    int segStart = 0;
+                    for (int i = 0; i <= verts.Length; i++)
+                    {
+                        bool isNaN = i == verts.Length ||
+                                     float.IsNaN(verts[i].X) || float.IsNaN(verts[i].Y);
+                        if (isNaN)
+                        {
+                            int segLen = i - segStart;
+                            if (segLen >= 2)
+                                GL.DrawArrays(PrimitiveType.LineStrip,
+                                              baseOffset + segStart, segLen);
+                            segStart = i + 1; // skip the NaN vertex itself
+                        }
+                    }
+                }
+                else
+                {
+                    // No CPU vertex cache — single draw call (primitives without NaN)
+                    GL.DrawArrays(PrimitiveType.LineStrip, baseOffset, md.VertexCount);
+                }
             }
 
             GL.BindVertexArray(0);
@@ -649,6 +679,7 @@ void main()
 #version 430
 layout(location = 0) in vec2 in_pos;
 uniform int u_primIndex;
+uniform float u_aspectRatio;
 
 struct RenderInstance {
     vec4 row0;
@@ -664,20 +695,20 @@ layout(std430, binding = 4) buffer RenderInstances {
 };
 
 void main() {
-    RenderInstance inst = instances[u_primIndex];
-    vec4 r0 = inst.row0;
-    vec4 r1 = inst.row1;
-    vec4 r2 = inst.row2;
-
-    mat2 rs = mat2(r0.xy, r1.xy);
-    vec2 p = rs * in_pos + r2.xy;
-
-    // Skip rendering if NaN (contour separator)
+    // NaN = contour separator: push outside clip space so LineStrip won't draw a line to it
     if (isnan(in_pos.x) || isnan(in_pos.y)) {
-        gl_Position = vec4(0.0, 0.0, 0.0, 0.0); // Or discard in frag, but this prevents drawing
-    } else {
-        gl_Position = vec4(p, 0.0, 1.0);
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
     }
+
+    RenderInstance inst = instances[u_primIndex];
+    mat2 rs = mat2(inst.row0.xy, inst.row1.xy);
+    vec2 p = rs * in_pos + inst.row2.xy;
+
+    // Correct X for aspect ratio so objects are not stretched
+    p.x /= u_aspectRatio;
+
+    gl_Position = vec4(p, 0.0, 1.0);
 }
 ";
 
