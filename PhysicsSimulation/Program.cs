@@ -18,7 +18,7 @@ namespace PhysicsSimulation
             DebugManager.Custom($"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
             DebugManager.Custom($"Starting E# Scene Runner", "E#", "#FFFF00");
             
-            bool debugShutdown =  true;
+            bool debugShutdown =  false;
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
@@ -36,7 +36,6 @@ namespace PhysicsSimulation
 
             // === ЗАПУСК E# СЦЕН ===
             GeometryArena arena = new GeometryArena();
-            ESharpEngine esharp = new ESharpEngine(arena);
             var stopwatch = Stopwatch.StartNew();
 
             // Сканируем все .es сцены в папке
@@ -49,13 +48,15 @@ namespace PhysicsSimulation
             }
 
             int currentSceneIndex = 0;
+            float sceneTime = 0f;
+            long frameCount = 0;
 
             // Helper: полностью чистое переключение сцены
             SceneGpu LoadScene(int index)
             {
                 ESharpEngine.Registry.Clear();
                 arena.Reset();
-                esharp = new ESharpEngine(arena);
+                var esharp = new ESharpEngine(arena);
                 esharp.CurrentScene = new SceneGpu(arena);
                 esharp.LoadSceneFromFile(sceneFiles[index]);
                 var s = esharp.CurrentScene;
@@ -65,16 +66,15 @@ namespace PhysicsSimulation
 
             // Загружаем первую сцену
             SceneGpu scene = LoadScene(currentSceneIndex);
-
-            double lastTime = 0.0;
-
-            long frameCount = 0;
+            double lastTime = stopwatch.Elapsed.TotalSeconds;
 
             window.RenderFrame += _ =>
             {
                 double currentTime = stopwatch.Elapsed.TotalSeconds;
                 float dt = (float)(currentTime - lastTime);
                 lastTime = currentTime;
+
+                sceneTime += dt;
                 frameCount++;
 
                 // Update live globals accessible from any DSL expression
@@ -83,7 +83,8 @@ namespace PhysicsSimulation
                 float mxRaw =  (ms.X / window.ClientSize.X) * 2f - 1f;          // NDC [-1,1]
                 float myRaw = -((ms.Y / window.ClientSize.Y) * 2f - 1f);        // flip Y
                 float mx    = mxRaw * aspect;                                    // world coords (matches dynPos)
-                ESharpEngine.Registry.RegisterVar("T",      currentTime);
+                
+                ESharpEngine.Registry.RegisterVar("T",      (double)sceneTime);
                 ESharpEngine.Registry.RegisterVar("DT",     (double)dt);
                 ESharpEngine.Registry.RegisterVar("MX",     (double)mx);        // world X (use in dynPos)
                 ESharpEngine.Registry.RegisterVar("MY",     (double)myRaw);     // world Y
@@ -116,6 +117,19 @@ namespace PhysicsSimulation
                     currentSceneIndex = (currentSceneIndex + 1) % sceneFiles.Count;
                     scene.Dispose();
                     scene = LoadScene(currentSceneIndex);
+                    sceneTime = 0f;
+                    frameCount = 0;
+                    lastTime = stopwatch.Elapsed.TotalSeconds;
+                }
+
+                // Полная перезагрузка текущей сцены по F5
+                if (window.KeyboardState.IsKeyPressed(Keys.F5))
+                {
+                    scene.Dispose();
+                    scene = LoadScene(currentSceneIndex); // тот же индекс
+                    sceneTime = 0f;
+                    frameCount = 0;
+                    lastTime = stopwatch.Elapsed.TotalSeconds;
                 }
             };
 
