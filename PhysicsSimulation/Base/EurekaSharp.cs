@@ -12,6 +12,7 @@ using System.Linq;
 using System.Reflection;
 using OpenTK.Mathematics;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
+using PhysicsSimulation.Rendering.Vulkan;
 using SkiaSharp;
 using Vector2 = System.Numerics.Vector2;
 using Vector3 = System.Numerics.Vector3;
@@ -489,7 +490,7 @@ namespace PhysicsSimulation.Base
     public class ESharpEngine
     {
         private readonly GeometryArena _arena;
-        public SceneGpu CurrentScene { get; set; }
+        public VulkanSceneGpu CurrentScene { get; set; }
         public static DslRegistry Registry { get; } = new DslRegistry();
 
         // state variables: persist across frames, reset only when engine is recreated (scene switch)
@@ -498,7 +499,7 @@ namespace PhysicsSimulation.Base
         public void ResetState() => _stateVars.Clear();
 
         // Optional factory if caller wants engine to create scenes by name
-        public Func<GeometryArena, string, SceneGpu> SceneFactory { get; private set; }
+        public Func<GeometryArena, string, VulkanSceneGpu> SceneFactory { get; private set; }
 
         // ---------------- CallContext ----------------
         // Удобный контекст, который создаётся при каждом вызове зарегистрированной функции.
@@ -815,7 +816,7 @@ namespace PhysicsSimulation.Base
 
         // ---------------- End CallContext ----------------
 
-        public ESharpEngine(GeometryArena arena, SceneGpu initialScene = null)
+        public ESharpEngine(GeometryArena arena, VulkanSceneGpu initialScene = null)
         {
             _arena = arena ?? throw new ArgumentNullException(nameof(arena));
             if (initialScene != null) SetScene(initialScene);
@@ -840,10 +841,10 @@ namespace PhysicsSimulation.Base
         }
 
         // Caller can provide factory if caller wants engine to create scenes by name
-        public void RegisterSceneFactory(Func<GeometryArena, string, SceneGpu> factory) => SceneFactory = factory;
+        public void RegisterSceneFactory(Func<GeometryArena, string, VulkanSceneGpu> factory) => SceneFactory = factory;
 
         // Or set scene manually (preferred if you have a concrete scene instance)
-        public void SetScene(SceneGpu scene)
+        public void SetScene(VulkanSceneGpu scene)
         {
             CurrentScene = scene ?? throw new ArgumentNullException(nameof(scene));
             Registry.RegisterVar("scene", CurrentScene);

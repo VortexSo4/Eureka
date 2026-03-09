@@ -1,8 +1,6 @@
 // ============================================================
 //  VulkanSceneGpu.cs
-//  EurekaSharp — Vulkan Backend
-//
-//  Наследует SceneGpu и переопределяет все методы для работы с Vulkan.
+//  EurekaSharp — Vulkan Backend (Standalone)
 // ============================================================
 
 using System;
@@ -15,66 +13,71 @@ using Silk.NET.Vulkan;
 
 namespace PhysicsSimulation.Rendering.Vulkan
 {
-    public class VulkanSceneGpu : SceneGpu
+    public class VulkanSceneGpu : IDisposable
     {
-        // ── Vulkan специфичные поля ─────────────────────────────────────────
-        protected readonly VulkanContext           _vkCtx;
-        protected readonly VulkanMemoryAllocator   _vma;
-        protected VulkanAnimationEngine?           _vkAnimationEngine; // отдельное поле для Vulkan-версии
+        // ── Общие поля сцены (перенесено из SceneGpu) ─────────────────────
+        protected List<PrimitiveGpu> _primitives = [];
+        protected GeometryArena _arena;
+
+        // ── Vulkan-специфичные поля ────────────────────────────────────────
+        protected readonly VulkanContext _vkCtx;
+        protected readonly VulkanMemoryAllocator _vma;
+        protected VulkanAnimationEngine? _vkAnimationEngine;
+
+        // ── Анимация фона и время ──────────────────────────────────────────
+        private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
+        private float _animTime;
+        public float T => _animTime;
+        public Vector3 BackgroundColor => _bgColor;
 
         private readonly Queue<BackgroundAnimation> _bgAnimQueue = new();
         private BackgroundAnimation? _currentBgAnim;
         private Vector3 _bgStartColorAtCurrentAnim;
-        private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
-        private float _animTime;
 
         private record struct BackgroundAnimation(Vector3 TargetColor, float StartTime, float EndTime);
 
-        public VulkanSceneGpu(VulkanContext ctx, GeometryArena arena) : base(arena)
+        public VulkanSceneGpu(VulkanContext ctx, GeometryArena arena)
         {
             _vkCtx = ctx ?? throw new ArgumentNullException(nameof(ctx));
             _vma = new VulkanMemoryAllocator(ctx);
+            _arena = arena ?? throw new ArgumentNullException(nameof(arena));
         }
 
-        public new float T => _animTime;
-        public new Vector3 BackgroundColor => _bgColor;
+        // ── Управление примитивами ─────────────────────────────────────────
 
-        // ── Primitive management (используем базовый список _primitives) ────
-
-        public override void AddPrimitive(PrimitiveGpu p)
+        public virtual void AddPrimitive(PrimitiveGpu p)
         {
             if (p == null) throw new ArgumentNullException(nameof(p));
             p.EnsureGeometryRegistered(_arena);
+
             if (p.PrimitiveId == -1)
             {
                 p.PrimitiveId = _primitives.Count;
                 DebugManager.Scene($"VulkanSceneGpu.AddPrimitive: Assigned PrimitiveId {p.PrimitiveId} to '{p.Name}'");
             }
+
             _primitives.Add(p);
             DebugManager.Scene($"VulkanSceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
 
-        public override T Add<T>(T primitive)
+        public virtual T Add<T>(T primitive) where T : PrimitiveGpu
         {
             AddPrimitive(primitive);
             return primitive;
         }
 
-        public override T Add<T>(T primitive, Action<T> configure)
+        public virtual T Add<T>(T primitive, Action<T> configure) where T : PrimitiveGpu
         {
             configure(primitive);
             AddPrimitive(primitive);
             return primitive;
         }
 
-        // ── Lifecycle ───────────────────────────────────────────────────────
+        // ── Lifecycle ──────────────────────────────────────────────────────
 
-        public override void Setup()
-        {
-            // Может быть переопределён в наследуемых сценах
-        }
+        public virtual void Setup() { }
 
-        public override void Initialize()
+        public virtual void Initialize()
         {
             DebugManager.Scene("VulkanSceneGpu.Initialize: Creating VulkanAnimationEngine...");
 
@@ -85,21 +88,27 @@ namespace PhysicsSimulation.Rendering.Vulkan
             DebugManager.Scene("VulkanSceneGpu.Initialize: Done.");
         }
 
-        // ── Background animation ────────────────────────────────────────────
+        // ── Анимация фона ──────────────────────────────────────────────────
 
-        public override void AnimateBackground(Vector3 targetColor, float startTime, float endTime)
+        public virtual void AnimateBackground(Vector3 targetColor, float startTime, float endTime)
         {
-            if (endTime <= startTime) return;
+            if (endTime <= startTime)
+            {
+                DebugManager.Warn($"AnimateBackground: Invalid time [{startTime}, {endTime}]. Ignored.");
+                return;
+            }
+
             _bgAnimQueue.Enqueue(new BackgroundAnimation(targetColor, startTime, endTime));
+            DebugManager.Scene($"AnimateBackground: QUEUED → {targetColor} @ [{startTime:F3}s → {endTime:F3}s]");
         }
 
-        // ── Update ──────────────────────────────────────────────────────────
+        // ── Update ─────────────────────────────────────────────────────────
 
-        public override void Update(float deltaTime)
+        public virtual void Update(float deltaTime)
         {
             _animTime += deltaTime;
 
-            // Фоновая анимация
+            // Background animation
             if (_currentBgAnim == null && _bgAnimQueue.Count > 0)
             {
                 var next = _bgAnimQueue.Peek();
@@ -125,17 +134,18 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 }
             }
 
-            // Dynamic primitives — пересоздаём геометрию
+            // Dynamic primitives
             if (_primitives.Any(p => p.IsDynamic))
             {
                 foreach (var p in _primitives) p.InvalidateGeometry();
                 _arena.Reset();
                 foreach (var p in _primitives) p.EnsureGeometryRegistered(_arena);
-                _vkAnimationEngine!.RebuildAllDescriptors();
+                _vkAnimationEngine?.RebuildAllDescriptors();
             }
 
-            _vkAnimationEngine!.UploadPendingAnimationsAndIndex();
-            _vkAnimationEngine.UpdateAndDispatch(_animTime);
+            // Animation engine
+            _vkAnimationEngine?.UploadPendingAnimationsAndIndex();
+            _vkAnimationEngine?.UpdateAndDispatch(_animTime);
 
             // DynCallbacks
             var dynOverrides = new List<VulkanAnimationEngine.DynOverride>();
@@ -179,12 +189,12 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 });
             }
             if (dynOverrides.Count > 0)
-                _vkAnimationEngine.ApplyDynOverrides(dynOverrides);
+                _vkAnimationEngine?.ApplyDynOverrides(dynOverrides);
         }
 
-        // ── Render ──────────────────────────────────────────────────────────
+        // ── Render ─────────────────────────────────────────────────────────
 
-        public override void Render()
+        public virtual void Render()
         {
             int imageIndex = _vkCtx.BeginFrame();
             if (imageIndex < 0)
@@ -202,15 +212,10 @@ namespace PhysicsSimulation.Rendering.Vulkan
         {
             var cmd = _vkCtx.CommandBuffers[imageIndex];
 
-            var beginInfo = new CommandBufferBeginInfo
-            {
-                SType = StructureType.CommandBufferBeginInfo,
-            };
+            var beginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo };
 
             _vkCtx.Vk.ResetCommandBuffer(cmd, CommandBufferResetFlags.None);
-            VulkanContext.Check(
-                _vkCtx.Vk.BeginCommandBuffer(cmd, &beginInfo),
-                "BeginCommandBuffer");
+            VulkanContext.Check(_vkCtx.Vk.BeginCommandBuffer(cmd, &beginInfo), "BeginCommandBuffer");
 
             var clearValue = new ClearValue
             {
@@ -222,29 +227,21 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 SType           = StructureType.RenderPassBeginInfo,
                 RenderPass      = _vkCtx.RenderPass,
                 Framebuffer     = _vkCtx.Framebuffers[imageIndex],
-                RenderArea      = new Rect2D
-                {
-                    Offset = new Offset2D(0, 0),
-                    Extent = _vkCtx.SwapchainExtent
-                },
+                RenderArea      = new Rect2D { Offset = new Offset2D(0, 0), Extent = _vkCtx.SwapchainExtent },
                 ClearValueCount = 1,
                 PClearValues    = &clearValue
             };
 
             _vkCtx.Vk.CmdBeginRenderPass(cmd, &renderPassBegin, SubpassContents.Inline);
-
             _vkAnimationEngine?.RenderAll(cmd, imageIndex);
-
             _vkCtx.Vk.CmdEndRenderPass(cmd);
 
-            VulkanContext.Check(
-                _vkCtx.Vk.EndCommandBuffer(cmd),
-                "EndCommandBuffer");
+            VulkanContext.Check(_vkCtx.Vk.EndCommandBuffer(cmd), "EndCommandBuffer");
         }
 
-        // ── Resize ──────────────────────────────────────────────────────────
+        // ── Resize ─────────────────────────────────────────────────────────
 
-        public override void SetViewportSize(int width, int height)
+        public virtual void SetViewportSize(int width, int height)
         {
             if (width <= 0 || height <= 0) return;
 
@@ -255,14 +252,13 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _vkAnimationEngine.AspectRatio = (float)width / height;
         }
 
-        // ── IDisposable ─────────────────────────────────────────────────────
+        // ── Dispose ────────────────────────────────────────────────────────
 
-        public override void Dispose()
+        public virtual void Dispose()
         {
             _vkCtx.Vk.DeviceWaitIdle(_vkCtx.Device);
             _vkAnimationEngine?.Dispose();
             _vma?.Dispose();
-            base.Dispose();
         }
     }
 }
