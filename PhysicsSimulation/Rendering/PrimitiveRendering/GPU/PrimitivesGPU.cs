@@ -212,8 +212,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float Scale = 1f;
         public Vector4 Color = new(1f, 1f, 1f, 1f);
 
+        // ── Interaction callbacks ──────────────────────────────────────────────
+        public Action? OnClick  { get; set; } // fired on mouse press over primitive
+        public Action? OnHover  { get; set; } // fired each frame while mouse over primitive
+        public float HitRadius { get; set; } = 0.12f;
+
         // ── Dynamic expression callbacks (dynPos / dynRot / dynColor / dynScale) ──
-        // Each Func<double> is compiled from a DSL expression and re-evaluated every frame.
         public Func<double>? DynX        { get; set; }
         public Func<double>? DynY        { get; set; }
         public Func<double>? DynRotation { get; set; }
@@ -227,7 +231,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DynX != null || DynY != null || DynRotation != null || DynScale != null ||
             DynR != null || DynG != null || DynB != null || DynA != null;
 
-        // CPU-side mirror of last computed dyn values (avoids GPU readback)
         internal float DynPosX, DynPosY, DynRot, DynSc = 1f;
         internal float DynCR = 1f, DynCG = 1f, DynCB = 1f, DynCA = 1f;
         internal bool DynInitialized;

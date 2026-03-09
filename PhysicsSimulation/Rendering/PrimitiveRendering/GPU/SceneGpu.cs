@@ -17,6 +17,9 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         private float _animTime;
         public float T => _animTime;
 
+        // Interaction state
+        private bool _prevClick = false;
+
         private readonly Queue<BackgroundAnimation> _bgAnimQueue = new();
         private BackgroundAnimation? _currentBgAnim;
         private Vector3 _bgStartColorAtCurrentAnim;
@@ -174,6 +177,29 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             }
             if (dynOverrides.Count > 0)
                 _animationEngine.ApplyDynOverrides(dynOverrides);
+
+            // ── Hit-test & interaction callbacks ──────────────────────────────
+            bool curClick = false;
+            float mx = 0f, my = 0f;
+            if (Base.ESharpEngine.Registry.TryGetVar("CLICK", out var cv)) curClick = Convert.ToDouble(cv) != 0.0;
+            if (Base.ESharpEngine.Registry.TryGetVar("MX", out var mxv)) mx = (float)Convert.ToDouble(mxv);
+            if (Base.ESharpEngine.Registry.TryGetVar("MY", out var myv)) my = (float)Convert.ToDouble(myv);
+            bool clickEdge = curClick && !_prevClick; // true only on the frame the button is pressed
+            _prevClick = curClick;
+
+            foreach (var p in _primitives)
+            {
+                if (p.OnClick == null && p.OnHover == null) continue;
+
+                // Use live dyn position if available, else static Position
+                float px = p.DynInitialized ? p.DynPosX : p.Position.X;
+                float py = p.DynInitialized ? p.DynPosY : p.Position.Y;
+                float dx = mx - px, dy = my - py;
+                bool hit = (dx * dx + dy * dy) <= (p.HitRadius * p.HitRadius);
+
+                if (hit && p.OnHover != null) { try { p.OnHover(); } catch (Exception ex) { Base.DebugManager.Warn($"onHover error '{p.Name}': {ex.Message}"); } }
+                if (hit && clickEdge && p.OnClick != null) { try { p.OnClick(); } catch (Exception ex) { Base.DebugManager.Warn($"onClick error '{p.Name}': {ex.Message}"); } }
+            }
         }
 
         public virtual void Render()

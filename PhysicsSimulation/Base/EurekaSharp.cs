@@ -23,9 +23,11 @@ namespace PhysicsSimulation.Base
     public enum TokenType
     {
         EOF, Ident, Number, String,
-        LParen, RParen, LBracket, RBracket,
+        LParen, RParen, LBracket, RBracket, LBrace, RBrace,
         Assign, Dot, Comma, Colon, Arrow,
-        Plus, Minus, Star, Slash, Caret
+        Plus, Minus, Star, Slash, Caret,
+        Lt, Gt, LtEq, GtEq, EqEq, NotEq,
+        And, Or, Not
     }
 
     public record Token(TokenType Type, string Text, int Line);
@@ -60,7 +62,13 @@ namespace PhysicsSimulation.Base
                 return new(TokenType.Ident, "//", _line);
             }
 
-            if (c == '=' && Peek(1) == '>') { Advance(); Advance(); return new(TokenType.Arrow, "=>", _line); }
+            if (c == '=' && Peek(1) == '>') { Advance(); Advance(); return new(TokenType.Arrow,  "=>", _line); }
+            if (c == '=' && Peek(1) == '=') { Advance(); Advance(); return new(TokenType.EqEq,   "==", _line); }
+            if (c == '!' && Peek(1) == '=') { Advance(); Advance(); return new(TokenType.NotEq,  "!=", _line); }
+            if (c == '<' && Peek(1) == '=') { Advance(); Advance(); return new(TokenType.LtEq,   "<=", _line); }
+            if (c == '>' && Peek(1) == '=') { Advance(); Advance(); return new(TokenType.GtEq,   ">=", _line); }
+            if (c == '&' && Peek(1) == '&') { Advance(); Advance(); return new(TokenType.And,    "&&", _line); }
+            if (c == '|' && Peek(1) == '|') { Advance(); Advance(); return new(TokenType.Or,     "||", _line); }
 
             if (char.IsLetter(c) || c == '_')
             {
@@ -101,6 +109,11 @@ namespace PhysicsSimulation.Base
                 '*' => AdvanceToken(TokenType.Star, "*"),
                 '/' => AdvanceToken(TokenType.Slash, "/"),
                 '^' => AdvanceToken(TokenType.Caret, "^"),
+                '{' => AdvanceToken(TokenType.LBrace, "{"),
+                '}' => AdvanceToken(TokenType.RBrace, "}"),
+                '<' => AdvanceToken(TokenType.Lt,  "<"),
+                '>' => AdvanceToken(TokenType.Gt,  ">"),
+                '!' => AdvanceToken(TokenType.Not, "!"),
                 _ => throw new Exception($"Неизвестный символ: {c} на строке {_line}")
             };
         }
@@ -115,13 +128,16 @@ namespace PhysicsSimulation.Base
     public record StringExpr(string Value) : Expr;
     public record ArrayExpr(List<Expr> Items) : Expr;
     public record BinaryExpr(Expr Left, string Op, Expr Right) : Expr;
-    public record CallExpr(Expr Callee, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr; // function or delegate call
-    public record MemberCallExpr(Expr Target, string Method, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr; // target.method(...)
+    public record CallExpr(Expr Callee, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr;
+    public record MemberCallExpr(Expr Target, string Method, List<Expr> Args, Dictionary<string, Expr> NamedArgs) : Expr;
     public record LambdaExpr(string Param, Expr Body) : Expr;
+    public record BlockExpr(List<Stmt> Body) : Expr; // { stmt; ... }
 
     public abstract record Stmt;
     public record ExprStmt(Expr Expr) : Stmt;
     public record AssignStmt(string Name, Expr Value) : Stmt;
+    public record StateAssignStmt(string Name, Expr InitValue) : Stmt; // state x = initExpr
+    public record IfStmt(Expr Cond, List<Stmt> Then, List<Stmt>? Else) : Stmt;
 
     // ------------------ Parser ------------------
     public class ESharpParser
@@ -158,6 +174,35 @@ namespace PhysicsSimulation.Base
 
         private Stmt ParseStatement()
         {
+            // if (cond) { ... } else { ... }
+            if (Current.Type == TokenType.Ident && Current.Text == "if")
+            {
+                Advance(); // consume 'if'
+                Expect(TokenType.LParen);
+                var cond = ParseExpression();
+                Expect(TokenType.RParen);
+                var then = ParseBlock();
+                List<Stmt>? els = null;
+                if (Current.Type == TokenType.Ident && Current.Text == "else")
+                {
+                    Advance();
+                    els = ParseBlock();
+                }
+                return new IfStmt(cond, then, els);
+            }
+
+            // state varName = initExpr
+            if (Current.Type == TokenType.Ident && Current.Text == "state" &&
+                Peek().Type == TokenType.Ident && Peek(2).Type == TokenType.Assign)
+            {
+                Advance(); // consume 'state'
+                var name = Advance().Text;
+                Advance(); // consume '='
+                var init = ParseExpression();
+                return new StateAssignStmt(name, init);
+            }
+
+            // normal assignment: name = expr
             if (Current.Type == TokenType.Ident && Peek().Type == TokenType.Assign)
             {
                 var name = Advance().Text;
@@ -167,6 +212,16 @@ namespace PhysicsSimulation.Base
             }
 
             return new ExprStmt(ParseExpression());
+        }
+
+        private List<Stmt> ParseBlock()
+        {
+            Expect(TokenType.LBrace);
+            var stmts = new List<Stmt>();
+            while (Current.Type != TokenType.RBrace && Current.Type != TokenType.EOF)
+                stmts.Add(ParseStatement());
+            Expect(TokenType.RBrace);
+            return stmts;
         }
 
         private Token Peek(int offset = 1) => _pos + offset < _tokens.Count ? _tokens[_pos + offset] : new(TokenType.EOF, "", 0);
@@ -186,6 +241,12 @@ namespace PhysicsSimulation.Base
                 Advance();
                 return ParseUnary();
             }
+            if (Current.Type == TokenType.Not)
+            {
+                Advance();
+                var expr = ParseUnary();
+                return new BinaryExpr(new NumberExpr(0), "!", expr);
+            }
 
             return ParsePrimary();
         }
@@ -198,9 +259,13 @@ namespace PhysicsSimulation.Base
             {
                 int opPrec = Current.Type switch
                 {
-                    TokenType.Plus or TokenType.Minus => 1,
-                    TokenType.Star or TokenType.Slash => 2,
-                    TokenType.Caret => 3,
+                    TokenType.Or  => 1,
+                    TokenType.And => 2,
+                    TokenType.EqEq or TokenType.NotEq => 3,
+                    TokenType.Lt or TokenType.Gt or TokenType.LtEq or TokenType.GtEq => 4,
+                    TokenType.Plus or TokenType.Minus => 5,
+                    TokenType.Star or TokenType.Slash => 6,
+                    TokenType.Caret => 7,
                     _ => 0
                 };
 
@@ -260,6 +325,9 @@ namespace PhysicsSimulation.Base
                     var expr = ParseExpression();
                     Expect(TokenType.RParen);
                     return expr;
+                case TokenType.LBrace:
+                    // inline block expression: { stmt ... }
+                    return new BlockExpr(ParseBlock());
                 case TokenType.Ident: return ParseIdentOrCall();
                 default: throw new Exception($"Неожиданный токен: {Current.Type} ({Current.Text}) на строке {Current.Line}");
             }
@@ -423,6 +491,11 @@ namespace PhysicsSimulation.Base
         private readonly GeometryArena _arena;
         public SceneGpu CurrentScene { get; set; }
         public static DslRegistry Registry { get; } = new DslRegistry();
+
+        // state variables: persist across frames, reset only when engine is recreated (scene switch)
+        private readonly Dictionary<string, object> _stateVars = new(StringComparer.OrdinalIgnoreCase);
+
+        public void ResetState() => _stateVars.Clear();
 
         // Optional factory if caller wants engine to create scenes by name
         public Func<GeometryArena, string, SceneGpu> SceneFactory { get; private set; }
@@ -815,6 +888,11 @@ namespace PhysicsSimulation.Base
                     continue;
                 }
 
+                if (stmt is IfStmt)
+                    throw new Exception(
+                        "if/else нельзя использовать на верхнем уровне сцены — " +
+                        "только внутри onClick/onHover блоков. " +
+                        "Для динамического поведения используй dynColor/dynScale/dynPos с getState().");
                 Execute(stmt);
             }
 
@@ -825,24 +903,73 @@ namespace PhysicsSimulation.Base
         {
             switch (stmt)
             {
-                case AssignStmt a: Registry.RegisterVar(a.Name, Eval(a.Value)); break;
-                case ExprStmt e: Eval(e.Expr); break;
+                case AssignStmt a:
+                    Registry.RegisterVar(a.Name, Eval(a.Value));
+                    break;
+
+                case StateAssignStmt s:
+                    // Init-once: evaluate only if not already in state store
+                    if (!_stateVars.ContainsKey(s.Name))
+                        _stateVars[s.Name] = Eval(s.InitValue);
+                    // Always expose current value in Registry so expressions can read it
+                    Registry.RegisterVar(s.Name, _stateVars[s.Name]);
+                    break;
+
+                case IfStmt f:
+                    var condVal = Convert.ToDouble(Eval(f.Cond));
+                    var branch = condVal != 0.0 ? f.Then : f.Else;
+                    if (branch != null)
+                        foreach (var s2 in branch) Execute(s2);
+                    break;
+
+                case ExprStmt e:
+                    Eval(e.Expr);
+                    break;
             }
+        }
+
+        // Called from dyn callbacks and onClick blocks to mutate state vars
+        public void SetState(string name, object value)
+        {
+            _stateVars[name] = value;
+            Registry.RegisterVar(name, value);
+        }
+
+        public object GetState(string name)
+            => _stateVars.TryGetValue(name, out var v) ? v : 0.0;
+
+        // Execute a list of statements (used by onClick/onHover blocks)
+        public void ExecuteBlock(List<Stmt> stmts)
+        {
+            foreach (var s in stmts) Execute(s);
         }
 
         // ------------------ Evaluator ------------------
         private object Eval(Expr expr) => expr switch
         {
-            IdentExpr i => EvaluateIdent(i.Name),
-            NumberExpr n => n.Value,
-            StringExpr s => s.Value,
-            ArrayExpr a => a.Items.Select(Eval).ToArray(),
-            BinaryExpr b => EvalBinary(b),
-            CallExpr c => EvalCall(c),
+            IdentExpr i    => EvaluateIdent(i.Name),
+            NumberExpr n   => n.Value,
+            StringExpr s   => s.Value,
+            ArrayExpr a    => a.Items.Select(Eval).ToArray(),
+            BinaryExpr b   => EvalBinary(b),
+            CallExpr c     => EvalCall(c),
             MemberCallExpr m => EvalMemberCall(m),
-            LambdaExpr l => l,
+            LambdaExpr l   => l,
+            // Block: execute all statements and return last expr-stmt value (or null)
+            BlockExpr blk  => EvalBlock(blk),
             _ => null
         };
+
+        private object EvalBlock(BlockExpr blk)
+        {
+            object last = null;
+            foreach (var s in blk.Body)
+            {
+                if (s is ExprStmt es) last = Eval(es.Expr);
+                else Execute(s);
+            }
+            return last;
+        }
 
         private object EvaluateIdent(string name)
         {
@@ -854,15 +981,48 @@ namespace PhysicsSimulation.Base
 
         private object EvalBinary(BinaryExpr b)
         {
-            var l = Convert.ToDouble(Eval(b.Left));
-            var r = Convert.ToDouble(Eval(b.Right));
+            // Logical short-circuit operators
+            if (b.Op == "&&")
+            {
+                var lv = Convert.ToDouble(Eval(b.Left));
+                return lv == 0.0 ? 0.0 : (Convert.ToDouble(Eval(b.Right)) != 0.0 ? 1.0 : 0.0);
+            }
+            if (b.Op == "||")
+            {
+                var lv = Convert.ToDouble(Eval(b.Left));
+                return lv != 0.0 ? 1.0 : (Convert.ToDouble(Eval(b.Right)) != 0.0 ? 1.0 : 0.0);
+            }
+            // Unary not (encoded as 0 ! x)
+            if (b.Op == "!")
+            {
+                var rv = Convert.ToDouble(Eval(b.Right));
+                return rv == 0.0 ? 1.0 : 0.0;
+            }
+
+            var lObj = Eval(b.Left);
+            var rObj = Eval(b.Right);
+
+            // String equality
+            if (b.Op == "==" && lObj is string ls && rObj is string rs2)
+                return ls == rs2 ? 1.0 : 0.0;
+            if (b.Op == "!=" && lObj is string ls2 && rObj is string rs3)
+                return ls2 != rs3 ? 1.0 : 0.0;
+
+            var l = Convert.ToDouble(lObj);
+            var r = Convert.ToDouble(rObj);
             return b.Op switch
             {
-                "+" => l + r,
-                "-" => l - r,
-                "*" => l * r,
-                "/" => l / r,
-                "^" => Math.Pow(l, r),
+                "+"  => l + r,
+                "-"  => l - r,
+                "*"  => l * r,
+                "/"  => l / r,
+                "^"  => Math.Pow(l, r),
+                "<"  => l <  r ? 1.0 : 0.0,
+                ">"  => l >  r ? 1.0 : 0.0,
+                "<=" => l <= r ? 1.0 : 0.0,
+                ">=" => l >= r ? 1.0 : 0.0,
+                "==" => l == r ? 1.0 : 0.0,
+                "!=" => l != r ? 1.0 : 0.0,
                 _ => 0.0
             };
         }
@@ -921,6 +1081,18 @@ namespace PhysicsSimulation.Base
 
         private object EvalMemberCall(MemberCallExpr call)
         {
+            // on* methods (onClick, onHover) receive compiled Action closures from BlockExpr/IdentExpr
+            if (call.Method.StartsWith("on", StringComparison.OrdinalIgnoreCase))
+            {
+                var onTarget = Eval(call.Target);
+                var onNamed  = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
+                // Compile each arg as Action (void callback)
+                var compiledActions = call.Args.Select(a => (object)CompileAction(a)).ToArray();
+                var argsWithTarget  = PrependArg(onTarget, compiledActions);
+                if (Registry.TryInvoke(call.Method, argsWithTarget, onNamed, out var onRes)) return onRes;
+                throw new Exception($"Неизвестный on-метод: {call.Method}");
+            }
+
             // dyn* methods receive compiled Func<double> closures, NOT eagerly evaluated values.
             // This lets sin(T), cos(T*2+MX) etc. be re-evaluated every frame.
             if (call.Method.StartsWith("dyn", StringComparison.OrdinalIgnoreCase))
@@ -1040,6 +1212,29 @@ namespace PhysicsSimulation.Base
         /// </summary>
         public Func<double> CompileExpr(Expr expr)
             => () => Convert.ToDouble(Eval(expr));
+
+        /// <summary>
+        /// Compiles a DSL Expr into an Action for onClick/onHover callbacks.
+        /// BlockExpr → executes all statements. IdentExpr → looks up action in Registry.
+        /// </summary>
+        public Action CompileAction(Expr expr)
+        {
+            switch (expr)
+            {
+                case BlockExpr blk:
+                    var stmts = blk.Body;
+                    return () => ExecuteBlock(stmts);
+                case IdentExpr id:
+                    return () =>
+                    {
+                        if (Registry.TryInvoke(id.Name, Array.Empty<object>(), null, out _)) return;
+                        if (Registry.TryGetVar(id.Name, out var v) && v is Action a) a();
+                    };
+                default:
+                    // treat as expression (e.g. a function call expr stored as action)
+                    return () => Eval(expr);
+            }
+        }
 
         // ------------------ Math function registry ------------------
         private void RegisterMathFunctions()
@@ -1497,7 +1692,39 @@ namespace PhysicsSimulation.Base
                 return p;
             }));
             
-                Registry.RegisterFunc("dynPos", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            // ── Interaction builtins ─────────────────────────────────────────────
+            Registry.RegisterFunc("onClick", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
+                    throw new Exception("onClick: first arg must be a primitive");
+                if (pos.Length > 1 && pos[1] is Action a) p.OnClick = a;
+                return p;
+            }));
+
+            Registry.RegisterFunc("onHover", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
+                    throw new Exception("onHover: first arg must be a primitive");
+                if (pos.Length > 1 && pos[1] is Action a) p.OnHover = a;
+                return p;
+            }));
+
+            // setState(name, value) — mutate a state variable from a callback
+            Registry.RegisterFunc("setState", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos.Length >= 2 && pos[0] is string name) SetState(name, pos[1]);
+                return null;
+            }));
+
+            // getState(name) — read a state variable
+            Registry.RegisterFunc("getState", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos.Length >= 1 && pos[0] is string name) return GetState(name);
+                return 0.0;
+            }));
+
+            // ── Dynamic expression builtins ───────────────────────────────────────
+            Registry.RegisterFunc("dynPos", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
             {
                 if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
                     throw new Exception("dynPos: first arg must be a primitive");
