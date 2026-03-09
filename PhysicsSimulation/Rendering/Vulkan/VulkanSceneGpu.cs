@@ -141,6 +141,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _arena.Reset();
                 foreach (var p in _primitives) p.EnsureGeometryRegistered(_arena);
                 _vkAnimationEngine?.RebuildAllDescriptors();
+                _vkAnimationEngine?.UploadGeometryFromPrimitives();
             }
 
             // Animation engine

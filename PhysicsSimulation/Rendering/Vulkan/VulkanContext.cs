@@ -560,11 +560,26 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         private static SurfaceFormatKHR ChooseSurfaceFormat(SurfaceFormatKHR[] formats)
         {
-            // Предпочитаем BGRA8_SRGB + SRGB_NONLINEAR (стандарт для Android и Desktop)
-            return formats.FirstOrDefault(
-                f => f.Format == Format.B8G8R8A8Srgb &&
-                     f.ColorSpace == ColorSpaceKHR.SpaceSrgbNonlinearKhr,
-                formats[0]);
+            // Вариант 1 — самый простой: всегда берём первый UNORM (часто это B8G8R8A8_UNORM)
+            // return formats.FirstOrDefault(f => f.Format == Format.B8G8R8A8Unorm, formats[0]);
+
+            // Вариант 2 — более надёжный: ищем BGRA8_UNORM, если нет — любой UNORM, если нет — первый
+            foreach (var f in formats)
+            {
+                if (f.Format == Format.B8G8R8A8Unorm &&
+                    f.ColorSpace == ColorSpaceKHR.SpaceSrgbNonlinearKhr)   // цветовое пространство оставляем sRGB
+                    return f;
+            }
+
+            foreach (var f in formats)
+            {
+                if (f.Format == Format.B8G8R8A8Unorm ||
+                    f.Format == Format.R8G8B8A8Unorm)
+                    return f;
+            }
+
+            // fallback — что первое придёт
+            return formats[0];
         }
 
         private static PresentModeKHR ChoosePresentMode(PresentModeKHR[] modes)

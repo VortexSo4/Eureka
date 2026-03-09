@@ -1,0 +1,113 @@
+#version 450
+layout(local_size_x = 64) in;
+
+// ── Push constants (соответствует FramePushConstants в VulkanMemory.cs) ───────
+layout(push_constant) uniform PushConstants {
+    float aspectRatio;
+    float time;        // u_time
+    int   primIndex;   // не используется здесь — шейдер обрабатывает ВСЕ примитивы
+    float reserved;
+} pc;
+
+// ── Структуры (идентичны CPU-сторонним: AnimEntryCpu, MorphDescCpu, RenderInstanceCpu) ──
+struct AnimEntry {
+    ivec4 meta;   // type, pid, r2, r3
+    vec4  times;  // start, end, ease, r
+    vec4  from;
+    vec4  to;
+    ivec4 morph;  // offA, offB, offM, vcount
+};
+
+struct MorphDesc {
+    float currentT;
+    float easeType;
+    float r0;
+    float r1;
+    ivec4 offsets; // offA, offB, offM, vcount
+};
+
+struct RenderInstance {
+    vec4  row0;
+    vec4  row1;
+    vec4  row2;
+    vec4  color;
+    ivec4 meta;   // offsetM, vertexCount, flags, reserved
+    vec4  dash;
+};
+
+// ── SSBOs (set=0 обязателен в Vulkan) ────────────────────────────────────────
+layout(std430, set = 0, binding = 0) buffer AnimEntries    { AnimEntry    entries[];  };
+layout(std430, set = 0, binding = 1) buffer AnimIndex      { ivec4        index[];    };
+layout(std430, set = 0, binding = 2) buffer MorphDescSB    { MorphDesc    morphs[];   };
+layout(std430, set = 0, binding = 4) buffer RenderInstances{ RenderInstance instances[]; };
+
+// ── Easing ────────────────────────────────────────────────────────────────────
+float easeVal(float t, int e) {
+    if (e == 1) return t * t;
+    if (e == 2) return 1.0 - (1.0 - t) * (1.0 - t);
+    if (e == 3) return t * t * (3.0 - 2.0 * t);
+    return t; // Linear (0) и дефолт
+}
+
+void main() {
+    int pid = int(gl_GlobalInvocationID.x);
+    if (pid >= index.length()) return;
+
+    ivec4 idx  = index[pid];
+    int   start = idx.x;
+    int   count = idx.y;
+    if (count == 0) return;
+
+    RenderInstance inst  = instances[pid];
+    MorphDesc      mdesc = morphs[pid];
+
+    vec2  pos   = inst.row2.xy;
+    float rot   = atan(inst.row0.y, inst.row0.x);
+    float scale = length(inst.row0.xy);
+    vec4  color = inst.color;
+    vec4  dash  = inst.dash;
+
+    for (int i = 0; i < count; i++) {
+        AnimEntry e   = entries[start + i];
+        float     st  = e.times.x;
+        float     et  = e.times.y;
+        int       eas = int(e.times.z + 0.5);
+        int       typ = e.meta.x;
+
+        if (pc.time < st) continue;
+
+        if (pc.time > et) {
+            // Анимация завершена — применяем финальное значение
+            if      (typ == 1) pos        = e.to.xy;
+            else if (typ == 2) rot        = e.to.x;
+            else if (typ == 3) scale      = e.to.x;
+            else if (typ == 4) color      = e.to;
+            else if (typ == 5) { mdesc.currentT = 1.0; mdesc.easeType = e.times.z; mdesc.offsets = e.morph; }
+            else if (typ == 6) dash.xy    = e.to.xy;
+            continue;
+        }
+
+        float progress = (pc.time - st) / max(1e-6, et - st);
+        progress = clamp(progress, 0.0, 1.0);
+        progress = easeVal(progress, eas);
+
+        if      (typ == 1) pos        = mix(pos,   e.to.xy, progress);
+        else if (typ == 2) rot        = mix(rot,   e.to.x,  progress);
+        else if (typ == 3) scale      = mix(scale, e.to.x,  progress);
+        else if (typ == 4) color      = mix(color, e.to,    progress);
+        else if (typ == 5) { mdesc.currentT = progress; mdesc.easeType = e.times.z; mdesc.offsets = e.morph; }
+        else if (typ == 6) dash.xy    = mix(dash.xy, e.to.xy, progress);
+    }
+
+    // Перестраиваем матрицу трансформации
+    float c = cos(rot);
+    float s = sin(rot);
+    inst.row0  = vec4(scale * c,  scale * s, 0.0, 0.0);
+    inst.row1  = vec4(-scale * s, scale * c, 0.0, 0.0);
+    inst.row2  = vec4(pos.x, pos.y, 1.0, 0.0);
+    inst.color = color;
+    inst.dash  = dash;
+
+    instances[pid] = inst;
+    morphs[pid]    = mdesc;
+}

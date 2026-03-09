@@ -1,0 +1,53 @@
+#version 450
+layout(local_size_x = 256) in;
+
+// ── Push constants ────────────────────────────────────────────────────────────
+layout(push_constant) uniform PushConstants {
+    float aspectRatio;
+    float time;
+    int   primIndex;   // u_primitiveId — какой примитив морфировать
+    float reserved;
+} pc;
+
+// ── Структуры ─────────────────────────────────────────────────────────────────
+struct MorphDesc {
+    float currentT;
+    float easeType;
+    float r0;
+    float r1;
+    ivec4 offsets; // offA, offB, offM, vcount
+};
+
+// ── SSBOs ─────────────────────────────────────────────────────────────────────
+layout(std430, set = 0, binding = 2) buffer MorphDescSB { MorphDesc morphs[]; };
+layout(std430, set = 0, binding = 3) buffer GeometryArena { vec2 geom[]; };
+
+// ── Easing ────────────────────────────────────────────────────────────────────
+float easeVal(float t, int e) {
+    if (e == 1) return t * t;
+    if (e == 2) return 1.0 - (1.0 - t) * (1.0 - t);
+    if (e == 3) return t * t * (3.0 - 2.0 * t);
+    return t;
+}
+
+void main() {
+    uint localIdx = gl_GlobalInvocationID.x;
+    int  pid      = pc.primIndex;
+
+    MorphDesc md    = morphs[pid];
+    int       vcount = md.offsets.w;
+
+    if (vcount <= 0)              return;
+    if (int(localIdx) >= vcount)  return;
+
+    int  offA = md.offsets.x;
+    int  offB = md.offsets.y;
+    int  offM = md.offsets.z;
+
+    vec2  a   = geom[offA + int(localIdx)];
+    vec2  b   = geom[offB + int(localIdx)];
+    float t   = clamp(md.currentT, 0.0, 1.0);
+    float te  = easeVal(t, int(md.easeType + 0.5));
+
+    geom[offM + int(localIdx)] = mix(a, b, te);
+}

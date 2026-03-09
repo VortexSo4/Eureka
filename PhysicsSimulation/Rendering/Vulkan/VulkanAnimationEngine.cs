@@ -687,6 +687,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         public void UploadGeometryFromPrimitives()
         {
+            if (_disposed) return;
             int totalVerts = _arena.TotalVertexCount;
             if (totalVerts <= 0) return;
 
@@ -764,8 +765,11 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
         }
 
-        private void UploadMorphDescs() =>
+        private void UploadMorphDescs()
+        {
+            if (_disposed) return;
             _vma.Upload(_bufMorphDesc, _morphDescs);
+        }
 
         private void InitRenderInstances()
         {
@@ -773,13 +777,17 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _renderInstances[i] = _primitives[i].ToRenderInstanceCpu();
         }
 
-        private void UploadRenderInstances() =>
+        private void UploadRenderInstances()
+        {
+            if (_disposed) return;
             _vma.Upload(_bufRenderInstances, _renderInstances);
+        }
 
         // ── Animation upload ──────────────────────────────────────────────────
 
         public void UploadPendingAnimationsAndIndex()
         {
+            if (_disposed) return;
             var newEntries = new List<AnimEntryCpu>();
 
             foreach (var prim in _primitives)
@@ -883,6 +891,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         public void ApplyDynOverrides(List<DynOverride> overrides)
         {
+            if (_disposed) return;
             foreach (var ov in overrides)
             {
                 if (ov.Pid < 0 || ov.Pid >= _renderInstances.Length) continue;
@@ -918,6 +927,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         public void RenderAll(CommandBuffer cmd, int imageIndex)
         {
+            if (_disposed) return;
             if (_graphicsPipeline.Handle == 0) return;
 
             _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _graphicsPipeline);
@@ -988,15 +998,20 @@ namespace PhysicsSimulation.Rendering.Vulkan
             if (_disposed) return;
             _disposed = true;
 
-            _ctx.Vk.DeviceWaitIdle(_ctx.Device);
+            _ctx.Vk.DeviceWaitIdle(_ctx.Device);   // ← можно оставить здесь, на всякий случай
 
+            if (_computeLayout.Handle != 0)
+                _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _computeLayout, null);
+
+            if (_graphicsLayout.Handle != 0)
+                _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _graphicsLayout, null);
+
+            // Потом pipelines
             if (_animComputePipeline.Handle  != 0) _ctx.Vk.DestroyPipeline(_ctx.Device, _animComputePipeline,  null);
             if (_morphComputePipeline.Handle != 0) _ctx.Vk.DestroyPipeline(_ctx.Device, _morphComputePipeline, null);
             if (_graphicsPipeline.Handle     != 0) _ctx.Vk.DestroyPipeline(_ctx.Device, _graphicsPipeline,     null);
 
-            _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _computeLayout,  null);
-            _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _graphicsLayout, null);
-
+            // Остальное без изменений
             _ctx.Vk.DestroyDescriptorPool(_ctx.Device, _descriptorPool, null);
             _ctx.Vk.DestroyDescriptorSetLayout(_ctx.Device, _descriptorSetLayout, null);
 
