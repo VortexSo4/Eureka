@@ -1027,8 +1027,46 @@ namespace PhysicsSimulation.Base
             };
         }
 
+        // Fast-path math dispatch — avoids DynamicInvoke for the hottest functions
+        private static readonly Dictionary<string, Func<double[], double>> _mathFastPath =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sin"]        = a => Math.Sin(a[0]),
+                ["cos"]        = a => Math.Cos(a[0]),
+                ["tan"]        = a => Math.Tan(a[0]),
+                ["asin"]       = a => Math.Asin(a[0]),
+                ["acos"]       = a => Math.Acos(a[0]),
+                ["atan"]       = a => Math.Atan(a[0]),
+                ["atan2"]      = a => Math.Atan2(a[0], a[1]),
+                ["sqrt"]       = a => Math.Sqrt(a[0]),
+                ["abs"]        = a => Math.Abs(a[0]),
+                ["floor"]      = a => Math.Floor(a[0]),
+                ["ceil"]       = a => Math.Ceiling(a[0]),
+                ["round"]      = a => Math.Round(a[0]),
+                ["sign"]       = a => (double)Math.Sign(a[0]),
+                ["log"]        = a => Math.Log(a[0]),
+                ["exp"]        = a => Math.Exp(a[0]),
+                ["pow"]        = a => Math.Pow(a[0], a[1]),
+                ["min"]        = a => Math.Min(a[0], a[1]),
+                ["max"]        = a => Math.Max(a[0], a[1]),
+                ["mod"]        = a => a[0] - Math.Floor(a[0] / a[1]) * a[1],
+                ["fract"]      = a => a[0] - Math.Floor(a[0]),
+                ["clamp"]      = a => Math.Clamp(a[0], a[1], a[2]),
+                ["mix"]        = a => a[0] + (a[1] - a[0]) * a[2],
+                ["smoothstep"] = a => { var x = Math.Clamp((a[2]-a[0])/(a[1]-a[0]),0,1); return x*x*(3-2*x); },
+            };
+
         private object EvalCall(CallExpr call)
         {
+            // Fast-path: math functions skip TryInvoke/DynamicInvoke entirely
+            if (call.Callee is IdentExpr mathIdent && _mathFastPath.TryGetValue(mathIdent.Name, out var mathFn))
+            {
+                var mathArgs = new double[call.Args.Count];
+                for (int i = 0; i < call.Args.Count; i++)
+                    mathArgs[i] = Convert.ToDouble(Eval(call.Args[i]));
+                return mathFn(mathArgs);
+            }
+
             // evaluate positional args
             var pos = call.Args.Select(Eval).ToArray();
             // evaluate named args into values (LambdaExpr stays LambdaExpr because Eval(lambda) returns LambdaExpr)
@@ -1418,7 +1456,7 @@ namespace PhysicsSimulation.Base
                     typeface = SKTypeface.FromFamilyName(fontName);
                 }
 
-                var txt = new TextGpu(content,typeface, size, isDynamic: true);
+                var txt = new TextGpu(content, typeface, size, isDynamic: false);
 
                 if (named.TryGetValue("align", out var alignObj) && alignObj is string alignStr)
                 {

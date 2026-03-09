@@ -16,7 +16,7 @@ namespace PhysicsSimulation
         {
             DebugManager.Custom($"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "#A0FF33");
             DebugManager.Custom($"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
-            DebugManager.Custom($"Starting E# Scene Runner", "E#", "#A0FF33");
+            DebugManager.Custom($"Starting E# Scene Runner", "E#", "#FFFF00");
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
@@ -56,7 +56,9 @@ namespace PhysicsSimulation
                 esharp = new ESharpEngine(arena);
                 esharp.CurrentScene = new SceneGpu(arena);
                 esharp.LoadSceneFromFile(sceneFiles[index]);
-                return esharp.CurrentScene;
+                var s = esharp.CurrentScene;
+                s.SetViewportSize(window.ClientSize.X, window.ClientSize.Y);
+                return s;
             }
 
             // Загружаем первую сцену
@@ -76,12 +78,15 @@ namespace PhysicsSimulation
                 // Update live globals accessible from any DSL expression
                 var ms = window.MouseState;
                 float aspect = (float)window.ClientSize.X / window.ClientSize.Y;
-                float mx =  ((ms.X / window.ClientSize.X) * 2f - 1f) * aspect; // account for aspect ratio
-                float my = -((ms.Y / window.ClientSize.Y) * 2f - 1f);           // flip Y: OpenGL Y-up
-                ESharpEngine.Registry.RegisterVar("T",     currentTime);
-                ESharpEngine.Registry.RegisterVar("DT",    (double)dt);
-                ESharpEngine.Registry.RegisterVar("MX",    (double)mx);
-                ESharpEngine.Registry.RegisterVar("MY",    (double)my);
+                float mxRaw =  (ms.X / window.ClientSize.X) * 2f - 1f;          // NDC [-1,1]
+                float myRaw = -((ms.Y / window.ClientSize.Y) * 2f - 1f);        // flip Y
+                float mx    = mxRaw * aspect;                                    // world coords (matches dynPos)
+                ESharpEngine.Registry.RegisterVar("T",      currentTime);
+                ESharpEngine.Registry.RegisterVar("DT",     (double)dt);
+                ESharpEngine.Registry.RegisterVar("MX",     (double)mx);        // world X (use in dynPos)
+                ESharpEngine.Registry.RegisterVar("MY",     (double)myRaw);     // world Y
+                ESharpEngine.Registry.RegisterVar("MX_NDC", (double)mxRaw);     // raw NDC X (use in hit-test)
+                ESharpEngine.Registry.RegisterVar("MY_NDC", (double)myRaw);     // raw NDC Y
                 ESharpEngine.Registry.RegisterVar("CLICK", ms.IsButtonDown(OpenTK.Windowing.GraphicsLibraryFramework.MouseButton.Left) ? 1.0 : 0.0);
                 ESharpEngine.Registry.RegisterVar("FRAME", (double)frameCount);
 
@@ -112,9 +117,11 @@ namespace PhysicsSimulation
                     GL.UseProgram(program);
                     GL.Uniform1(aspectLoc, (float)window.Size.Y / window.Size.X);
                 }
+                scene.SetViewportSize(window.ClientSize.X, window.ClientSize.Y);
             };
 
             GL.Viewport(0, 0, window.ClientSize.X, window.ClientSize.Y);
+            scene.SetViewportSize(window.ClientSize.X, window.ClientSize.Y);
             window.Run();
         }
     }

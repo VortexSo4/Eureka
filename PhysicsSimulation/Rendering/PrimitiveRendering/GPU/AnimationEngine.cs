@@ -36,6 +36,12 @@ namespace PhysicsSimulation.Rendering.GPU
         private int _programRender = -1;
         private int _vao = -1;
 
+        // Cached uniform locations — fetched once after shader compilation
+        private int _uPrimIndex   = -1;
+        private int _uAspectRatio = -1;
+        private int _uTime        = -1;
+        private int _uMorphPrimId = -1;
+
         // Engine state
         private List<PrimitiveGpu> _primitives = new();
         private GeometryArena _arena;
@@ -136,6 +142,12 @@ namespace PhysicsSimulation.Rendering.GPU
             _programAnimCompute = CreateComputeProgram(ANIMATION_COMPUTE_SRC, "anim_compute");
             _programMorphCompute = CreateComputeProgram(MORPH_COMPUTE_SRC, "morph_compute");
             _programRender = CreateProgram(VERTEX_RENDER_SRC, FRAGMENT_RENDER_SRC);
+
+            // Cache uniform locations once — avoids 26k+ GetUniformLocation calls per session
+            _uPrimIndex   = GL.GetUniformLocation(_programRender,       "u_primIndex");
+            _uAspectRatio = GL.GetUniformLocation(_programRender,       "u_aspectRatio");
+            _uTime        = GL.GetUniformLocation(_programAnimCompute,  "u_time");
+            _uMorphPrimId = GL.GetUniformLocation(_programMorphCompute, "u_primitiveId");
 
             // VAO + vertex attrib: geometry buffer is used as array buffer with vec2 position at location 0
             _vao = GL.GenVertexArray();
@@ -327,19 +339,18 @@ namespace PhysicsSimulation.Rendering.GPU
         {
             // Dispatch animation compute (updates RenderInstances and MorphDesc)
             GL.UseProgram(_programAnimCompute);
-            GL.Uniform1(GL.GetUniformLocation(_programAnimCompute, "u_time"), time);
+            GL.Uniform1(_uTime, time);
             int groups = (int)MathF.Ceiling(_primitiveCount / 64f);
             GL.DispatchCompute(groups, 1, 1);
             GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit);
 
             // Dispatch morph compute for each primitive that has morphs
             GL.UseProgram(_programMorphCompute);
-            int morphUniformLoc = GL.GetUniformLocation(_programMorphCompute, "u_primitiveId");
             for (int pid = 0; pid < _primitiveCount; pid++)
             {
                 if (_morphDescs[pid].VertexCount <= 0 || _morphDescs[pid].CurrentT <= 0f) continue;
 
-                GL.Uniform1(morphUniformLoc, pid);
+                GL.Uniform1(_uMorphPrimId, pid);
                 int morphGroups = (int)MathF.Ceiling(_morphDescs[pid].VertexCount / 256f);
                 GL.DispatchCompute(morphGroups, 1, 1);
             }
@@ -363,16 +374,14 @@ namespace PhysicsSimulation.Rendering.GPU
             GL.UseProgram(_programRender);
             GL.BindVertexArray(_vao);
 
-            int primLoc   = GL.GetUniformLocation(_programRender, "u_primIndex");
-            int aspectLoc = GL.GetUniformLocation(_programRender, "u_aspectRatio");
-            GL.Uniform1(aspectLoc, AspectRatio);
+            GL.Uniform1(_uAspectRatio, AspectRatio);
 
             for (int pid = 0; pid < _primitiveCount; pid++)
             {
                 var md = _morphDescs[pid];
                 if (md.VertexCount <= 0) continue;
 
-                GL.Uniform1(primLoc, pid);
+                GL.Uniform1(_uPrimIndex, pid);
 
                 // Split contours at NaN separators using cached CPU vertices.
                 // Each contour is drawn as its own LineStrip — NaN points never

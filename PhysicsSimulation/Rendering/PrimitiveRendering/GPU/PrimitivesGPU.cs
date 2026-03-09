@@ -644,50 +644,66 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float XMax { get; private set; }
         public int Resolution { get; private set; }
 
+        // Pre-allocated buffers — reused every frame, zero GC pressure
+        private Vector2[] _pointBuf;
+        private Vector2[] _flatBuf;
+
         public PlotGpu(Func<float, float> func, float xMin = -1f, float xMax = 1f,
-            int resolution = 300,  bool isDynamic = true)
+            int resolution = 300, bool isDynamic = true)
             : base([])
         {
-            Func = func ?? throw new ArgumentNullException(nameof(func));
+            Func       = func ?? throw new ArgumentNullException(nameof(func));
             Resolution = Math.Max(2, resolution);
-            UpdateRange(xMin, xMax);
-            Flags = PrimitiveFlags.None;
+            _pointBuf  = new Vector2[Resolution + 1];
+            _flatBuf   = new Vector2[Resolution + 1 + 1]; // +1 for NaN sentinel
+            XMin = xMin; XMax = xMax;
+            Flags     = PrimitiveFlags.None;
             IsDynamic = isDynamic;
+            // Initial non-dynamic registration path
+            if (!isDynamic) UpdateRange(xMin, xMax);
         }
 
         public void UpdateRange(float xMin, float xMax, int? resolution = null)
         {
-            XMin = xMin;
-            XMax = xMax;
-            if (resolution.HasValue) Resolution = Math.Max(2, resolution.Value);
+            XMin = xMin; XMax = xMax;
+            if (resolution.HasValue)
+            {
+                Resolution = Math.Max(2, resolution.Value);
+                _pointBuf  = new Vector2[Resolution + 1];
+                _flatBuf   = new Vector2[Resolution + 1 + 1];
+            }
             var points = new List<Vector2>(Resolution + 1);
             for (int i = 0; i <= Resolution; i++)
             {
                 float t = i / (float)Resolution;
                 float x = MathHelper.Lerp(XMin, XMax, t);
-                float y = Func(x);
-                points.Add(new Vector2(x, y));
+                points.Add(new Vector2(x, Func(x)));
             }
             SetContours([points]);
             InvalidateGeometry();
         }
-        
+
         protected override void RegisterGeometryInternal(GeometryArena arena)
         {
-            DebugManager.Geometry($"plot: Regenerating points for '{Name}'");
-    
             if (IsDynamic)
             {
-        
-                var points = new List<Vector2>(Resolution + 1);
-                for (int i = 0; i <= Resolution; i++)
+                // Fill pre-allocated point buffer — no heap allocation
+                int n = Resolution + 1;
+                for (int i = 0; i < n; i++)
                 {
                     float t = i / (float)Resolution;
                     float x = MathHelper.Lerp(XMin, XMax, t);
-                    float y = Func(x);
-                    points.Add(new Vector2(x, y));
+                    _pointBuf[i] = new Vector2(x, Func(x));
                 }
-                SetContours([points]);
+
+                // Flatten directly into pre-allocated flat buffer
+                if (_flatBuf.Length < n + 1)
+                    _flatBuf = new Vector2[n + 1];
+                Array.Copy(_pointBuf, _flatBuf, n);
+                // No NaN separator needed for a single open polyline
+
+                RegisterRawGeometry(arena, _flatBuf[..n]);
+                return;
             }
 
             if (_contours.Count == 0)
@@ -784,11 +800,19 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             Color = new Vector4(1, 1, 1, 1);
         }
 
+        // Glyph vertex cache — survives arena resets, only rebuilt when text/font changes
+        private Vector2[]? _glyphCache;
+
         protected override void RegisterGeometryInternal(GeometryArena arena)
         {
-            if (!_dirty && IsGeometryRegistered) return;
+            // If glyph cache is valid, just re-allocate space in arena from cache — no SkiaSharp work
+            if (!_dirty && _glyphCache != null)
+            {
+                RegisterRawGeometry(arena, _glyphCache);
+                return;
+            }
 
-            // ← ВАЖНО: используем закешированный _resolvedTypeface, а не дёргаем FontManager
+            // Full rebuild: text or font changed
             var typeface = _resolvedTypeface;
 
             var lines = string.IsNullOrEmpty(_text)
@@ -800,7 +824,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             float totalHeight = lines.Length > 0 ? lines.Length * FontSize * _lineHeight : FontSize;
             float startY = VAlign switch
             {
-                VerticalAlignment.Top => totalHeight / 2f - FontSize * 0.8f,
+                VerticalAlignment.Top    => totalHeight / 2f - FontSize * 0.8f,
                 VerticalAlignment.Bottom => -totalHeight / 2f + FontSize * 0.2f,
                 _ => 0f
             };
@@ -817,8 +841,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
                 float baseX = HAlign switch
                 {
-                    HorizontalAlignment.Left => -lineWidth / 2f,
-                    HorizontalAlignment.Right => lineWidth / 2f,
+                    HorizontalAlignment.Left  => -lineWidth / 2f,
+                    HorizontalAlignment.Right =>  lineWidth / 2f,
                     _ => 0f
                 };
 
@@ -827,7 +851,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 foreach (char c in line)
                 {
                     var contours = CharMap.GetCharContours(c, cursorX, lineY, FontSize, typeface);
-
                     foreach (var contour in contours)
                     {
                         if (contour.Count >= 2)
@@ -836,7 +859,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                             allFlatVertices.Add(new Vector2(float.NaN, float.NaN));
                         }
                     }
-
                     cursorX += CharMap.GetGlyphAdvance(c, FontSize, typeface) + LetterSpacing * FontSize;
                 }
             }
@@ -848,11 +870,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             if (allFlatVertices.Count == 0)
                 allFlatVertices.Add(new Vector2(0f, 0f));
 
-            // RegisterRawGeometry sets VertexOffsetRaw, VertexCount AND CachedVertices
-            // so UploadGeometryFromPrimitives can read the data and RenderAll can split contours
-            RegisterRawGeometry(arena, allFlatVertices.ToArray());
-
+            _glyphCache = allFlatVertices.ToArray();
             _dirty = false;
+
+            RegisterRawGeometry(arena, _glyphCache);
 
             DebugManager.Geometry(
                 $"TextGpu '{Name}': Generated {allFlatVertices.Count} vertices for \"{_text}\" (Font: {typeface.FamilyName}, Size: {FontSize})");
