@@ -7,7 +7,6 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
-using OpenTK.Mathematics;
 using PhysicsSimulation.Base;
 using PhysicsSimulation.Rendering.TextRendering;
 using SkiaSharp;
@@ -319,7 +318,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public PrimitiveGpu AnimateRotation(float start, float duration, EaseType ease, float toDegrees)
         {
             float end = start + duration;
-            float toRad = MathHelper.DegreesToRadians(toDegrees);
+            float toRad = float.DegreesToRadians(toDegrees);
             DebugManager.Anim(
                 $"PrimitiveGpu.AnimateRotation: Adding rotation animation for '{Name}' to {toDegrees} degrees.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Rotate, PrimitiveId, start, end, ease,
@@ -689,7 +688,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             for (int i = 0; i <= Resolution; i++)
             {
                 float t = i / (float)Resolution;
-                float x = MathHelper.Lerp(XMin, XMax, t);
+                float x = (XMin + (XMax - XMin) * t);
                 points.Add(new Vector2(x, Func(x)));
             }
             SetContours([points]);
@@ -710,7 +709,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 for (int i = 0; i < n; i++)
                 {
                     float t = i / (float)Resolution;
-                    float x = MathHelper.Lerp(XMin, XMax, t);
+                    float x = (XMin + (XMax - XMin) * t);
                     _pointBuf[i] = new Vector2(x, Func(x));
                 }
 
@@ -989,7 +988,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             for (int i = 0; i <= Segments; i++)
             {
                 float t = i / (float)Segments;
-                float a = MathHelper.Lerp(StartAngle, EndAngle, t);
+                float a = (StartAngle + (EndAngle - StartAngle) * t);
                 pts.Add(new Vector2(MathF.Cos(a) * Radius, MathF.Sin(a) * Radius));
             }
             return pts;
@@ -1010,7 +1009,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         {
             var dir = Vector2.Normalize(to - from);
             var back = to - dir * headSize;
-            float a = MathHelper.DegreesToRadians(angleDeg);
+            float a = float.DegreesToRadians(angleDeg);
 
             Vector2 left = Rotate(dir, +a);
             Vector2 right = Rotate(dir, -a);
@@ -1073,13 +1072,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
             for (int i = 0; i <= x; i++)
             {
-                float tx = MathHelper.Lerp(-hx, hx, i / (float)x);
+                float tx = (-hx + (hx - -hx) * i / (float)x);
                 contours.Add([new Vector2(tx, -hy), new Vector2(tx, hy)]);
             }
 
             for (int j = 0; j <= y; j++)
             {
-                float ty = MathHelper.Lerp(-hy, hy, j / (float)y);
+                float ty = (-hy + (hy - -hy) * j / (float)y);
                 contours.Add([new Vector2(-hx, ty), new Vector2(hx, ty)]);
             }
 

@@ -10,7 +10,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using OpenTK.Mathematics;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
 using PhysicsSimulation.Rendering.Vulkan;
 using SkiaSharp;
@@ -1741,8 +1740,8 @@ namespace PhysicsSimulation.Base
                 bool dynamic = ctx.ParseBool("dynamic", true);
 
                 return new ArcGpu(r,
-                    MathHelper.DegreesToRadians(start),
-                    MathHelper.DegreesToRadians(end),
+                    float.DegreesToRadians(start),
+                    float.DegreesToRadians(end),
                     seg, dynamic);
             }));
             Registry.RegisterFunc("arrow", new Func<object[], Dictionary<string, object>, object>((pos, named) =>

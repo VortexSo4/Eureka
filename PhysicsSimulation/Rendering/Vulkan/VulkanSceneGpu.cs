@@ -19,6 +19,10 @@ namespace PhysicsSimulation.Rendering.Vulkan
         protected List<PrimitiveGpu> _primitives = [];
         protected GeometryArena _arena;
 
+        // Кешируем список динамических примитивов чтобы не делать .Any()+LINQ каждый кадр
+        private List<PrimitiveGpu> _dynamicPrimitives = [];
+        private bool _hasDynamicPrimitives;
+
         // ── Vulkan-специфичные поля ────────────────────────────────────────
         protected readonly VulkanContext _vkCtx;
         protected readonly VulkanMemoryAllocator _vma;
@@ -57,6 +61,14 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
 
             _primitives.Add(p);
+
+            // Поддерживаем кеш динамических примитивов — избегаем .Any() каждый кадр
+            if (p.IsDynamic)
+            {
+                _dynamicPrimitives.Add(p);
+                _hasDynamicPrimitives = true;
+            }
+
             DebugManager.Scene($"VulkanSceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
 
@@ -134,13 +146,35 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 }
             }
 
-            // Dynamic primitives
-            if (_primitives.Any(p => p.IsDynamic))
+            // Dynamic primitives.
+            //
+            // GeometryArena — append-only: нельзя обновить отдельный слот без сброса всей арены.
+            // Поэтому при наличии динамических примитивов сбрасываем арену целиком и
+            // перерегистрируем все примитивы заново каждый кадр.
+            //
+            // Оставшаяся оптимизация: _hasDynamicPrimitives — O(1) флаг вместо .Any() каждый кадр.
+            // RebuildAllDescriptors (пересылка MorphDescs + RenderInstances) вызывается только
+            // при реальном изменении числа вершин, а не каждый кадр.
+            if (_hasDynamicPrimitives)
             {
+                // Снимаем старые счётчики вершин до сброса арены
+                int[] prevCounts = new int[_primitives.Count];
+                for (int i = 0; i < _primitives.Count; i++)
+                    prevCounts[i] = _primitives[i].VertexCount;
+
+                // Сбрасываем арену и перерегистрируем всех — это единственный корректный способ
                 foreach (var p in _primitives) p.InvalidateGeometry();
                 _arena.Reset();
                 foreach (var p in _primitives) p.EnsureGeometryRegistered(_arena);
-                _vkAnimationEngine?.RebuildAllDescriptors();
+
+                // RebuildAllDescriptors (SSBO upload) только если изменился vertex count
+                bool vertexCountChanged = false;
+                for (int i = 0; i < _primitives.Count; i++)
+                    if (_primitives[i].VertexCount != prevCounts[i]) { vertexCountChanged = true; break; }
+
+                if (vertexCountChanged)
+                    _vkAnimationEngine?.RebuildAllDescriptors();
+
                 _vkAnimationEngine?.UploadGeometryFromPrimitives();
             }
 
