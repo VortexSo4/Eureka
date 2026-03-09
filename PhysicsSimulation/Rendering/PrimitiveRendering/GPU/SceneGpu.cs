@@ -128,6 +128,52 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             // Затем стандартные анимации
             _animationEngine.UploadPendingAnimationsAndIndex();
             _animationEngine.UpdateAndDispatch(_animTime);
+
+            // Apply dynamic expression overrides (dynPos / dynRot / dynColor / dynScale)
+            // These run AFTER the compute shader so they always win over keyframe animations.
+            var dynOverrides = new System.Collections.Generic.List<PhysicsSimulation.Rendering.GPU.AnimationEngine.DynOverride>();
+            foreach (var p in _primitives)
+            {
+                if (!p.HasDynCallbacks) continue;
+
+                // Seed CPU mirror from primitive's initial values on first frame
+                if (!p.DynInitialized)
+                {
+                    p.DynPosX = p.Position.X; p.DynPosY = p.Position.Y;
+                    p.DynRot  = p.Rotation;   p.DynSc   = p.Scale;
+                    p.DynCR   = p.Color.X;    p.DynCG   = p.Color.Y;
+                    p.DynCB   = p.Color.Z;    p.DynCA   = p.Color.W;
+                    p.DynInitialized = true;
+                }
+
+                bool hasPos = false, hasRot = false, hasScale = false, hasColor = false;
+                try
+                {
+                    if (p.DynX        != null) { p.DynPosX = (float)p.DynX();        hasPos   = true; }
+                    if (p.DynY        != null) { p.DynPosY = (float)p.DynY();        hasPos   = true; }
+                    if (p.DynRotation != null) { p.DynRot  = (float)p.DynRotation(); hasRot   = true; }
+                    if (p.DynScale    != null) { p.DynSc   = (float)p.DynScale();    hasScale = true; }
+                    if (p.DynR        != null) { p.DynCR   = (float)p.DynR();        hasColor = true; }
+                    if (p.DynG        != null) { p.DynCG   = (float)p.DynG();        hasColor = true; }
+                    if (p.DynB        != null) { p.DynCB   = (float)p.DynB();        hasColor = true; }
+                    if (p.DynA        != null) { p.DynCA   = (float)p.DynA();        hasColor = true; }
+                }
+                catch (Exception ex)
+                {
+                    Base.DebugManager.Warn($"dynExpr error on '{p.Name}': {ex.Message}");
+                }
+
+                dynOverrides.Add(new PhysicsSimulation.Rendering.GPU.AnimationEngine.DynOverride
+                {
+                    Pid      = p.PrimitiveId,
+                    PosX     = p.DynPosX, PosY  = p.DynPosY,
+                    Rotation = p.DynRot,  Scale  = p.DynSc,
+                    Color    = new Vector4(p.DynCR, p.DynCG, p.DynCB, p.DynCA),
+                    HasPos   = hasPos, HasRot = hasRot, HasScale = hasScale, HasColor = hasColor
+                });
+            }
+            if (dynOverrides.Count > 0)
+                _animationEngine.ApplyDynOverrides(dynOverrides);
         }
 
         public virtual void Render()

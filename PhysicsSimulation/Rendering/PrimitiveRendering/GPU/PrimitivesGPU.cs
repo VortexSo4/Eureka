@@ -212,6 +212,26 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float Scale = 1f;
         public Vector4 Color = new(1f, 1f, 1f, 1f);
 
+        // ── Dynamic expression callbacks (dynPos / dynRot / dynColor / dynScale) ──
+        // Each Func<double> is compiled from a DSL expression and re-evaluated every frame.
+        public Func<double>? DynX        { get; set; }
+        public Func<double>? DynY        { get; set; }
+        public Func<double>? DynRotation { get; set; }
+        public Func<double>? DynScale    { get; set; }
+        public Func<double>? DynR        { get; set; }
+        public Func<double>? DynG        { get; set; }
+        public Func<double>? DynB        { get; set; }
+        public Func<double>? DynA        { get; set; }
+
+        public bool HasDynCallbacks =>
+            DynX != null || DynY != null || DynRotation != null || DynScale != null ||
+            DynR != null || DynG != null || DynB != null || DynA != null;
+
+        // CPU-side mirror of last computed dyn values (avoids GPU readback)
+        internal float DynPosX, DynPosY, DynRot, DynSc = 1f;
+        internal float DynCR = 1f, DynCG = 1f, DynCB = 1f, DynCA = 1f;
+        internal bool DynInitialized;
+
         // dash params (world units)
         public float FilledLength = 0f;
         public float EmptyLength = 0f;

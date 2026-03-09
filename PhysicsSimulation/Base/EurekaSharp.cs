@@ -748,8 +748,19 @@ namespace PhysicsSimulation.Base
             if (initialScene != null) SetScene(initialScene);
 
             // default globals
-            Registry.RegisterVar("PI", Math.PI);
-            Registry.RegisterVar("T", 0.0);
+            Registry.RegisterVar("PI",  Math.PI);
+            Registry.RegisterVar("TAU", Math.PI * 2.0);
+            Registry.RegisterVar("T",   0.0);
+            Registry.RegisterVar("DT",  0.0);   // delta time (seconds)
+            Registry.RegisterVar("MX",  0.0);   // mouse X in NDC [-1, 1]
+            Registry.RegisterVar("MY",  0.0);   // mouse Y in NDC [-1, 1]
+            Registry.RegisterVar("CLICK", 0.0); // 1.0 if left button held
+            Registry.RegisterVar("W",   1.0);   // half-width  (always 1.0 in NDC)
+            Registry.RegisterVar("H",   1.0);   // half-height (always 1.0 in NDC)
+            Registry.RegisterVar("FRAME", 0.0); // frame counter
+
+            // Math functions available everywhere in DSL expressions
+            RegisterMathFunctions();
 
             // Register builtin functions using CallContext to parse args in a consistent manner.
             RegisterBuiltinFunctions();
@@ -910,6 +921,19 @@ namespace PhysicsSimulation.Base
 
         private object EvalMemberCall(MemberCallExpr call)
         {
+            // dyn* methods receive compiled Func<double> closures, NOT eagerly evaluated values.
+            // This lets sin(T), cos(T*2+MX) etc. be re-evaluated every frame.
+            if (call.Method.StartsWith("dyn", StringComparison.OrdinalIgnoreCase))
+            {
+                var dynTarget = Eval(call.Target);
+                var dynNamed  = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
+                // Compile each positional arg into a Func<double> that reads live Registry values
+                var compiledArgs = call.Args.Select(a => (object)CompileExpr(a)).ToArray();
+                var argsWithTarget = PrependArg(dynTarget, compiledArgs);
+                if (Registry.TryInvoke(call.Method, argsWithTarget, dynNamed, out var dynRes)) return dynRes;
+                throw new Exception($"Неизвестный dyn-метод: {call.Method}");
+            }
+
             var target = Eval(call.Target);
             var pos = call.Args.Select(Eval).ToArray();
             var named = call.NamedArgs?.ToDictionary(k => k.Key, k => Eval(k.Value), StringComparer.OrdinalIgnoreCase);
@@ -1007,6 +1031,82 @@ namespace PhysicsSimulation.Base
             "min" => Math.Min(args[0], args.Length > 1 ? args[1] : args[0]),
             _ => 0
         };
+
+        // ------------------ Dynamic expression compilation ------------------
+
+        /// <summary>
+        /// Compiles a DSL Expr into a Func&lt;double&gt; that re-evaluates against the live Registry
+        /// every time it is called. Used by dynPos / dynRot / dynColor / dynScale.
+        /// </summary>
+        public Func<double> CompileExpr(Expr expr)
+            => () => Convert.ToDouble(Eval(expr));
+
+        // ------------------ Math function registry ------------------
+        private void RegisterMathFunctions()
+        {
+            // Shorthand: register a single-arg math function
+            void M1(string name, Func<double, double> fn) =>
+                Registry.RegisterFunc(name, new Func<object[], Dictionary<string, object>, object>(
+                    (pos, _) => fn(Convert.ToDouble(pos[0]))));
+
+            void M2(string name, Func<double, double, double> fn) =>
+                Registry.RegisterFunc(name, new Func<object[], Dictionary<string, object>, object>(
+                    (pos, _) => fn(Convert.ToDouble(pos[0]), Convert.ToDouble(pos[1]))));
+
+            M1("sin",   Math.Sin);
+            M1("cos",   Math.Cos);
+            M1("tan",   Math.Tan);
+            M1("asin",  Math.Asin);
+            M1("acos",  Math.Acos);
+            M1("atan",  Math.Atan);
+            M1("sqrt",  Math.Sqrt);
+            M1("abs",   Math.Abs);
+            M1("floor", Math.Floor);
+            M1("ceil",  Math.Ceiling);
+            M1("round", Math.Round);
+            M1("sign",  x => Math.Sign(x));
+            M1("log",   Math.Log);
+            M1("exp",   Math.Exp);
+            M2("pow",   Math.Pow);
+            M2("atan2", Math.Atan2);
+            M2("min",   Math.Min);
+            M2("max",   Math.Max);
+            M2("mod",   (a, b) => a - Math.Floor(a / b) * b);
+
+            // clamp(value, min, max)
+            Registry.RegisterFunc("clamp", new Func<object[], Dictionary<string, object>, object>((pos, _) =>
+            {
+                double v  = Convert.ToDouble(pos[0]);
+                double lo = Convert.ToDouble(pos[1]);
+                double hi = Convert.ToDouble(pos[2]);
+                return Math.Clamp(v, lo, hi);
+            }));
+
+            // mix(a, b, t)  — linear interpolation
+            Registry.RegisterFunc("mix", new Func<object[], Dictionary<string, object>, object>((pos, _) =>
+            {
+                double a = Convert.ToDouble(pos[0]);
+                double b = Convert.ToDouble(pos[1]);
+                double t = Convert.ToDouble(pos[2]);
+                return a + (b - a) * t;
+            }));
+
+            // smoothstep(edge0, edge1, x)
+            Registry.RegisterFunc("smoothstep", new Func<object[], Dictionary<string, object>, object>((pos, _) =>
+            {
+                double e0 = Convert.ToDouble(pos[0]);
+                double e1 = Convert.ToDouble(pos[1]);
+                double x  = Math.Clamp((Convert.ToDouble(pos[2]) - e0) / (e1 - e0), 0.0, 1.0);
+                return x * x * (3 - 2 * x);
+            }));
+
+            // fract(x)  — fractional part
+            Registry.RegisterFunc("fract", new Func<object[], Dictionary<string, object>, object>((pos, _) =>
+            {
+                double x = Convert.ToDouble(pos[0]);
+                return x - Math.Floor(x);
+            }));
+        }
 
         // ------------------ Builtin registration ------------------
         private void RegisterBuiltinFunctions()
@@ -1394,6 +1494,53 @@ namespace PhysicsSimulation.Base
                     ease = EaseHelper.Parse(es);
 
                 p.AnimateMorph(start, end, ease, offsetA, offsetB, offsetM, vertexCount);
+                return p;
+            }));
+            
+                Registry.RegisterFunc("dynPos", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
+                    throw new Exception("dynPos: first arg must be a primitive");
+                if (pos[1] is Func<double> fx) p.DynX = fx;
+                if (pos.Length > 2 && pos[2] is Func<double> fy) p.DynY = fy;
+                return p;
+            }));
+    
+            Registry.RegisterFunc("dynRot", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
+                    throw new Exception("dynRot: first arg must be a primitive");
+                if (pos[1] is Func<double> fr)
+                    // DSL gives degrees → convert to radians
+                    p.DynRotation = () => fr() * Math.PI / 180.0;
+                return p;
+            }));
+    
+            Registry.RegisterFunc("dynScale", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
+                    throw new Exception("dynScale: first arg must be a primitive");
+                if (pos[1] is Func<double> fs) p.DynScale = fs;
+                return p;
+            }));
+    
+            Registry.RegisterFunc("dynColor", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
+                    throw new Exception("dynColor: first arg must be a primitive");
+                if (pos.Length > 1 && pos[1] is Func<double> fr) p.DynR = fr;
+                if (pos.Length > 2 && pos[2] is Func<double> fg) p.DynG = fg;
+                if (pos.Length > 3 && pos[3] is Func<double> fb) p.DynB = fb;
+                if (pos.Length > 4 && pos[4] is Func<double> fa) p.DynA = fa;
+                return p;
+            }));
+    
+            // dynAlpha(prim, alphaExpr) — convenience shortcut for animating opacity
+            Registry.RegisterFunc("dynAlpha", new Func<object[], Dictionary<string, object>, object>((pos, named) =>
+            {
+                if (pos[0] is not Rendering.PrimitiveRendering.GPU.PrimitiveGpu p)
+                    throw new Exception("dynAlpha: first arg must be a primitive");
+                if (pos[1] is Func<double> fa) p.DynA = fa;
                 return p;
             }));
         }

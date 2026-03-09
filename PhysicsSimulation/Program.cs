@@ -48,20 +48,13 @@ namespace PhysicsSimulation
 
             int currentSceneIndex = 0;
 
-            // Helper: load scene by index, resetting arena and engine state cleanly
+            // Helper: полностью чистое переключение сцены
             SceneGpu LoadScene(int index)
             {
-                // Clear registry to avoid duplicate function registrations across scenes
                 ESharpEngine.Registry.Clear();
-
-                // Reset arena so new scene starts at offset 0
                 arena.Reset();
-
-                // Recreate engine so builtins are re-registered fresh
                 esharp = new ESharpEngine(arena);
-
-                var newScene = new SceneGpu(arena);
-                esharp.CurrentScene = newScene;
+                esharp.CurrentScene = new SceneGpu(arena);
                 esharp.LoadSceneFromFile(sceneFiles[index]);
                 return esharp.CurrentScene;
             }
@@ -71,12 +64,26 @@ namespace PhysicsSimulation
 
             double lastTime = 0.0;
 
+            long frameCount = 0;
+
             window.RenderFrame += _ =>
             {
                 double currentTime = stopwatch.Elapsed.TotalSeconds;
                 float dt = (float)(currentTime - lastTime);
                 lastTime = currentTime;
-                ESharpEngine.Registry.RegisterVar("T", currentTime);
+                frameCount++;
+
+                // Update live globals accessible from any DSL expression
+                var ms = window.MouseState;
+                float aspect = (float)window.ClientSize.X / window.ClientSize.Y;
+                float mx =  ((ms.X / window.ClientSize.X) * 2f - 1f) * aspect; // account for aspect ratio
+                float my = -((ms.Y / window.ClientSize.Y) * 2f - 1f);           // flip Y: OpenGL Y-up
+                ESharpEngine.Registry.RegisterVar("T",     currentTime);
+                ESharpEngine.Registry.RegisterVar("DT",    (double)dt);
+                ESharpEngine.Registry.RegisterVar("MX",    (double)mx);
+                ESharpEngine.Registry.RegisterVar("MY",    (double)my);
+                ESharpEngine.Registry.RegisterVar("CLICK", ms.IsButtonDown(OpenTK.Windowing.GraphicsLibraryFramework.MouseButton.Left) ? 1.0 : 0.0);
+                ESharpEngine.Registry.RegisterVar("FRAME", (double)frameCount);
 
                 scene.Update(dt);
                 scene.Render();
@@ -92,8 +99,6 @@ namespace PhysicsSimulation
                 if (window.KeyboardState.IsKeyPressed(Keys.Space))
                 {
                     currentSceneIndex = (currentSceneIndex + 1) % sceneFiles.Count;
-
-                    // Dispose old scene GL resources, then load fresh
                     scene.Dispose();
                     scene = LoadScene(currentSceneIndex);
                 }

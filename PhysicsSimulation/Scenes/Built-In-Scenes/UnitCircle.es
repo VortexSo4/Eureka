@@ -67,11 +67,6 @@ label_cos.aColor(to: [0.0, 0.0, 0.0, 0], start: 0, duration: 0)
 label_cos.aMove([0.3, -0.12], start: 0, duration: 0)
 label_cos.aColor(to: [0.3, 0.95, 0.5, 1], start: 4.0, duration: 0.8, ease: "out")
 
-label_sin = Add(text("sin 60° = 0.87", 0.055))
-label_sin.aColor(to: [0.0, 0.0, 0.0, 0], start: 0, duration: 0)
-label_sin.aMove([-0.38, 0.26], start: 0, duration: 0)
-label_sin.aColor(to: [0.95, 0.35, 0.55, 1], start: 4.5, duration: 0.8, ease: "out")
-
 // ——— TITLE ———
 title = Add(text("Unit Circle", 0.075))
 title.aColor(to: [0.0, 0.0, 0.0, 0], start: 0, duration: 0)

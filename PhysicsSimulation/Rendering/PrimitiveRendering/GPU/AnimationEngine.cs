@@ -491,6 +491,68 @@ namespace PhysicsSimulation.Rendering.GPU
 
         #endregion
 
+        #region Dynamic overrides
+
+        /// <summary>
+        /// Stores a single per-primitive dyn override computed on the CPU this frame.
+        /// </summary>
+        public struct DynOverride
+        {
+            public int    Pid;
+            public float  PosX, PosY;
+            public float  Rotation, Scale;
+            public System.Numerics.Vector4 Color;
+            public bool   HasPos, HasRot, HasScale, HasColor;
+        }
+
+        /// <summary>
+        /// After the compute shader has run, write dyn-evaluated values directly into
+        /// the RenderInstances SSBO for the affected primitives.
+        /// </summary>
+        public void ApplyDynOverrides(System.Collections.Generic.List<DynOverride> overrides)
+        {
+            if (overrides == null || overrides.Count == 0) return;
+
+            // Wait for the compute shader to finish writing to the SSBO before we overwrite
+            GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit);
+
+            int stride = System.Runtime.InteropServices.Marshal.SizeOf<RenderInstanceCpu>();
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _ssboRenderInstances);
+
+            foreach (var ov in overrides)
+            {
+                if (ov.Pid < 0 || ov.Pid >= _primitiveCount) continue;
+                ref var inst = ref _renderInstances[ov.Pid];
+
+                if (ov.HasPos)
+                    inst.TransformRow2 = new System.Numerics.Vector4(
+                        ov.PosX, ov.PosY, inst.TransformRow2.Z, inst.TransformRow2.W);
+
+                if (ov.HasRot || ov.HasScale)
+                {
+                    // Preserve the field we're NOT overriding by reading from CPU mirror
+                    float rot   = ov.HasRot   ? ov.Rotation : MathF.Atan2(inst.TransformRow0.Y, inst.TransformRow0.X);
+                    float scale = ov.HasScale  ? ov.Scale
+                        : MathF.Sqrt(inst.TransformRow0.X * inst.TransformRow0.X +
+                                     inst.TransformRow0.Y * inst.TransformRow0.Y);
+                    float c = MathF.Cos(rot), s = MathF.Sin(rot);
+                    inst.TransformRow0 = new System.Numerics.Vector4(scale * c,  scale * s, 0f, 0f);
+                    inst.TransformRow1 = new System.Numerics.Vector4(-scale * s, scale * c, 0f, 0f);
+                }
+
+                if (ov.HasColor)
+                    inst.Color = ov.Color;
+
+                // Upload just this instance (stride bytes at the right offset)
+                GL.BufferSubData(BufferTarget.ShaderStorageBuffer,
+                    (IntPtr)(ov.Pid * stride), stride, ref inst);
+            }
+
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
+        }
+
+        #endregion
+
         #region Dispose
 
         public void Dispose()
@@ -562,7 +624,7 @@ void main() {
 
     // Extract initial values from instance
     vec2 pos = inst.row2.xy;
-    float rot = atan(inst.row0.y, inst.row0.x);
+    float rot = atan(inst.row0.y, inst.row0.x); // derive rotation from row0 = (cos, sin)
     float scale = length(inst.row0.xy);
     vec4 color = inst.color;
     vec4 dash = inst.dash;
