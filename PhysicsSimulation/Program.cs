@@ -33,8 +33,8 @@ namespace PhysicsSimulation
             }
 
             // === ЗАПУСК E# СЦЕН ===
-            var arena = new GeometryArena();
-            var esharp = new ESharpEngine(arena);
+            GeometryArena arena = new GeometryArena();
+            ESharpEngine esharp = new ESharpEngine(arena);
             var stopwatch = Stopwatch.StartNew();
 
             // Сканируем все .es сцены в папке
@@ -48,10 +48,26 @@ namespace PhysicsSimulation
 
             int currentSceneIndex = 0;
 
+            // Helper: load scene by index, resetting arena and engine state cleanly
+            SceneGpu LoadScene(int index)
+            {
+                // Clear registry to avoid duplicate function registrations across scenes
+                ESharpEngine.Registry.Clear();
+
+                // Reset arena so new scene starts at offset 0
+                arena.Reset();
+
+                // Recreate engine so builtins are re-registered fresh
+                esharp = new ESharpEngine(arena);
+
+                var newScene = new SceneGpu(arena);
+                esharp.CurrentScene = newScene;
+                esharp.LoadSceneFromFile(sceneFiles[index]);
+                return esharp.CurrentScene;
+            }
+
             // Загружаем первую сцену
-            esharp.CurrentScene = new SceneGpu(arena); // базовая сцена
-            esharp.LoadSceneFromFile(sceneFiles[currentSceneIndex]);
-            var scene = esharp.CurrentScene;
+            SceneGpu scene = LoadScene(currentSceneIndex);
 
             double lastTime = 0.0;
 
@@ -77,10 +93,9 @@ namespace PhysicsSimulation
                 {
                     currentSceneIndex = (currentSceneIndex + 1) % sceneFiles.Count;
 
-                    // Создаем новый объект сцены и загружаем .es файл
-                    esharp.CurrentScene = new SceneGpu(arena);
-                    esharp.LoadSceneFromFile(sceneFiles[currentSceneIndex]);
-                    scene = esharp.CurrentScene;
+                    // Dispose old scene GL resources, then load fresh
+                    scene.Dispose();
+                    scene = LoadScene(currentSceneIndex);
                 }
             };
 

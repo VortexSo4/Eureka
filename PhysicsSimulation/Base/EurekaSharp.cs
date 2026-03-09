@@ -343,6 +343,13 @@ namespace PhysicsSimulation.Base
         public void RegisterVar(string name, object value) => _vars[name] = value;
         public bool TryGetVar(string name, out object value) => _vars.TryGetValue(name, out value);
 
+        // Clear all registered functions and variables (call before reloading a scene)
+        public void Clear()
+        {
+            _funcs.Clear();
+            _vars.Clear();
+        }
+
         public void RegisterFunc(string name, Delegate func)
         {
             if (!_funcs.TryGetValue(name, out var list)) _funcs[name] = list = new List<Delegate>();

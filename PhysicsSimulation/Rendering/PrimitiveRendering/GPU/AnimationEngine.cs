@@ -562,7 +562,7 @@ void main() {
 
     // Extract initial values from instance
     vec2 pos = inst.row2.xy;
-    float rot = atan(inst.row1.y, inst.row1.x); // derive from matrix
+    float rot = atan(inst.row0.y, inst.row0.x);
     float scale = length(inst.row0.xy);
     vec4 color = inst.color;
     vec4 dash = inst.dash;
@@ -705,7 +705,7 @@ void main() {
     }
 
     RenderInstance inst = instances[u_primIndex];
-    mat2 rs = mat2(inst.row0.xy, inst.row1.xy);
+    mat2 rs = mat2(inst.row0.x, inst.row1.x, inst.row0.y, inst.row1.y);
     vec2 p = rs * in_pos + inst.row2.xy;
 
     // Correct X for aspect ratio so objects are not stretched

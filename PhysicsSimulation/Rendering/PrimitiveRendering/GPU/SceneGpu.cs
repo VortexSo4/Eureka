@@ -63,6 +63,8 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Scene("SceneGpu.Initialize: Creating AnimationEngine...");
             _animationEngine = new AnimationEngine(_arena, _primitives);
             _animationEngine.UploadGeometryFromPrimitives();
+            // Rebuild descriptors now that geometry is registered and all offsets/counts are set
+            _animationEngine.RebuildAllDescriptors();
             DebugManager.Scene("SceneGpu.Initialize: AnimationEngine created and geometry uploaded.");
         }
 
