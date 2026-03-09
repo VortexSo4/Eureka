@@ -115,6 +115,15 @@ namespace PhysicsSimulation.Base
         public static void Custom(string msg, string? tag = null, string? color = null)
             => InternalLog("Custom", msg, tag, color);
 
+        // Fast channel-enabled checks — use these to guard interpolated strings on hot paths
+        // so the string is never built when the channel is disabled.
+        public static bool IsEnabled(string name)   => Enabled.GetValueOrDefault(name, false);
+        public static bool IsGeometryEnabled        => Enabled.GetValueOrDefault("Geometry", false);
+        public static bool IsAllocEnabled           => Enabled.GetValueOrDefault("Alloc",    false);
+        public static bool IsAnimEnabled            => Enabled.GetValueOrDefault("Anim",     true);
+        public static bool IsSceneEnabled           => Enabled.GetValueOrDefault("Scene",    true);
+        public static bool IsRenderEnabled          => Enabled.GetValueOrDefault("Render",   true);
+
         public static void Enable(string name)
         {
             if (Channels.ContainsKey(name))

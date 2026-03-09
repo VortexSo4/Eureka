@@ -97,6 +97,14 @@ namespace PhysicsSimulation
 
             window.UpdateFrame += _ =>
             {
+                // Закрыть приложение через 60 секунд после запуска
+                if (stopwatch.Elapsed.TotalSeconds >= 60)
+                {
+                    DebugManager.Custom("Benchmark finished (60s). Closing...", "SYSTEM", "#FFAA00");
+                    window.Close();
+                    return;
+                }
+
                 if (window.KeyboardState.WasKeyDown(Keys.Escape))
                     window.Close();
 

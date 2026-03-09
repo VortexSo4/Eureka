@@ -1027,6 +1027,49 @@ namespace PhysicsSimulation.Base
             };
         }
 
+        // Pre-allocated argument buffers for EvalMathExpr — avoids per-call array allocation.
+        // Safe because values are written to locals BEFORE the buffer, so nested calls are correct.
+        private static readonly double[] _mathArgBuf1 = new double[1];
+        private static readonly double[] _mathArgBuf2 = new double[2];
+        private static readonly double[] _mathArgBuf3 = new double[3];
+
+        // Zero-alloc dispatch for EvalMathExpr — replaces CallMathFunc + Select().ToArray()
+        private double EvalMathCallNoAlloc(string name, List<Expr> args, float x, float t)
+        {
+            if (!_mathFastPath.TryGetValue(name, out var fn)) return 0.0;
+            switch (args.Count)
+            {
+                case 1:
+                {
+                    double a0 = EvalMathExpr(args[0], x, t);
+                    _mathArgBuf1[0] = a0;
+                    return fn(_mathArgBuf1);
+                }
+                case 2:
+                {
+                    double a0 = EvalMathExpr(args[0], x, t);
+                    double a1 = EvalMathExpr(args[1], x, t);
+                    _mathArgBuf2[0] = a0; _mathArgBuf2[1] = a1;
+                    return fn(_mathArgBuf2);
+                }
+                case 3:
+                {
+                    double a0 = EvalMathExpr(args[0], x, t);
+                    double a1 = EvalMathExpr(args[1], x, t);
+                    double a2 = EvalMathExpr(args[2], x, t);
+                    _mathArgBuf3[0] = a0; _mathArgBuf3[1] = a1; _mathArgBuf3[2] = a2;
+                    return fn(_mathArgBuf3);
+                }
+                default:
+                {
+                    var buf = new double[args.Count];
+                    for (int i = 0; i < args.Count; i++)
+                        buf[i] = EvalMathExpr(args[i], x, t);
+                    return fn(buf);
+                }
+            }
+        }
+
         // Fast-path math dispatch — avoids DynamicInvoke for the hottest functions
         private static readonly Dictionary<string, Func<double[], double>> _mathFastPath =
             new(StringComparer.OrdinalIgnoreCase)
@@ -1209,8 +1252,7 @@ namespace PhysicsSimulation.Base
                 IdentExpr i => i.Name == "x" ? x :
                     i.Name == "T" ? t : (Registry.TryGetVar(i.Name, out var v) ? Convert.ToDouble(v) : 0.0),
                 BinaryExpr b => EvalBinaryMath(b, x, t),
-                CallExpr { Callee: IdentExpr id } c => CallMathFunc(id.Name,
-                    c.Args.Select(a => (float)EvalMathExpr(a, x, t)).ToArray()),
+                CallExpr { Callee: IdentExpr id } c => EvalMathCallNoAlloc(id.Name, c.Args, x, t),
                 _ => 0
             };
         }
@@ -1242,14 +1284,154 @@ namespace PhysicsSimulation.Base
             _ => 0
         };
 
+        // ------------------ Plot lambda compilation ------------------
+
+        /// <summary>
+        /// Compiles a math lambda (e.g. func: x => sin(x*T)) into a native Func&lt;float,float&gt;
+        /// built once at scene load. Each frame: zero AST traversal, just a chain of delegates.
+        /// Registry reads (T, MX, MY …) happen live each call, so time-varying expressions work.
+        /// </summary>
+        public Func<float, float> CompileMathLambda(LambdaExpr lambda)
+        {
+            if (lambda == null) return _ => 0f;
+            var inner = CompileMathExprWithX(lambda.Body, lambda.Param);
+            return x => (float)inner(x);
+        }
+
+        private Func<float, double> CompileMathExprWithX(Expr expr, string xParam)
+        {
+            switch (expr)
+            {
+                // Constant — pure value, no closure overhead
+                case NumberExpr n:
+                {
+                    var v = n.Value;
+                    return _ => v;
+                }
+
+                // x parameter — direct pass-through
+                case IdentExpr id when string.Equals(id.Name, xParam, StringComparison.OrdinalIgnoreCase):
+                    return x => x;
+
+                // Registry variable read (T, MX, MY, etc.) — one dict lookup per call, live value
+                case IdentExpr id:
+                {
+                    var name = id.Name;
+                    return _ => Registry.TryGetVar(name, out var v) ? Convert.ToDouble(v) : 0.0;
+                }
+
+                // Binary — short-circuit for logical, direct arithmetic otherwise
+                case BinaryExpr b:
+                {
+                    if (b.Op == "&&") { var lf = CompileMathExprWithX(b.Left, xParam); var rf = CompileMathExprWithX(b.Right, xParam); return x => lf(x) != 0.0 ? (rf(x) != 0.0 ? 1.0 : 0.0) : 0.0; }
+                    if (b.Op == "||") { var lf = CompileMathExprWithX(b.Left, xParam); var rf = CompileMathExprWithX(b.Right, xParam); return x => lf(x) != 0.0 ? 1.0 : (rf(x) != 0.0 ? 1.0 : 0.0); }
+                    if (b.Op == "!")  { var rf = CompileMathExprWithX(b.Right, xParam); return x => rf(x) == 0.0 ? 1.0 : 0.0; }
+                    {
+                        var lf = CompileMathExprWithX(b.Left, xParam);
+                        var rf = CompileMathExprWithX(b.Right, xParam);
+                        return b.Op switch
+                        {
+                            "+"  => x => lf(x) + rf(x),
+                            "-"  => x => lf(x) - rf(x),
+                            "*"  => x => lf(x) * rf(x),
+                            "/"  => x => lf(x) / rf(x),
+                            "^"  => x => Math.Pow(lf(x), rf(x)),
+                            "<"  => x => lf(x) <  rf(x) ? 1.0 : 0.0,
+                            ">"  => x => lf(x) >  rf(x) ? 1.0 : 0.0,
+                            "<=" => x => lf(x) <= rf(x) ? 1.0 : 0.0,
+                            ">=" => x => lf(x) >= rf(x) ? 1.0 : 0.0,
+                            "==" => x => lf(x) == rf(x) ? 1.0 : 0.0,
+                            "!=" => x => lf(x) != rf(x) ? 1.0 : 0.0,
+                            _    => _ => 0.0
+                        };
+                    }
+                }
+
+                // Math function call — compile args once, one per-call-site buffer (zero GC per frame)
+                case CallExpr call when call.Callee is IdentExpr mathId
+                                        && _mathFastPath.TryGetValue(mathId.Name, out var mathFn):
+                {
+                    var argFuncs = call.Args.ConvertAll(a => CompileMathExprWithX(a, xParam));
+                    int argCount = argFuncs.Count;
+                    var argBuf = new double[argCount]; // one allocation per call-site, reused every frame
+                    return x =>
+                    {
+                        for (int i = 0; i < argCount; i++)
+                            argBuf[i] = argFuncs[i](x);
+                        return mathFn(argBuf);
+                    };
+                }
+
+                // Fallback: rare non-math expressions in lambda bodies
+                default:
+                    return _ => Convert.ToDouble(Eval(expr));
+            }
+        }
+
         // ------------------ Dynamic expression compilation ------------------
 
         /// <summary>
-        /// Compiles a DSL Expr into a Func&lt;double&gt; that re-evaluates against the live Registry
-        /// every time it is called. Used by dynPos / dynRot / dynColor / dynScale.
+        /// Compiles a DSL Expr into a Func&lt;double&gt;. Builds a native delegate chain once at
+        /// load time — each frame call is pure arithmetic, zero AST traversal.
         /// </summary>
-        public Func<double> CompileExpr(Expr expr)
-            => () => Convert.ToDouble(Eval(expr));
+        public Func<double> CompileExpr(Expr expr) => CompileExprFast(expr);
+
+        private Func<double> CompileExprFast(Expr expr)
+        {
+            switch (expr)
+            {
+                case NumberExpr n:
+                {
+                    var v = n.Value;
+                    return () => v;
+                }
+                case IdentExpr id:
+                {
+                    var name = id.Name;
+                    return () => Registry.TryGetVar(name, out var v) ? Convert.ToDouble(v) : 0.0;
+                }
+                case BinaryExpr b:
+                {
+                    if (b.Op == "&&") { var lf = CompileExprFast(b.Left); var rf = CompileExprFast(b.Right); return () => lf() != 0.0 ? (rf() != 0.0 ? 1.0 : 0.0) : 0.0; }
+                    if (b.Op == "||") { var lf = CompileExprFast(b.Left); var rf = CompileExprFast(b.Right); return () => lf() != 0.0 ? 1.0 : (rf() != 0.0 ? 1.0 : 0.0); }
+                    if (b.Op == "!")  { var rf = CompileExprFast(b.Right); return () => rf() == 0.0 ? 1.0 : 0.0; }
+                    {
+                        var lf = CompileExprFast(b.Left);
+                        var rf = CompileExprFast(b.Right);
+                        return b.Op switch
+                        {
+                            "+"  => () => lf() + rf(),
+                            "-"  => () => lf() - rf(),
+                            "*"  => () => lf() * rf(),
+                            "/"  => () => lf() / rf(),
+                            "^"  => () => Math.Pow(lf(), rf()),
+                            "<"  => () => lf() <  rf() ? 1.0 : 0.0,
+                            ">"  => () => lf() >  rf() ? 1.0 : 0.0,
+                            "<=" => () => lf() <= rf() ? 1.0 : 0.0,
+                            ">=" => () => lf() >= rf() ? 1.0 : 0.0,
+                            "==" => () => lf() == rf() ? 1.0 : 0.0,
+                            "!=" => () => lf() != rf() ? 1.0 : 0.0,
+                            _    => () => 0.0
+                        };
+                    }
+                }
+                case CallExpr call when call.Callee is IdentExpr mathId
+                                        && _mathFastPath.TryGetValue(mathId.Name, out var mathFn):
+                {
+                    var argFuncs = call.Args.ConvertAll(CompileExprFast);
+                    int argCount = argFuncs.Count;
+                    var argBuf = new double[argCount];
+                    return () =>
+                    {
+                        for (int i = 0; i < argCount; i++)
+                            argBuf[i] = argFuncs[i]();
+                        return mathFn(argBuf);
+                    };
+                }
+                default:
+                    return () => Convert.ToDouble(Eval(expr));
+            }
+        }
 
         /// <summary>
         /// Compiles a DSL Expr into an Action for onClick/onHover callbacks.
@@ -1383,12 +1565,12 @@ namespace PhysicsSimulation.Base
                 float xmax = named != null && named.TryGetValue("xmax", out var xM) ? Convert.ToSingle(xM) : 1f;
                 bool dynamic = named != null && named.TryGetValue("dynamic", out var dv) && Convert.ToBoolean(dv);
 
-                var plot = new PlotGpu((float x) =>
-                {
-                    if (!Registry.TryGetVar("T", out var tv)) tv = 0.0;
-                    double t = Convert.ToDouble(tv);
-                    return (float)EvalMathExpr(lambda.Body, x, (float)t);
-                }, xmin, xmax, 80, dynamic);
+                // Compile lambda into a native delegate chain — zero AST traversal per frame.
+                // T, MX, MY etc. are read live from Registry inside each compiled closure,
+                // so time-varying expressions like sin(x * T) still update every frame.
+                var compiledFn = CompileMathLambda(lambda);
+
+                var plot = new PlotGpu(compiledFn, xmin, xmax, 80, dynamic);
 
                 return plot;
             }));
