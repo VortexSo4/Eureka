@@ -225,27 +225,30 @@ namespace PhysicsSimulation.Rendering.GPU
             {
                 if (p.VertexOffsetRaw < 0 || p.VertexCount <= 0) continue;
                 // Expect that Primitive subclasses have method GetFlattenedVertices (PolygonGPU, TextGPU)
-                if (p is PolygonGpu poly)
+                // Use CachedVertices which is populated by RegisterRawGeometry for all
+                // primitive types including TextGpu (after the fix in RegisterGeometryInternal)
+                var cached = p.GetVertices();
+                if (cached != null && cached.Length > 0)
                 {
+                    for (int k = 0; k < cached.Length && k < p.VertexCount; k++)
+                    {
+                        int idx = (p.VertexOffsetRaw + k) * 2;
+                        allData[idx + 0] = cached[k].X;
+                        allData[idx + 1] = cached[k].Y;
+                    }
+                }
+                else if (p is PolygonGpu poly)
+                {
+                    // Fallback: PolygonGpu can regenerate vertices on demand
                     var flat = poly.GetFlattenedVertices();
-                    for (int k = 0; k < flat.Length; k++)
+                    for (int k = 0; k < flat.Length && k < p.VertexCount; k++)
                     {
                         int idx = (p.VertexOffsetRaw + k) * 2;
                         allData[idx + 0] = flat[k].X;
                         allData[idx + 1] = flat[k].Y;
                     }
                 }
-                else
-                {
-                    // Generic: we cannot extract raw flattened data unless primitive offers it.
-                    // For safety, we write zeros for its allocated range.
-                    for (int k = 0; k < p.VertexCount; k++)
-                    {
-                        int idx = (p.VertexOffsetRaw + k) * 2;
-                        allData[idx + 0] = 0f;
-                        allData[idx + 1] = 0f;
-                    }
-                }
+                // else: zeros already in allData — nothing to do
             }
 
             // Upload to buffer

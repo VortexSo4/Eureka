@@ -38,6 +38,7 @@ grid.aColor(to: [0.5, 0.5, 1, 1], start: 4, duration: 3, ease: "linear")
 grid.aScale(1.1, start: 4, duration: 2, ease: "inout")
 
 text = Add(text("something"))
+text.aRot(0, start: 1, duration: 1, ease: "inout")
 
 // ——— ОСИ ———
 axis = Add(axis(1.0, 1.0, "true"))

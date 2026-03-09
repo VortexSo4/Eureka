@@ -1,4 +1,4 @@
-﻿﻿// File: PrimitivesGPU.cs
+﻿// File: PrimitivesGPU.cs
 // Namespace: PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 // Purpose: GPU-first primitive definitions (CPU-side metadata + SSBO serialization helpers).
 // Note: Actual compute shaders + rendering path will be implemented in AnimationEngine / RenderEngine.
@@ -818,21 +818,16 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 }
             }
 
-            // Убираем лишние NaN
+            // Remove trailing NaN
             while (allFlatVertices.Count > 0 && float.IsNaN(allFlatVertices[^1].X))
                 allFlatVertices.RemoveAt(allFlatVertices.Count - 1);
 
             if (allFlatVertices.Count == 0)
-                allFlatVertices.Add(new Vector2(float.NaN, float.NaN));
+                allFlatVertices.Add(new Vector2(0f, 0f));
 
-            VertexOffsetRaw = arena.Allocate(allFlatVertices.Count);
-            VertexCount = allFlatVertices.Count;
-
-            // ← Загружаем напрямую в арену (через AnimationEngine позже)
-            // Но мы должны сохранить вершины, если UploadGeometryFromPrimitives их читает
-            // → Добавим поле в PrimitiveGpu или используем хак:
-            // (в твоём движке UploadGeometryFromPrimitives читает через EnsureGeometryRegistered → RegisterGeometryInternal)
-            // → Пока просто полагаемся на то, что arena запомнит offset
+            // RegisterRawGeometry sets VertexOffsetRaw, VertexCount AND CachedVertices
+            // so UploadGeometryFromPrimitives can read the data and RenderAll can split contours
+            RegisterRawGeometry(arena, allFlatVertices.ToArray());
 
             _dirty = false;
 
