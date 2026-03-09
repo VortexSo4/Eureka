@@ -11,12 +11,18 @@
         <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
         <PublishTrimmed>false</PublishTrimmed>
         <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
 
     <ItemGroup>
         <PackageReference Include="LibTessDotNet" Version="1.1.15" />
         <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="4.14.0" />
         <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+        <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
+        <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+        <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.23.0" />
+        <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
+        <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
         <PackageReference Include="SkiaSharp" Version="3.119.1" />
         <PackageReference Include="OpenTK" Version="4.9.4" />
         <PackageReference Include="System.Drawing.Common" Version="8.0.18" />
@@ -34,6 +40,12 @@
 
     <ItemGroup>
       <Folder Include="Scenes\User-Scenes\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Update="Assets\Shaders\Vulkan\*.spv">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
     </ItemGroup>
 
 </Project>
