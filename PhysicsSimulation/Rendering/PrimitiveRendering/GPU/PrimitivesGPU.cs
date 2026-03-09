@@ -144,12 +144,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public int Allocate(int vertexCount)
         {
-            if (DebugManager.IsAllocEnabled) DebugManager.Alloc($"GeometryArena.Allocate: Allocating {vertexCount} vertices.");
+            DebugManager.Alloc($"GeometryArena.Allocate: Allocating {vertexCount} vertices.");
             if (vertexCount <= 0) return -1;
             int off = _nextOffset;
             _allocations.Add((off, vertexCount));
             _nextOffset += vertexCount;
-            if (DebugManager.IsAllocEnabled) DebugManager.Alloc($"GeometryArena.Allocate: Allocated at offset {off}, new nextOffset {_nextOffset}.");
+            DebugManager.Alloc($"GeometryArena.Allocate: Allocated at offset {off}, new nextOffset {_nextOffset}.");
             return off;
         }
 
@@ -166,7 +166,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         // Flatten contours into a single vertex array with NaN separators between contours
         public static Vector2[] FlattenContours(IReadOnlyList<List<Vector2>> contours)
         {
-            if (DebugManager.IsAllocEnabled) DebugManager.Alloc($"GeometryArena.FlattenContours: Flattening {contours.Count} contours.");
+            DebugManager.Alloc($"GeometryArena.FlattenContours: Flattening {contours.Count} contours.");
             var list = new List<Vector2>();
             for (int i = 0; i < contours.Count; i++)
             {
@@ -176,7 +176,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 if (i < contours.Count - 1) list.Add(new Vector2(float.NaN, float.NaN));
             }
 
-            if (DebugManager.IsAllocEnabled) DebugManager.Alloc($"GeometryArena.FlattenContours: Flattened to {list.Count} vertices.");
+            DebugManager.Alloc($"GeometryArena.FlattenContours: Flattened to {list.Count} vertices.");
             return list.ToArray();
         }
     }
@@ -255,16 +255,16 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             var id = Interlocked.Increment(ref _counter);
             Name = $"{GetType().Name}_{id}";
             IsDynamic = isDynamic;
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"PrimitiveGpu.ctor: Creating primitive with name '{Name}'.");
+            DebugManager.Geometry($"PrimitiveGpu.ctor: Creating primitive with name '{Name}'.");
             IsDynamic = isDynamic;
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"PrimitiveGpu.ctor: Primitive created.");
+            DebugManager.Geometry($"PrimitiveGpu.ctor: Primitive created.");
         }
 
         internal void EnsureGeometryRegistered(GeometryArena arena)
         {
             if (IsGeometryRegistered) return;
 
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"PrimitiveGpu.EnsureGeometryRegistered: Registering '{Name}' ({GetType().Name})");
+            DebugManager.Geometry($"PrimitiveGpu.EnsureGeometryRegistered: Registering '{Name}' ({GetType().Name})");
             RegisterGeometryInternal(arena);
             MarkGeometryRegistered();
 
@@ -308,10 +308,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public PrimitiveGpu AnimatePosition(float start, float duration, EaseType ease, Vector2 to)
         {
             float end = start + duration;
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Adding position animation for '{Name}' to {to}.");
+            DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Adding position animation for '{Name}' to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Translate, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(to.X, to.Y, 0f, 0f)));
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Position animation added.");
+            DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Position animation added.");
             IsDynamic = true;
             return this;
         }
@@ -324,7 +324,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 $"PrimitiveGpu.AnimateRotation: Adding rotation animation for '{Name}' to {toDegrees} degrees.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Rotate, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(toRad, 0f, 0f, 0f)));
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateRotation: Rotation animation added.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateRotation: Rotation animation added.");
             IsDynamic = true;
             return this;
         }
@@ -332,10 +332,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public PrimitiveGpu AnimateScale(float start, float duration, EaseType ease, float to)
         {
             float end = start + duration;
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateScale: Adding scale animation for '{Name}' to {to}.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateScale: Adding scale animation for '{Name}' to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Scale, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(to, 0f, 0f, 0f)));
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateScale: Scale animation added.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateScale: Scale animation added.");
             IsDynamic = true;
             return this;
         }
@@ -343,10 +343,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public PrimitiveGpu AnimateColor(float start, float duration, EaseType ease, Vector4 to)
         {
             float end = start + duration;
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateColor: Adding color animation for '{Name}' to {to}.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateColor: Adding color animation for '{Name}' to {to}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Color, PrimitiveId, start, end, ease,
                 Vector4.Zero, to));
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateColor: Color animation added.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateColor: Color animation added.");
             IsDynamic = true;
             return this;
         }
@@ -355,10 +355,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             int offsetM, int vertexCount)
         {
             float end = start + duration;
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateMorph: Adding morph animation for '{Name}'.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateMorph: Adding morph animation for '{Name}'.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Morph, PrimitiveId, start, end, ease,
                 Vector4.Zero, Vector4.Zero, offsetA, offsetB, offsetM, vertexCount));
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateMorph: Morph animation added.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateMorph: Morph animation added.");
             IsDynamic = true;
             return this;
         }
@@ -366,17 +366,17 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public PrimitiveGpu AnimateDash(float start, float duration, EaseType ease, Vector2 toLengths)
         {
             float end = start + duration;
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateDash: Adding dash animation for '{Name}' to {toLengths}.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateDash: Adding dash animation for '{Name}' to {toLengths}.");
             PendingAnimations.Add(new AnimEntryCpu(AnimType.DashLengths, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(toLengths.X, toLengths.Y, 0f, 0f)));
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.AnimateDash: Dash animation added.");
+            DebugManager.Anim($"PrimitiveGpu.AnimateDash: Dash animation added.");
             IsDynamic = true;
             return this;
         }
 
         public RenderInstanceCpu ToRenderInstanceCpu()
         {
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"PrimitiveGpu.ToRenderInstanceCpu: Converting primitive '{Name}' to RenderInstanceCpu.");
+            DebugManager.Geometry($"PrimitiveGpu.ToRenderInstanceCpu: Converting primitive '{Name}' to RenderInstanceCpu.");
             float c = MathF.Cos(Rotation);
             float s = MathF.Sin(Rotation);
             var row0 = new Vector4(Scale * c, Scale * s, 0f, 0f);
@@ -394,13 +394,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 Reserved = 0,
                 DashInfo = new Vector4(FilledLength, EmptyLength, DashOffset, 0f)
             };
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"PrimitiveGpu.ToRenderInstanceCpu: Conversion complete.");
+            DebugManager.Geometry($"PrimitiveGpu.ToRenderInstanceCpu: Conversion complete.");
             return inst;
         }
 
         public static byte[] SerializeAnimEntries(List<AnimEntryCpu> entries)
         {
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.SerializeAnimEntries: Serializing {entries.Count} animation entries.");
+            DebugManager.Anim($"PrimitiveGpu.SerializeAnimEntries: Serializing {entries.Count} animation entries.");
             if (entries == null || entries.Count == 0) return [];
             int bytes = entries.Count * ANIM_ENTRY_SIZE_BYTES;
             var data = new byte[bytes];
@@ -436,7 +436,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 BinaryPrimitives.WriteInt32LittleEndian(span.Slice(offset + 76, 4), e.MorphVertexCount);
             }
 
-            if (DebugManager.IsAnimEnabled) DebugManager.Anim($"PrimitiveGpu.SerializeAnimEntries: Serialization complete, {bytes} bytes.");
+            DebugManager.Anim($"PrimitiveGpu.SerializeAnimEntries: Serialization complete, {bytes} bytes.");
             return data;
         }
 
@@ -489,6 +489,10 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public IReadOnlyList<List<Vector2>> Contours => _contours;
         protected readonly List<List<Vector2>> _contours = [];
 
+        // Cached flattened vertex array — rebuilt only when SetContours is called.
+        // Eliminates FlattenContours List<>+ToArray() allocation every frame for static geometry.
+        private Vector2[]? _cachedFlat;
+
         public PolygonGpu(IReadOnlyList<List<Vector2>> contours, bool isDynamic = true)
         {
             if (contours != null && contours.Count > 0)
@@ -499,6 +503,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         protected void SetContours(IReadOnlyList<List<Vector2>> contours)
         {
             _contours.Clear();
+            _cachedFlat = null; // invalidate flat cache whenever contours change
             if (contours != null)
             {
                 foreach (var contour in contours)
@@ -514,20 +519,23 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             if (_contours.Count == 0)
                 throw new InvalidOperationException($"Primitive '{Name}' has no contours to register!");
 
-            var flat = GeometryArena.FlattenContours(_contours);
-            RegisterRawGeometry(arena, flat);
+            // Build once, reuse until SetContours is called again.
+            // For dynamic primitives that call SetContours each frame this is a no-op cache miss,
+            // but circles, rects, grids etc. build the flat array exactly once.
+            _cachedFlat ??= GeometryArena.FlattenContours(_contours);
+            RegisterRawGeometry(arena, _cachedFlat);
         }
 
         public Vector2[] GetFlattenedVertices() => GeometryArena.FlattenContours(Contours);
 
         public void SetDash(bool enabled, float filledLen = 0.05f, float emptyLen = 0.03f, float phase = 0f)
         {
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"PolygonGpu.SetDash: Setting dash for '{Name}', enabled={enabled}.");
+            DebugManager.Geometry($"PolygonGpu.SetDash: Setting dash for '{Name}', enabled={enabled}.");
             if (enabled) Flags |= PrimitiveFlags.None;
             FilledLength = filledLen;
             EmptyLength = emptyLen;
             DashOffset = phase;
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"PolygonGpu.SetDash: Dash set.");
+            DebugManager.Geometry($"PolygonGpu.SetDash: Dash set.");
         }
     }
 
@@ -546,7 +554,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         private static List<List<Vector2>> CreateRectangleContours(float width, float height)
         {
-            if (DebugManager.IsGeometryEnabled) DebugManager.Geometry($"RectGpu.CreateRectangleContours: Creating contours for width={width}, height={height}.");
+            DebugManager.Geometry($"RectGpu.CreateRectangleContours: Creating contours for width={width}, height={height}.");
             float hw = width / 2f;
             float hh = height / 2f;
 
@@ -644,6 +652,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float XMax { get; private set; }
         public int Resolution { get; private set; }
 
+        // Called once per frame before the point-evaluation loop.
+        // Used to snapshot Registry vars (T, MX, etc.) into a local array,
+        // so each of the 300+ lambda calls reads O(1) array instead of Dictionary.
+        public Action? PreFrameUpdate { get; set; }
+
         // Pre-allocated buffers — reused every frame, zero GC pressure
         private Vector2[] _pointBuf;
         private Vector2[] _flatBuf;
@@ -687,6 +700,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         {
             if (IsDynamic)
             {
+                // Snapshot Registry vars (T, MX, …) once — closures then read from array, not dict.
+                // Without this: 300 Dictionary.TryGetValue("T") calls per frame per plot.
+                // With this: 1 snapshot call, then 300 array[idx] reads.
+                PreFrameUpdate?.Invoke();
+
                 // Fill pre-allocated point buffer — no heap allocation
                 int n = Resolution + 1;
                 for (int i = 0; i < n; i++)

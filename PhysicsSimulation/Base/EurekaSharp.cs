@@ -1286,49 +1286,101 @@ namespace PhysicsSimulation.Base
 
         // ------------------ Plot lambda compilation ------------------
 
-        /// <summary>
-        /// Compiles a math lambda (e.g. func: x => sin(x*T)) into a native Func&lt;float,float&gt;
-        /// built once at scene load. Each frame: zero AST traversal, just a chain of delegates.
-        /// Registry reads (T, MX, MY …) happen live each call, so time-varying expressions work.
-        /// </summary>
-        public Func<float, float> CompileMathLambda(LambdaExpr lambda)
-        {
-            if (lambda == null) return _ => 0f;
-            var inner = CompileMathExprWithX(lambda.Body, lambda.Param);
-            return x => (float)inner(x);
-        }
-
-        private Func<float, double> CompileMathExprWithX(Expr expr, string xParam)
+        // Collect all identifier names in expr that are NOT the x-parameter.
+        // Called once at scene load to build the snapshot variable list.
+        private static void CollectExternalVars(Expr expr, string xParam, HashSet<string> result)
         {
             switch (expr)
             {
-                // Constant — pure value, no closure overhead
+                case IdentExpr id when !string.Equals(id.Name, xParam, StringComparison.OrdinalIgnoreCase):
+                    result.Add(id.Name);
+                    break;
+                case BinaryExpr b:
+                    CollectExternalVars(b.Left,  xParam, result);
+                    CollectExternalVars(b.Right, xParam, result);
+                    break;
+                case CallExpr c:
+                    foreach (var a in c.Args) CollectExternalVars(a, xParam, result);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Compiles a math lambda into a snapshot-aware pair.
+        ///
+        /// Snapshot — call ONCE per frame before the point loop.
+        ///            Reads all referenced Registry vars (T, MX, …) into a flat double[].
+        /// Fn       — call per x-point. Reads from snapshot[i] (array read) instead of
+        ///            Dictionary.TryGetValue per point — eliminates ~300 dict lookups/frame.
+        ///
+        /// For sin(x*T) at 300 pts: drops 300 Registry reads → 1 snapshot + 300 array reads.
+        /// </summary>
+        public (Action Snapshot, Func<float, float> Fn) CompileMathLambdaWithSnapshot(LambdaExpr lambda)
+        {
+            if (lambda == null) return (() => { }, _ => 0f);
+
+            var xParam   = lambda.Param;
+            var varSet   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CollectExternalVars(lambda.Body, xParam, varSet);
+
+            var varNames  = varSet.ToArray();
+            var snapshot  = new double[varNames.Length];
+            var nameToIdx = new Dictionary<string, int>(varNames.Length, StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < varNames.Length; i++)
+                nameToIdx[varNames[i]] = i;
+
+            var inner = CompileMathExprWithX(lambda.Body, xParam, nameToIdx, snapshot);
+
+            Action snapAction = () =>
+            {
+                for (int i = 0; i < varNames.Length; i++)
+                    snapshot[i] = Registry.TryGetVar(varNames[i], out var v) ? Convert.ToDouble(v) : 0.0;
+            };
+
+            return (snapAction, x => (float)inner(x));
+        }
+
+        /// <summary>
+        /// Backward-compat single-function version — snapshots inline (acceptable outside plot loops).
+        /// </summary>
+        public Func<float, float> CompileMathLambda(LambdaExpr lambda)
+        {
+            var (snap, fn) = CompileMathLambdaWithSnapshot(lambda);
+            return x => { snap(); return fn(x); };
+        }
+
+        private Func<float, double> CompileMathExprWithX(Expr expr, string xParam,
+            Dictionary<string, int>? nameToIdx = null, double[]? snapshot = null)
+        {
+            switch (expr)
+            {
                 case NumberExpr n:
                 {
                     var v = n.Value;
                     return _ => v;
                 }
 
-                // x parameter — direct pass-through
                 case IdentExpr id when string.Equals(id.Name, xParam, StringComparison.OrdinalIgnoreCase):
                     return x => x;
 
-                // Registry variable read (T, MX, MY, etc.) — one dict lookup per call, live value
                 case IdentExpr id:
                 {
+                    // Snapshot path: index resolved once here at compile time → O(1) array read per call.
+                    // No-snapshot path: Dictionary lookup per call (used outside plot context).
+                    if (nameToIdx != null && snapshot != null && nameToIdx.TryGetValue(id.Name, out int idx))
+                        return _ => snapshot[idx];
                     var name = id.Name;
                     return _ => Registry.TryGetVar(name, out var v) ? Convert.ToDouble(v) : 0.0;
                 }
 
-                // Binary — short-circuit for logical, direct arithmetic otherwise
                 case BinaryExpr b:
                 {
-                    if (b.Op == "&&") { var lf = CompileMathExprWithX(b.Left, xParam); var rf = CompileMathExprWithX(b.Right, xParam); return x => lf(x) != 0.0 ? (rf(x) != 0.0 ? 1.0 : 0.0) : 0.0; }
-                    if (b.Op == "||") { var lf = CompileMathExprWithX(b.Left, xParam); var rf = CompileMathExprWithX(b.Right, xParam); return x => lf(x) != 0.0 ? 1.0 : (rf(x) != 0.0 ? 1.0 : 0.0); }
-                    if (b.Op == "!")  { var rf = CompileMathExprWithX(b.Right, xParam); return x => rf(x) == 0.0 ? 1.0 : 0.0; }
+                    if (b.Op == "&&") { var lf = CompileMathExprWithX(b.Left, xParam, nameToIdx, snapshot); var rf = CompileMathExprWithX(b.Right, xParam, nameToIdx, snapshot); return x => lf(x) != 0.0 ? (rf(x) != 0.0 ? 1.0 : 0.0) : 0.0; }
+                    if (b.Op == "||") { var lf = CompileMathExprWithX(b.Left, xParam, nameToIdx, snapshot); var rf = CompileMathExprWithX(b.Right, xParam, nameToIdx, snapshot); return x => lf(x) != 0.0 ? 1.0 : (rf(x) != 0.0 ? 1.0 : 0.0); }
+                    if (b.Op == "!")  { var rf = CompileMathExprWithX(b.Right, xParam, nameToIdx, snapshot); return x => rf(x) == 0.0 ? 1.0 : 0.0; }
                     {
-                        var lf = CompileMathExprWithX(b.Left, xParam);
-                        var rf = CompileMathExprWithX(b.Right, xParam);
+                        var lf = CompileMathExprWithX(b.Left,  xParam, nameToIdx, snapshot);
+                        var rf = CompileMathExprWithX(b.Right, xParam, nameToIdx, snapshot);
                         return b.Op switch
                         {
                             "+"  => x => lf(x) + rf(x),
@@ -1347,13 +1399,12 @@ namespace PhysicsSimulation.Base
                     }
                 }
 
-                // Math function call — compile args once, one per-call-site buffer (zero GC per frame)
                 case CallExpr call when call.Callee is IdentExpr mathId
                                         && _mathFastPath.TryGetValue(mathId.Name, out var mathFn):
                 {
-                    var argFuncs = call.Args.ConvertAll(a => CompileMathExprWithX(a, xParam));
+                    var argFuncs = call.Args.ConvertAll(a => CompileMathExprWithX(a, xParam, nameToIdx, snapshot));
                     int argCount = argFuncs.Count;
-                    var argBuf = new double[argCount]; // one allocation per call-site, reused every frame
+                    var argBuf   = new double[argCount];
                     return x =>
                     {
                         for (int i = 0; i < argCount; i++)
@@ -1362,11 +1413,11 @@ namespace PhysicsSimulation.Base
                     };
                 }
 
-                // Fallback: rare non-math expressions in lambda bodies
                 default:
                     return _ => Convert.ToDouble(Eval(expr));
             }
         }
+
 
         // ------------------ Dynamic expression compilation ------------------
 
@@ -1565,12 +1616,12 @@ namespace PhysicsSimulation.Base
                 float xmax = named != null && named.TryGetValue("xmax", out var xM) ? Convert.ToSingle(xM) : 1f;
                 bool dynamic = named != null && named.TryGetValue("dynamic", out var dv) && Convert.ToBoolean(dv);
 
-                // Compile lambda into a native delegate chain — zero AST traversal per frame.
-                // T, MX, MY etc. are read live from Registry inside each compiled closure,
-                // so time-varying expressions like sin(x * T) still update every frame.
-                var compiledFn = CompileMathLambda(lambda);
-
-                var plot = new PlotGpu(compiledFn, xmin, xmax, 80, dynamic);
+                // Compile lambda into snapshot-aware pair:
+                //   snap() — called once per frame before the 300-point loop (1 Registry read per var)
+                //   fn(x)  — called per point (pure array reads, no dict lookups)
+                var (snap, fn) = CompileMathLambdaWithSnapshot(lambda);
+                var plot = new PlotGpu(fn, xmin, xmax, 80, dynamic);
+                plot.PreFrameUpdate = snap;
 
                 return plot;
             }));

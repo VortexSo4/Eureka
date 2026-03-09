@@ -17,6 +17,8 @@ namespace PhysicsSimulation
             DebugManager.Custom($"Current Directory: {Environment.CurrentDirectory}", "SYSTEM", "#A0FF33");
             DebugManager.Custom($"Current Version: {Environment.Version}", "SYSTEM", "A0FF33");
             DebugManager.Custom($"Starting E# Scene Runner", "E#", "#FFFF00");
+            
+            bool debugShutdown =  true;
 
             var window = Helpers.InitOpenTkWindow();
             var (program, vbo) = Helpers.CreateGlContextAndProgram();
@@ -98,7 +100,7 @@ namespace PhysicsSimulation
             window.UpdateFrame += _ =>
             {
                 // Закрыть приложение через 60 секунд после запуска
-                if (stopwatch.Elapsed.TotalSeconds >= 60)
+                if (stopwatch.Elapsed.TotalSeconds >= 60 && debugShutdown)
                 {
                     DebugManager.Custom("Benchmark finished (60s). Closing...", "SYSTEM", "#FFAA00");
                     window.Close();
