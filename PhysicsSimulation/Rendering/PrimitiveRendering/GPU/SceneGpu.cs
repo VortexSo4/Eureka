@@ -1,4 +1,4 @@
-﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.Numerics;
 using OpenTK.Graphics.OpenGL4;
@@ -30,7 +30,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public Vector3 BackgroundColor => _bgColor;
 
-        public void AddPrimitive(PrimitiveGpu p)
+        public virtual void AddPrimitive(PrimitiveGpu p)
         {
             if (p == null) throw new ArgumentNullException(nameof(p));
             p.EnsureGeometryRegistered(_arena);
@@ -43,13 +43,13 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Scene($"SceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
         
-        public T Add<T>(T primitive) where T : PrimitiveGpu
+        public virtual T Add<T>(T primitive) where T : PrimitiveGpu
         {
             AddPrimitive(primitive);
             return primitive;
         }
 
-        public T Add<T>(T primitive, Action<T> configure) where T : PrimitiveGpu
+        public virtual T Add<T>(T primitive, Action<T> configure) where T : PrimitiveGpu
         {
             configure(primitive);
             AddPrimitive(primitive);
@@ -63,12 +63,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             DebugManager.Scene("SceneGpu.Initialize: Creating AnimationEngine...");
             _animationEngine = new AnimationEngine(_arena, _primitives);
             _animationEngine.UploadGeometryFromPrimitives();
-            // Rebuild descriptors now that geometry is registered and all offsets/counts are set
             _animationEngine.RebuildAllDescriptors();
             DebugManager.Scene("SceneGpu.Initialize: AnimationEngine created and geometry uploaded.");
         }
 
-        public void AnimateBackground(Vector3 targetColor, float startTime, float endTime)
+        public virtual void AnimateBackground(Vector3 targetColor, float startTime, float endTime)
         {
             if (endTime <= startTime)
             {
@@ -86,7 +85,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         {
             _animTime += deltaTime;
 
-            // === Анимация фона ===
             if (_currentBgAnim == null && _bgAnimQueue.Count > 0)
             {
                 var next = _bgAnimQueue.Peek();
@@ -114,9 +112,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
             if (_primitives.Any(p => p.IsDynamic))
             {
-                // Must invalidate ALL primitives before arena reset —
-                // otherwise static primitives keep stale VertexOffsetRaw
-                // and RebuildAllDescriptors builds wrong MorphDescs for them.
                 foreach (var p in _primitives)
                     p.InvalidateGeometry();
 
@@ -128,18 +123,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 _animationEngine.RebuildAllDescriptors();
             }
 
-            // Затем стандартные анимации
             _animationEngine.UploadPendingAnimationsAndIndex();
             _animationEngine.UpdateAndDispatch(_animTime);
 
-            // Apply dynamic expression overrides (dynPos / dynRot / dynColor / dynScale)
-            // These run AFTER the compute shader so they always win over keyframe animations.
             var dynOverrides = new System.Collections.Generic.List<PhysicsSimulation.Rendering.GPU.AnimationEngine.DynOverride>();
             foreach (var p in _primitives)
             {
                 if (!p.HasDynCallbacks) continue;
 
-                // Seed CPU mirror from primitive's initial values on first frame
                 if (!p.DynInitialized)
                 {
                     p.DynPosX = p.Position.X; p.DynPosY = p.Position.Y;
@@ -179,8 +170,7 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 _animationEngine.ApplyDynOverrides(dynOverrides);
         }
 
-        // Called by Program.cs on window resize — avoids per-frame GL.GetInteger
-        public void SetViewportSize(int width, int height)
+        public virtual void SetViewportSize(int width, int height)
         {
             if (height > 0 && width > 0 && _animationEngine != null)
                 _animationEngine.AspectRatio = (float)width / height;
@@ -188,13 +178,12 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
 
         public virtual void Render()
         {
-
             GL.ClearColor(_bgColor.X, _bgColor.Y, _bgColor.Z, 1f);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
             _animationEngine.RenderAll();
         }
 
-        public void Dispose()
+        public virtual void Dispose()
         {
             _animationEngine?.Dispose();
         }

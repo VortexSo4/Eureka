@@ -2,21 +2,7 @@
 //  VulkanSceneGpu.cs
 //  EurekaSharp — Vulkan Backend
 //
-//  Drop-in замена SceneGpu.cs — наследует тот же интерфейс,
-//  но вместо GL.* вызовов использует VulkanContext.
-//
-//  Что изменилось vs SceneGpu:
-//    ─ GL.ClearColor → vkCmdBeginRenderPass с VkClearValue
-//    ─ AnimationEngine (OpenGL) → VulkanAnimationEngine
-//    ─ SetViewportSize → RecreateSwapchain
-//    ─ Render() → BeginFrame / RecordCommandBuffer / EndFrame
-//
-//  Что НЕ изменилось (намеренно):
-//    ─ AddPrimitive / Add<T> — тот же API
-//    ─ AnimateBackground — та же очередь
-//    ─ DynCallbacks — та же логика
-//    ─ SceneGpu.Setup() / Initialize() — переопределяются в твоих сценах
-//
+//  Наследует SceneGpu и переопределяет все методы для работы с Vulkan.
 // ============================================================
 
 using System;
@@ -29,39 +15,33 @@ using Silk.NET.Vulkan;
 
 namespace PhysicsSimulation.Rendering.Vulkan
 {
-    public class VulkanSceneGpu : IDisposable
+    public class VulkanSceneGpu : SceneGpu
     {
-        // ── State (идентично SceneGpu) ────────────────────────────────────────
-        protected List<PrimitiveGpu>    _primitives = [];
-        protected VulkanAnimationEngine? _animationEngine;
-        protected GeometryArena          _arena;
-
-        private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
-        private float   _animTime;
-        public  float   T => _animTime;
+        // ── Vulkan специфичные поля ─────────────────────────────────────────
+        protected readonly VulkanContext           _vkCtx;
+        protected readonly VulkanMemoryAllocator   _vma;
+        protected VulkanAnimationEngine?           _vkAnimationEngine; // отдельное поле для Vulkan-версии
 
         private readonly Queue<BackgroundAnimation> _bgAnimQueue = new();
         private BackgroundAnimation? _currentBgAnim;
         private Vector3 _bgStartColorAtCurrentAnim;
+        private Vector3 _bgColor = new(0.1f, 0.1f, 0.1f);
+        private float _animTime;
 
         private record struct BackgroundAnimation(Vector3 TargetColor, float StartTime, float EndTime);
 
-        // ── Vulkan ────────────────────────────────────────────────────────────
-        protected readonly VulkanContext           _vkCtx;
-        protected readonly VulkanMemoryAllocator   _vma;
-
-        public VulkanSceneGpu(VulkanContext ctx, GeometryArena arena)
+        public VulkanSceneGpu(VulkanContext ctx, GeometryArena arena) : base(arena)
         {
-            _vkCtx = ctx  ?? throw new ArgumentNullException(nameof(ctx));
-            _arena = arena ?? throw new ArgumentNullException(nameof(arena));
-            _vma   = new VulkanMemoryAllocator(ctx);
+            _vkCtx = ctx ?? throw new ArgumentNullException(nameof(ctx));
+            _vma = new VulkanMemoryAllocator(ctx);
         }
 
-        public Vector3 BackgroundColor => _bgColor;
+        public new float T => _animTime;
+        public new Vector3 BackgroundColor => _bgColor;
 
-        // ── Primitive management (API идентичен SceneGpu) ────────────────────
+        // ── Primitive management (используем базовый список _primitives) ────
 
-        public void AddPrimitive(PrimitiveGpu p)
+        public override void AddPrimitive(PrimitiveGpu p)
         {
             if (p == null) throw new ArgumentNullException(nameof(p));
             p.EnsureGeometryRegistered(_arena);
@@ -71,47 +51,51 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 DebugManager.Scene($"VulkanSceneGpu.AddPrimitive: Assigned PrimitiveId {p.PrimitiveId} to '{p.Name}'");
             }
             _primitives.Add(p);
+            DebugManager.Scene($"VulkanSceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
 
-        public T Add<T>(T primitive) where T : PrimitiveGpu
+        public override T Add<T>(T primitive)
         {
             AddPrimitive(primitive);
             return primitive;
         }
 
-        public T Add<T>(T primitive, Action<T> configure) where T : PrimitiveGpu
+        public override T Add<T>(T primitive, Action<T> configure)
         {
             configure(primitive);
             AddPrimitive(primitive);
             return primitive;
         }
 
-        // ── Lifecycle ─────────────────────────────────────────────────────────
+        // ── Lifecycle ───────────────────────────────────────────────────────
 
-        public virtual void Setup() { }
+        public override void Setup()
+        {
+            // Может быть переопределён в наследуемых сценах
+        }
 
-        public virtual void Initialize()
+        public override void Initialize()
         {
             DebugManager.Scene("VulkanSceneGpu.Initialize: Creating VulkanAnimationEngine...");
 
-            _animationEngine = new VulkanAnimationEngine(_vkCtx, _vma, _arena, _primitives);
-            _animationEngine.UploadGeometryFromPrimitives();
-            _animationEngine.RebuildAllDescriptors();
+            _vkAnimationEngine = new VulkanAnimationEngine(_vkCtx, _vma, _arena, _primitives);
+            _vkAnimationEngine.UploadGeometryFromPrimitives();
+            _vkAnimationEngine.RebuildAllDescriptors();
 
             DebugManager.Scene("VulkanSceneGpu.Initialize: Done.");
         }
 
-        // ── Background animation (без изменений) ──────────────────────────────
+        // ── Background animation ────────────────────────────────────────────
 
-        public void AnimateBackground(Vector3 targetColor, float startTime, float endTime)
+        public override void AnimateBackground(Vector3 targetColor, float startTime, float endTime)
         {
             if (endTime <= startTime) return;
             _bgAnimQueue.Enqueue(new BackgroundAnimation(targetColor, startTime, endTime));
         }
 
-        // ── Update (идентичен SceneGpu.Update) ───────────────────────────────
+        // ── Update ──────────────────────────────────────────────────────────
 
-        public virtual void Update(float deltaTime)
+        public override void Update(float deltaTime)
         {
             _animTime += deltaTime;
 
@@ -147,13 +131,13 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 foreach (var p in _primitives) p.InvalidateGeometry();
                 _arena.Reset();
                 foreach (var p in _primitives) p.EnsureGeometryRegistered(_arena);
-                _animationEngine!.RebuildAllDescriptors();
+                _vkAnimationEngine!.RebuildAllDescriptors();
             }
 
-            _animationEngine!.UploadPendingAnimationsAndIndex();
-            _animationEngine.UpdateAndDispatch(_animTime);
+            _vkAnimationEngine!.UploadPendingAnimationsAndIndex();
+            _vkAnimationEngine.UpdateAndDispatch(_animTime);
 
-            // DynCallbacks — идентично SceneGpu
+            // DynCallbacks
             var dynOverrides = new List<VulkanAnimationEngine.DynOverride>();
             foreach (var p in _primitives)
             {
@@ -195,27 +179,22 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 });
             }
             if (dynOverrides.Count > 0)
-                _animationEngine.ApplyDynOverrides(dynOverrides);
+                _vkAnimationEngine.ApplyDynOverrides(dynOverrides);
         }
 
-        // ── Render — ГЛАВНОЕ ОТЛИЧИЕ от SceneGpu ─────────────────────────────
+        // ── Render ──────────────────────────────────────────────────────────
 
-        public virtual void Render()
+        public override void Render()
         {
-            // 1. Запрашиваем следующий swapchain image
             int imageIndex = _vkCtx.BeginFrame();
             if (imageIndex < 0)
             {
-                // Swapchain устарел (resize) — пропускаем кадр
                 _vkCtx.RecreateSwapchain();
-                _animationEngine?.NotifySwapchainRecreated(_vkCtx);
+                _vkAnimationEngine?.NotifySwapchainRecreated(_vkCtx);
                 return;
             }
 
-            // 2. Записываем команды в command buffer этого image
             RecordCommandBuffer(imageIndex);
-
-            // 3. Submit + Present
             _vkCtx.EndFrame(imageIndex);
         }
 
@@ -226,16 +205,13 @@ namespace PhysicsSimulation.Rendering.Vulkan
             var beginInfo = new CommandBufferBeginInfo
             {
                 SType = StructureType.CommandBufferBeginInfo,
-                // Без OneTimeSubmit — буферы перезаписываются каждый кадр
             };
 
-            // Сброс и начало записи
             _vkCtx.Vk.ResetCommandBuffer(cmd, CommandBufferResetFlags.None);
             VulkanContext.Check(
                 _vkCtx.Vk.BeginCommandBuffer(cmd, &beginInfo),
                 "BeginCommandBuffer");
 
-            // Clear color = _bgColor (аналог GL.ClearColor + GL.Clear)
             var clearValue = new ClearValue
             {
                 Color = new ClearColorValue(_bgColor.X, _bgColor.Y, _bgColor.Z, 1.0f)
@@ -257,8 +233,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
             _vkCtx.Vk.CmdBeginRenderPass(cmd, &renderPassBegin, SubpassContents.Inline);
 
-            // Основная отрисовка через VulkanAnimationEngine
-            _animationEngine?.RenderAll(cmd, imageIndex);
+            _vkAnimationEngine?.RenderAll(cmd, imageIndex);
 
             _vkCtx.Vk.CmdEndRenderPass(cmd);
 
@@ -267,26 +242,27 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 "EndCommandBuffer");
         }
 
-        // ── Resize (аналог SceneGpu.SetViewportSize) ──────────────────────────
+        // ── Resize ──────────────────────────────────────────────────────────
 
-        public void SetViewportSize(int width, int height)
+        public override void SetViewportSize(int width, int height)
         {
             if (width <= 0 || height <= 0) return;
 
             _vkCtx.RecreateSwapchain();
-            _animationEngine?.NotifySwapchainRecreated(_vkCtx);
+            _vkAnimationEngine?.NotifySwapchainRecreated(_vkCtx);
 
-            if (_animationEngine != null)
-                _animationEngine.AspectRatio = (float)width / height;
+            if (_vkAnimationEngine != null)
+                _vkAnimationEngine.AspectRatio = (float)width / height;
         }
 
-        // ── IDisposable ───────────────────────────────────────────────────────
+        // ── IDisposable ─────────────────────────────────────────────────────
 
-        public void Dispose()
+        public override void Dispose()
         {
             _vkCtx.Vk.DeviceWaitIdle(_vkCtx.Device);
-            _animationEngine?.Dispose();
+            _vkAnimationEngine?.Dispose();
             _vma?.Dispose();
+            base.Dispose();
         }
     }
 }
