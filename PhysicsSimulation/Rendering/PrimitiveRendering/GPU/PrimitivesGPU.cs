@@ -674,6 +674,15 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         // so each of the 300+ lambda calls reads O(1) array instead of Dictionary.
         public Action? PreFrameUpdate { get; set; }
 
+        // ── GPU compute evaluation ────────────────────────────────────────────
+        // Если GpuComputed = true — CPU больше не вычисляет точки.
+        // GpuPlotRegistry заливает bytecode в GPU, compute шейдер пишет прямо в GeometryArena.
+        public bool GpuComputed { get; set; } = false;
+
+        // AST лямбды сохраняется для последующей компиляции в bytecode.
+        // Устанавливается в ESharpEngine при создании Plot.
+        public PhysicsSimulation.Base.LambdaExpr? LambdaAst { get; set; }
+
         // Pre-allocated buffers — reused every frame, zero GC pressure
         private Vector2[] _pointBuf;
         private Vector2[] _flatBuf;
@@ -718,6 +727,11 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         internal override bool RefreshDynamicVertices()
         {
             if (!IsDynamic || !IsGeometryRegistered) return false;
+
+            // GPU compute шейдер уже пишет точки прямо в GeometryArena —
+            // CPU не нужно трогать буфер, UploadGeometryFromPrimitives тоже пропускается.
+            if (GpuComputed) return false;
+
             PreFrameUpdate?.Invoke();
             int n = Resolution + 1;
             for (int i = 0; i < n; i++)

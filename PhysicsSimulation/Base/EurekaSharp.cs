@@ -1945,6 +1945,8 @@ namespace PhysicsSimulation.Base
                 var (snap, fn) = CompileMathLambdaWithSnapshot(lambda);
                 var plot = new PlotGpu(fn, xmin, xmax, steps, dynamic);
                 plot.PreFrameUpdate = snap;
+                // Сохраняем AST для последующей компиляции в GPU bytecode (GpuPlotRegistry)
+                plot.LambdaAst = lambda;
 
                 return plot;
             }));

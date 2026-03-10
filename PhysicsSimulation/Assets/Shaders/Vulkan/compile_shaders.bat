@@ -18,4 +18,7 @@ if %ERRORLEVEL% NEQ 0 ( echo ОШИБКА: render.vert & exit /b 1 )
 glslangValidator -V render.frag        -o render.frag.spv
 if %ERRORLEVEL% NEQ 0 ( echo ОШИБКА: render.frag & exit /b 1 )
 
+glslangValidator -V plot_compute.comp        -o plot_compute.spv
+if %ERRORLEVEL% NEQ 0 ( echo ОШИБКА: plot_compute.comp & exit /b 1 )
+
 echo [EurekaSharp] Все шейдеры скомпилированы успешно.

@@ -64,7 +64,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 Title            = title,
                 Size             = new Vector2D<int>(width, height),
                 WindowState      = fullscreen ? WindowState.Fullscreen : WindowState.Normal,
-                VSync            = false,                     // аналог VSyncMode.Off
+                VSync            = Program.V_SYNC,                     // аналог VSyncMode.Off
                 ShouldSwapAutomatically = false,              // мы сами контролируем present
                 API              = GraphicsAPI.DefaultVulkan
             };

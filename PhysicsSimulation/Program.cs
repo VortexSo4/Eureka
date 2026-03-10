@@ -18,6 +18,7 @@ namespace PhysicsSimulation
     internal static class Program
     {
         private static string[]? _sceneFiles;
+        public const bool V_SYNC = true;
 
         private static void Main(string[] args)
         {
@@ -29,7 +30,7 @@ namespace PhysicsSimulation
             {
                 Title = "EurekaSharp [Vulkan]",
                 Size = new Vector2D<int>(1920, 1080),
-                VSync = false,
+                VSync = V_SYNC,
                 ShouldSwapAutomatically = false,
             };
 

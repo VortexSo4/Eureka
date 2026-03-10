@@ -1,0 +1,229 @@
+#version 450
+layout(local_size_x = 256) in;
+
+// ── Push constants (same layout as FramePushConstants) ───────────────────────
+layout(push_constant) uniform PushConstants {
+    float aspectRatio;
+    float time;
+    int   primIndex;   // не используется — обрабатываем все plots за один dispatch
+    float reserved;
+} pc;
+
+// ── PlotParams: CPU заливает один раз в кадр ─────────────────────────────────
+// Один элемент на IsDynamic PlotGpu.
+// plotId → индекс в этом массиве (не PrimitiveId).
+struct PlotParams {
+    float xMin;
+    float xMax;
+    int   vertexOffset;   // VertexOffsetRaw в GeometryArena
+    int   resolution;     // число точек (Resolution + 1)
+
+    // Snapshot переменных из Registry (снимаются CPU один раз в кадр)
+    float T;
+    float MX;
+    float MY;
+    float reserved0;
+
+    // Опциональные дополнительные снапшот-переменные (до 8 штук)
+    // CPU пакует их в порядке определённом при compile-time
+    vec4  snapA;   // snapshot slots 0-3
+    vec4  snapB;   // snapshot slots 4-7
+
+    // Bytecode формулы: до 64 инструкций
+    // Каждая инструкция = ivec4:
+    //   .x = opcode
+    //   .y = arg0 (slot или immediate index)
+    //   .z = arg1
+    //   .w = arg2
+    int   instrCount;
+    int   constCount;   // сколько констант в constants[]
+    int   pad0;
+    int   pad1;
+
+    ivec4 instrs[64];
+    vec4  constants[16]; // константы формулы (литеральные числа)
+};
+
+// ── SSBOs ─────────────────────────────────────────────────────────────────────
+layout(std430, set = 0, binding = 3) buffer GeometryArena  { vec2  geom[];   };
+layout(std430, set = 0, binding = 6) buffer PlotParamsSB   { PlotParams plots[]; };
+
+// ── Регистровая виртуальная машина ────────────────────────────────────────────
+// Стек из 16 double-precision слотов (как float здесь — достаточно для графиков)
+// Opcodes:
+//   0 = NOP
+//   1 = PUSH_CONST   arg0=constIdx        → стек[top] = constants[arg0].x
+//   2 = PUSH_X                            → стек[top] = x (текущий аргумент)
+//   3 = PUSH_SNAP    arg0=snapIdx         → стек[top] = snapshot[snapIdx]
+//   4 = ADD                               → pop a,b; push a+b
+//   5 = SUB                               → pop a,b; push a-b
+//   6 = MUL                               → pop a,b; push a*b
+//   7 = DIV                               → pop a,b; push a/b  (защита от деления на 0)
+//   8 = POW                               → pop a,b; push pow(a,b)
+//   9 = NEG                               → pop a;   push -a
+//  10 = SIN
+//  11 = COS
+//  12 = TAN
+//  13 = ABS
+//  14 = SQRT
+//  15 = FLOOR
+//  16 = CEIL
+//  17 = SIGN
+//  18 = LOG
+//  19 = EXP
+//  20 = ATAN                              → pop a;   push atan(a)
+//  21 = ATAN2                             → pop a,b; push atan(a,b)
+//  22 = MIN                               → pop a,b; push min(a,b)
+//  23 = MAX                               → pop a,b; push max(a,b)
+//  24 = MOD                               → pop a,b; push mod(a,b)
+//  25 = CLAMP                             → pop a,b,c; push clamp(a,b,c)
+//  26 = MIX                               → pop a,b,c; push mix(a,b,c)
+//  27 = CMP_LT                            → pop a,b; push (a<b)?1:0
+//  28 = CMP_GT                            → pop a,b; push (a>b)?1:0
+//  29 = CMP_LE
+//  30 = CMP_GE
+//  31 = CMP_EQ
+//  32 = CMP_NE
+//  33 = AND                               → pop a,b; push (a!=0&&b!=0)?1:0
+//  34 = OR                                → pop a,b; push (a!=0||b!=0)?1:0
+//  35 = NOT                               → pop a;   push (a==0)?1:0
+//  36 = FRACT                             → pop a;   push fract(a)
+
+#define OP_NOP        0
+#define OP_PUSH_CONST 1
+#define OP_PUSH_X     2
+#define OP_PUSH_SNAP  3
+#define OP_ADD        4
+#define OP_SUB        5
+#define OP_MUL        6
+#define OP_DIV        7
+#define OP_POW        8
+#define OP_NEG        9
+#define OP_SIN       10
+#define OP_COS       11
+#define OP_TAN       12
+#define OP_ABS       13
+#define OP_SQRT      14
+#define OP_FLOOR     15
+#define OP_CEIL      16
+#define OP_SIGN      17
+#define OP_LOG       18
+#define OP_EXP       19
+#define OP_ATAN      20
+#define OP_ATAN2     21
+#define OP_MIN       22
+#define OP_MAX       23
+#define OP_MOD       24
+#define OP_CLAMP     25
+#define OP_MIX       26
+#define OP_CMP_LT    27
+#define OP_CMP_GT    28
+#define OP_CMP_LE    29
+#define OP_CMP_GE    30
+#define OP_CMP_EQ    31
+#define OP_CMP_NE    32
+#define OP_AND       33
+#define OP_OR        34
+#define OP_NOT       35
+#define OP_FRACT     36
+
+float snap(PlotParams p, int idx) {
+    if      (idx == 0) return p.T;
+    else if (idx == 1) return p.MX;
+    else if (idx == 2) return p.MY;
+    else if (idx < 7)  return p.snapA[idx - 3];
+    else               return p.snapB[idx - 7];
+}
+
+float evalBytecode(PlotParams p, float x) {
+    float stk[16];
+    int   top = 0;
+
+    for (int i = 0; i < p.instrCount && i < 64; i++) {
+        ivec4 instr = p.instrs[i];
+        int   op    = instr.x;
+        int   a0    = instr.y;
+
+        if (op == OP_PUSH_CONST) {
+            stk[top++] = p.constants[a0].x;
+        } else if (op == OP_PUSH_X) {
+            stk[top++] = x;
+        } else if (op == OP_PUSH_SNAP) {
+            stk[top++] = snap(p, a0);
+        } else if (op == OP_NEG)   { stk[top-1] = -stk[top-1]; }
+        else if (op == OP_SIN)     { stk[top-1] = sin(stk[top-1]); }
+        else if (op == OP_COS)     { stk[top-1] = cos(stk[top-1]); }
+        else if (op == OP_TAN)     { stk[top-1] = tan(stk[top-1]); }
+        else if (op == OP_ABS)     { stk[top-1] = abs(stk[top-1]); }
+        else if (op == OP_SQRT)    { stk[top-1] = sqrt(abs(stk[top-1])); }
+        else if (op == OP_FLOOR)   { stk[top-1] = floor(stk[top-1]); }
+        else if (op == OP_CEIL)    { stk[top-1] = ceil(stk[top-1]); }
+        else if (op == OP_SIGN)    { stk[top-1] = sign(stk[top-1]); }
+        else if (op == OP_LOG)     { stk[top-1] = log(abs(stk[top-1]) + 1e-30); }
+        else if (op == OP_EXP)     { stk[top-1] = exp(stk[top-1]); }
+        else if (op == OP_ATAN)    { stk[top-1] = atan(stk[top-1]); }
+        else if (op == OP_FRACT)   { stk[top-1] = fract(stk[top-1]); }
+        else if (op == OP_NOT)     { stk[top-1] = (stk[top-1] == 0.0) ? 1.0 : 0.0; }
+        else {
+            // binary ops — pop two
+            float b = stk[--top];
+            float a = stk[top-1];
+            if      (op == OP_ADD)    stk[top-1] = a + b;
+            else if (op == OP_SUB)    stk[top-1] = a - b;
+            else if (op == OP_MUL)    stk[top-1] = a * b;
+            else if (op == OP_DIV)    stk[top-1] = b != 0.0 ? a / b : 0.0;
+            else if (op == OP_POW)    stk[top-1] = pow(abs(a), b);
+            else if (op == OP_ATAN2)  stk[top-1] = atan(a, b);
+            else if (op == OP_MIN)    stk[top-1] = min(a, b);
+            else if (op == OP_MAX)    stk[top-1] = max(a, b);
+            else if (op == OP_MOD)    stk[top-1] = mod(a, b);
+            else if (op == OP_CMP_LT) stk[top-1] = (a <  b) ? 1.0 : 0.0;
+            else if (op == OP_CMP_GT) stk[top-1] = (a >  b) ? 1.0 : 0.0;
+            else if (op == OP_CMP_LE) stk[top-1] = (a <= b) ? 1.0 : 0.0;
+            else if (op == OP_CMP_GE) stk[top-1] = (a >= b) ? 1.0 : 0.0;
+            else if (op == OP_CMP_EQ) stk[top-1] = (a == b) ? 1.0 : 0.0;
+            else if (op == OP_CMP_NE) stk[top-1] = (a != b) ? 1.0 : 0.0;
+            else if (op == OP_AND)    stk[top-1] = (a != 0.0 && b != 0.0) ? 1.0 : 0.0;
+            else if (op == OP_OR)     stk[top-1] = (a != 0.0 || b != 0.0) ? 1.0 : 0.0;
+            else if (op == OP_CLAMP) {
+                // clamp needs 3 args — pop third
+                float lo = stk[--top];
+                stk[top-1] = clamp(lo, a, b);   // lo=value, a=min, b=max
+            }
+            else if (op == OP_MIX) {
+                float t3 = stk[--top];
+                stk[top-1] = mix(t3, a, b);      // t3=a, a=b, b=t
+            }
+        }
+    }
+
+    return top > 0 ? stk[0] : 0.0;
+}
+
+void main() {
+    uint gid     = gl_GlobalInvocationID.x;
+    uint plotIdx = gid / 256u;
+    uint pointIdx = gid % 256u;   // переопределим ниже через gl_WorkGroupID
+
+    // Каждый workgroup = один plot, локальный id = точка в нём
+    plotIdx  = uint(gl_WorkGroupID.x);
+    pointIdx = uint(gl_LocalInvocationID.x);
+
+    if (int(plotIdx) >= plots.length()) return;
+
+    PlotParams p = plots[plotIdx];
+    int n = p.resolution;      // resolution = Resolution (кол-во точек)
+
+    if (pointIdx >= uint(n)) return;
+    if (p.vertexOffset < 0)   return;
+    if (p.instrCount   <= 0)  return;
+
+    float t = float(pointIdx) / float(n - 1);
+    float x = p.xMin + (p.xMax - p.xMin) * t;
+    float y = evalBytecode(p, x);
+
+    // Защита от NaN/Inf — шейдер геометрии использует isnan для дискарда
+    if (isnan(y) || isinf(y)) y = 0.0;
+
+    geom[p.vertexOffset + int(pointIdx)] = vec2(x, y);
+}

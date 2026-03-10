@@ -148,6 +148,11 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         private bool _disposed;
 
+        // ── GPU Plot evaluation ───────────────────────────────────────────────
+        // Вычисляет динамические графики на GPU вместо CPU.
+        // Инициализируется после CreateBuffers() в конструкторе.
+        private GpuPlotRegistry? _gpuPlots;
+
         // ─────────────────────────────────────────────────────────────────────
         //  Constructor
         // ─────────────────────────────────────────────────────────────────────
@@ -182,6 +187,10 @@ namespace PhysicsSimulation.Rendering.Vulkan
             CreateGraphicsPipeline();
             InitMorphDescs();
             InitRenderInstances();
+
+            // GPU plot evaluation: инициализируем после CreateBuffers чтобы
+            // передать уже созданный _bufGeometry как shared geometry binding.
+            _gpuPlots = new GpuPlotRegistry(ctx, vma, _bufGeometry);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -683,6 +692,8 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _bufGeometry = _vma.CreateVertexBuffer(geomReq * 4);
                 // После роста геометрического буфера — обновить binding во ВСЕХ дескрипторных сетах
                 UpdateGeometryBindingAllFrames();
+                // GPU plots используют тот же буфер — обновляем их binding тоже
+                _gpuPlots?.NotifyGeometryBufferReplaced(_bufGeometry);
             }
             _vma.Upload(_bufGeometry, new ReadOnlySpan<float>(_geometryStagingBuf, 0, geomNeeded));
         }
@@ -712,6 +723,10 @@ namespace PhysicsSimulation.Rendering.Vulkan
             InitMorphDescs();
             InitRenderInstances();
 
+            // Регистрируем GPU plots — геометрия уже размещена в arena,
+            // VertexOffsetRaw корректен. Делаем это один раз при загрузке сцены.
+            RegisterGpuPlots();
+
             // Заливаем начальное состояние во все frame slots сразу
             for (int f = 0; f < MaxFrames; f++)
             {
@@ -721,6 +736,28 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
             // Все frame slots нуждаются в обновлении anim entries при следующей возможности
             _animEntriesDirtyMask = (1 << MaxFrames) - 1;
+        }
+
+        /// <summary>
+        /// Проходит по всем PlotGpu примитивам и регистрирует их в GpuPlotRegistry.
+        /// Для каждого успешно скомпилированного — выставляет GpuComputed=true,
+        /// CPU RefreshDynamicVertices() для него больше не вызывается.
+        /// </summary>
+        private void RegisterGpuPlots()
+        {
+            if (_gpuPlots == null) return;
+            int registered = 0, fallback = 0;
+            foreach (var p in _primitives)
+            {
+                if (p is not PlotGpu plot) continue;
+                if (!plot.IsDynamic) continue;
+
+                bool ok = _gpuPlots.RegisterPlot(plot, plot.LambdaAst);
+                if (ok) registered++;
+                else    fallback++;
+            }
+            if (registered > 0 || fallback > 0)
+                DebugManager.Scene($"[VulkanAnimationEngine] GPU plots: {registered} GPU, {fallback} CPU fallback");
         }
 
         private void InitMorphDescs()
@@ -792,6 +829,16 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 UploadAnimEntries(frame);
                 UploadAnimIndex(frame);
                 _animEntriesDirtyMask &= ~(1 << frame);
+            }
+
+            // 7e. GPU plot params — snapshot переменных (T, MX, MY, ...) для compute шейдера.
+            // Snapshot снимается здесь — после BeginFrame, перед record.
+            if (_gpuPlots != null && _gpuPlots.PlotCount > 0)
+            {
+                float t  = ESharpEngine.Registry.TryGetVar("T",  out var tv)  ? (float)Convert.ToDouble(tv)  : 0f;
+                float mx = ESharpEngine.Registry.TryGetVar("MX", out var mxv) ? (float)Convert.ToDouble(mxv) : 0f;
+                float my = ESharpEngine.Registry.TryGetVar("MY", out var myv) ? (float)Convert.ToDouble(myv) : 0f;
+                _gpuPlots.UploadPlotParams(frame, t, mx, my);
             }
         }
 
@@ -950,6 +997,29 @@ namespace PhysicsSimulation.Rendering.Vulkan
         public void RecordComputeCommands(CommandBuffer cmd, int frame, float time)
         {
             if (_primitives.Count == 0) return;
+
+            // ── 0. GPU Plot compute: пишет точки графиков прямо в GeometryArena ──
+            // Выполняется ДО anim_compute — anim_compute читает RenderInstances (не геометрию),
+            // поэтому порядок независим. Барьер нужен только перед vertex shader.
+            if (_gpuPlots != null && _gpuPlots.PlotCount > 0)
+            {
+                _gpuPlots.RecordDispatch(cmd, frame, time, AspectRatio);
+
+                // Барьер: plot compute пишет в GeometryArena → vertex shader читает
+                // (anim_compute не читает геометрию — барьер только перед VS)
+                var plotBarrier = new MemoryBarrier
+                {
+                    SType         = StructureType.MemoryBarrier,
+                    SrcAccessMask = AccessFlags.ShaderWriteBit,
+                    DstAccessMask = AccessFlags.ShaderReadBit
+                };
+                _ctx.Vk.CmdPipelineBarrier(cmd,
+                    PipelineStageFlags.ComputeShaderBit,
+                    PipelineStageFlags.VertexShaderBit,
+                    DependencyFlags.None,
+                    1, &plotBarrier, 0, null, 0, null);
+            }
+
             if (_uploadedAnimEntries.Count == 0) return;
             if (_animComputePipeline.Handle == 0) return;
 
@@ -1156,6 +1226,9 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _bufRenderInstances[f]?.Dispose();
                 _bufIndirect[f]?.Dispose();
             }
+
+            // GPU plot registry (owns its own buffers and pipeline)
+            _gpuPlots?.Dispose();
         }
     }
 }
