@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using PhysicsSimulation.Rendering.PrimitiveRendering.GPU;
 using PhysicsSimulation.Rendering.Vulkan;
@@ -411,6 +412,22 @@ namespace PhysicsSimulation.Base
         public void RegisterVar(string name, object value) => _vars[name] = value;
         public bool TryGetVar(string name, out object value) => _vars.TryGetValue(name, out value);
 
+        // Direct double read — used by the compiled expression trees to avoid boxing/Convert overhead
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        public double GetVarDouble(string name)
+        {
+            if (!_vars.TryGetValue(name, out var v)) return 0.0;
+            return v switch
+            {
+                double d  => d,
+                float  f  => f,
+                int    i  => i,
+                long   l  => l,
+                bool   b  => b ? 1.0 : 0.0,
+                _         => Convert.ToDouble(v)
+            };
+        }
+
         // Clear all registered functions and variables (call before reloading a scene)
         public void Clear()
         {
@@ -455,6 +472,10 @@ namespace PhysicsSimulation.Base
         // - delegate(object[]) -> object
         // - delegate(object[], Dictionary<string,object>) -> object
         // - any delegate that can be DynamicInvoke'd with posArgs
+        // Cached typed wrappers for fast dispatch — avoids DynamicInvoke reflection overhead
+        private readonly Dictionary<Delegate, Func<object[], Dictionary<string, object>, object>> _invokeCache
+            = new(ReferenceEqualityComparer.Instance);
+
         public bool TryInvoke(string name, object[] posArgs, Dictionary<string, object> namedArgs, out object result)
         {
             result = null;
@@ -462,23 +483,35 @@ namespace PhysicsSimulation.Base
 
             foreach (var del in list)
             {
-                var m = del.Method;
-                var ps = m.GetParameters();
-
-                // shape: Func<object[], object>
-                if (ps.Length == 1 && ps[0].ParameterType == typeof(object[]))
+                // Fast path 1: Func<object[], Dictionary<string,object>, object> — the standard shape
+                if (del is Func<object[], Dictionary<string, object>, object> f2)
                 {
-                    try { result = del.DynamicInvoke(new object[] { posArgs }); return true; } catch { }
+                    result = f2(posArgs, namedArgs);
+                    return true;
                 }
 
-                // shape: Func<object[], Dictionary<string,object>, object>
-                if (ps.Length == 2 && ps[0].ParameterType == typeof(object[]) && ps[1].ParameterType == typeof(Dictionary<string, object>))
+                // Fast path 2: Func<object[], object>
+                if (del is Func<object[], object> f1)
                 {
-                    try { result = del.DynamicInvoke(posArgs, namedArgs); return true; } catch { }
+                    result = f1(posArgs);
+                    return true;
                 }
 
-                // last resort: try to DynamicInvoke directly (posArgs must match)
-                try { result = del.DynamicInvoke(posArgs); return true; } catch { }
+                // Slower path: cache a typed wrapper for this delegate to avoid DynamicInvoke every call
+                if (!_invokeCache.TryGetValue(del, out var cached))
+                {
+                    var capturedDel = del;
+                    var ps = del.Method.GetParameters();
+                    if (ps.Length == 2 && ps[0].ParameterType == typeof(object[]) && ps[1].ParameterType == typeof(Dictionary<string, object>))
+                        cached = (a, n) => capturedDel.DynamicInvoke(a, n);
+                    else if (ps.Length == 1 && ps[0].ParameterType == typeof(object[]))
+                        cached = (a, _) => capturedDel.DynamicInvoke(new object[] { a });
+                    else
+                        cached = (a, _) => capturedDel.DynamicInvoke(a);
+                    _invokeCache[del] = cached;
+                }
+
+                try { result = cached(posArgs, namedArgs); return true; } catch { }
             }
 
             return false;
@@ -1349,7 +1382,178 @@ namespace PhysicsSimulation.Base
             return x => { snap(); return fn(x); };
         }
 
+        // ── LINQ Expression compiler infrastructure ──────────────────────────
+        // Maps DSL math function name → direct MethodInfo on Math class.
+        // Avoids going through double[] argBuf + _mathFastPath on the hot per-frame path.
+        private static readonly MethodInfo _mathPow =
+            typeof(Math).GetMethod(nameof(Math.Pow), new[] { typeof(double), typeof(double) })!;
+
+        private static readonly MethodInfo _getVarDoubleMethod =
+            typeof(DslRegistry).GetMethod(nameof(DslRegistry.GetVarDouble), new[] { typeof(string) })!;
+
+        // name → overloads sorted by parameter count for fast lookup
+        private static readonly Dictionary<string, MethodInfo[]> _mathExprMethods =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sin"]        = [typeof(Math).GetMethod(nameof(Math.Sin),     new[]{typeof(double)})!],
+                ["cos"]        = [typeof(Math).GetMethod(nameof(Math.Cos),     new[]{typeof(double)})!],
+                ["tan"]        = [typeof(Math).GetMethod(nameof(Math.Tan),     new[]{typeof(double)})!],
+                ["asin"]       = [typeof(Math).GetMethod(nameof(Math.Asin),    new[]{typeof(double)})!],
+                ["acos"]       = [typeof(Math).GetMethod(nameof(Math.Acos),    new[]{typeof(double)})!],
+                ["atan"]       = [typeof(Math).GetMethod(nameof(Math.Atan),    new[]{typeof(double)})!],
+                ["sqrt"]       = [typeof(Math).GetMethod(nameof(Math.Sqrt),    new[]{typeof(double)})!],
+                ["abs"]        = [typeof(Math).GetMethod(nameof(Math.Abs),     new[]{typeof(double)})!],
+                ["floor"]      = [typeof(Math).GetMethod(nameof(Math.Floor),   new[]{typeof(double)})!],
+                ["ceil"]       = [typeof(Math).GetMethod(nameof(Math.Ceiling), new[]{typeof(double)})!],
+                ["round"]      = [typeof(Math).GetMethod(nameof(Math.Round),   new[]{typeof(double)})!],
+                ["log"]        = [typeof(Math).GetMethod(nameof(Math.Log),     new[]{typeof(double)})!],
+                ["exp"]        = [typeof(Math).GetMethod(nameof(Math.Exp),     new[]{typeof(double)})!],
+                ["atan2"]      = [typeof(Math).GetMethod(nameof(Math.Atan2),   new[]{typeof(double), typeof(double)})!],
+                ["pow"]        = [_mathPow],
+                ["min"]        = [typeof(Math).GetMethod(nameof(Math.Min),     new[]{typeof(double), typeof(double)})!],
+                ["max"]        = [typeof(Math).GetMethod(nameof(Math.Max),     new[]{typeof(double), typeof(double)})!],
+                ["clamp"]      = [typeof(Math).GetMethod(nameof(Math.Clamp),   new[]{typeof(double), typeof(double), typeof(double)})!],
+            };
+
+        // Helper: ensure expression is of type double (insert Convert.ToDouble if needed)
+        private static Expression ToDoubleExpr(Expression e) =>
+            e.Type == typeof(double) ? e : Expression.Convert(e, typeof(double));
+
+        // ── CompileMathExprWithX (FAST PATH — uses LINQ Expressions) ─────────
+        // Called ONCE at scene load per plot function.
+        // Returns a single JIT-compiled Func<float,double> — no virtual dispatch per point.
+        // Falls back to legacy delegate chain if any unsupported construct is encountered.
         private Func<float, double> CompileMathExprWithX(Expr expr, string xParam,
+            Dictionary<string, int>? nameToIdx = null, double[]? snapshot = null)
+        {
+            var xPar = System.Linq.Expressions.Expression.Parameter(typeof(float), "x");
+            System.Linq.Expressions.Expression body;
+            try
+            {
+                body = BuildExprTreeWithX(expr, xParam, xPar, nameToIdx, snapshot);
+            }
+            catch
+            {
+                // Fallback: legacy delegate chain (unchanged behavior)
+                return CompileMathExprWithXLegacy(expr, xParam, nameToIdx, snapshot);
+            }
+
+            if (body.Type != typeof(double))
+                body = System.Linq.Expressions.Expression.Convert(body, typeof(double));
+
+            return System.Linq.Expressions.Expression.Lambda<Func<float, double>>(body, xPar).Compile();
+        }
+
+        private System.Linq.Expressions.Expression BuildExprTreeWithX(
+            Expr expr, string xParam,
+            System.Linq.Expressions.ParameterExpression xPar,
+            Dictionary<string, int>? nameToIdx, double[]? snapshot)
+        {
+            switch (expr)
+            {
+                case NumberExpr n:
+                    return System.Linq.Expressions.Expression.Constant(n.Value); // double
+
+                case IdentExpr id when string.Equals(id.Name, xParam, StringComparison.OrdinalIgnoreCase):
+                    return ToDoubleExpr(xPar);
+
+                case IdentExpr id:
+                    // Snapshot path: O(1) array index, no dict lookup
+                    if (nameToIdx != null && snapshot != null && nameToIdx.TryGetValue(id.Name, out int idx))
+                    {
+                        var snapConst = System.Linq.Expressions.Expression.Constant(snapshot, typeof(double[]));
+                        return System.Linq.Expressions.Expression.ArrayIndex(snapConst,
+                            System.Linq.Expressions.Expression.Constant(idx));
+                    }
+                    // Registry path: one method call, no boxing
+                    return System.Linq.Expressions.Expression.Call(
+                        System.Linq.Expressions.Expression.Constant(Registry),
+                        _getVarDoubleMethod,
+                        System.Linq.Expressions.Expression.Constant(id.Name));
+
+                case BinaryExpr b:
+                {
+                    if (b.Op == "!")
+                    {
+                        var rr = ToDoubleExpr(BuildExprTreeWithX(b.Right, xParam, xPar, nameToIdx, snapshot));
+                        return System.Linq.Expressions.Expression.Condition(
+                            System.Linq.Expressions.Expression.Equal(rr, System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Constant(1.0),
+                            System.Linq.Expressions.Expression.Constant(0.0));
+                    }
+                    var lf = ToDoubleExpr(BuildExprTreeWithX(b.Left,  xParam, xPar, nameToIdx, snapshot));
+                    var rf = ToDoubleExpr(BuildExprTreeWithX(b.Right, xParam, xPar, nameToIdx, snapshot));
+                    return b.Op switch
+                    {
+                        "+" => System.Linq.Expressions.Expression.Add(lf, rf),
+                        "-" => System.Linq.Expressions.Expression.Subtract(lf, rf),
+                        "*" => System.Linq.Expressions.Expression.Multiply(lf, rf),
+                        "/" => System.Linq.Expressions.Expression.Divide(lf, rf),
+                        "^" => System.Linq.Expressions.Expression.Call(_mathPow, lf, rf),
+                        "<"  => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.LessThan(lf, rf),           System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        ">"  => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.GreaterThan(lf, rf),         System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "<=" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.LessThanOrEqual(lf, rf),    System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        ">=" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.GreaterThanOrEqual(lf, rf),  System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "==" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.Equal(lf, rf),               System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "!=" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.NotEqual(lf, rf),            System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "&&" => System.Linq.Expressions.Expression.Condition(
+                            System.Linq.Expressions.Expression.NotEqual(lf, System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.NotEqual(rf, System.Linq.Expressions.Expression.Constant(0.0)), System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Constant(0.0)),
+                        "||" => System.Linq.Expressions.Expression.Condition(
+                            System.Linq.Expressions.Expression.NotEqual(lf, System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Constant(1.0),
+                            System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.NotEqual(rf, System.Linq.Expressions.Expression.Constant(0.0)), System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0))),
+                        _ => System.Linq.Expressions.Expression.Constant(0.0)
+                    };
+                }
+
+                case CallExpr call when call.Callee is IdentExpr mathId:
+                {
+                    // Try to bind directly to a Math.* method (zero double[] allocation)
+                    if (_mathExprMethods.TryGetValue(mathId.Name, out var overloads))
+                    {
+                        var method = Array.Find(overloads, m => m.GetParameters().Length == call.Args.Count);
+                        if (method != null)
+                        {
+                            var argExprs = call.Args
+                                .Select(a => ToDoubleExpr(BuildExprTreeWithX(a, xParam, xPar, nameToIdx, snapshot)))
+                                .ToArray();
+                            var callNode = System.Linq.Expressions.Expression.Call(method, argExprs);
+                            return callNode.Type == typeof(double) ? (System.Linq.Expressions.Expression)callNode
+                                : System.Linq.Expressions.Expression.Convert(callNode, typeof(double));
+                        }
+                    }
+                    // Fallback for custom/3-arg functions: build old-style closure for this node only
+                    if (_mathFastPath.TryGetValue(mathId.Name, out var mathFn))
+                    {
+                        var argFuncs = call.Args.ConvertAll(a => CompileMathExprWithX(a, xParam, nameToIdx, snapshot));
+                        int ac = argFuncs.Count;
+                        var buf = new double[ac];
+                        var fn  = mathFn;
+                        Func<float, double> nodeClosure = x => {
+                            for (int i = 0; i < ac; i++) buf[i] = argFuncs[i](x);
+                            return fn(buf);
+                        };
+                        return System.Linq.Expressions.Expression.Invoke(
+                            System.Linq.Expressions.Expression.Constant(nodeClosure), xPar);
+                    }
+                    throw new InvalidOperationException($"Unknown function: {mathId.Name}");
+                }
+
+                default:
+                {
+                    // Anything else (block, lambda…) falls back to full Eval per call
+                    var capturedExpr = expr;
+                    Func<float, double> evalFn = _ => Convert.ToDouble(Eval(capturedExpr));
+                    return System.Linq.Expressions.Expression.Invoke(
+                        System.Linq.Expressions.Expression.Constant(evalFn), xPar);
+                }
+            }
+        }
+
+        // Legacy delegate-chain path (kept as fallback)
+        private Func<float, double> CompileMathExprWithXLegacy(Expr expr, string xParam,
             Dictionary<string, int>? nameToIdx = null, double[]? snapshot = null)
         {
             switch (expr)
@@ -1422,12 +1626,114 @@ namespace PhysicsSimulation.Base
         // ------------------ Dynamic expression compilation ------------------
 
         /// <summary>
-        /// Compiles a DSL Expr into a Func&lt;double&gt;. Builds a native delegate chain once at
-        /// load time — each frame call is pure arithmetic, zero AST traversal.
+        /// Compiles a DSL Expr into a Func&lt;double&gt;.
+        /// Uses LINQ Expression.Compile — produces a single JIT-compiled native method.
+        /// Falls back to legacy delegate chain if any unsupported node is encountered.
         /// </summary>
         public Func<double> CompileExpr(Expr expr) => CompileExprFast(expr);
 
         private Func<double> CompileExprFast(Expr expr)
+        {
+            System.Linq.Expressions.Expression body;
+            try { body = BuildExprTreeNoX(expr); }
+            catch { return CompileExprFastLegacy(expr); }
+
+            if (body.Type != typeof(double))
+                body = System.Linq.Expressions.Expression.Convert(body, typeof(double));
+
+            return System.Linq.Expressions.Expression.Lambda<Func<double>>(body).Compile();
+        }
+
+        private System.Linq.Expressions.Expression BuildExprTreeNoX(Expr expr)
+        {
+            switch (expr)
+            {
+                case NumberExpr n:
+                    return System.Linq.Expressions.Expression.Constant(n.Value);
+
+                case IdentExpr id:
+                    return System.Linq.Expressions.Expression.Call(
+                        System.Linq.Expressions.Expression.Constant(Registry),
+                        _getVarDoubleMethod,
+                        System.Linq.Expressions.Expression.Constant(id.Name));
+
+                case BinaryExpr b:
+                {
+                    if (b.Op == "!")
+                    {
+                        var rr = ToDoubleExpr(BuildExprTreeNoX(b.Right));
+                        return System.Linq.Expressions.Expression.Condition(
+                            System.Linq.Expressions.Expression.Equal(rr, System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0));
+                    }
+                    var lf = ToDoubleExpr(BuildExprTreeNoX(b.Left));
+                    var rf = ToDoubleExpr(BuildExprTreeNoX(b.Right));
+                    return b.Op switch
+                    {
+                        "+"  => System.Linq.Expressions.Expression.Add(lf, rf),
+                        "-"  => System.Linq.Expressions.Expression.Subtract(lf, rf),
+                        "*"  => System.Linq.Expressions.Expression.Multiply(lf, rf),
+                        "/"  => System.Linq.Expressions.Expression.Divide(lf, rf),
+                        "^"  => System.Linq.Expressions.Expression.Call(_mathPow, lf, rf),
+                        "<"  => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.LessThan(lf, rf),           System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        ">"  => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.GreaterThan(lf, rf),         System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "<=" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.LessThanOrEqual(lf, rf),    System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        ">=" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.GreaterThanOrEqual(lf, rf),  System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "==" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.Equal(lf, rf),               System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "!=" => System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.NotEqual(lf, rf),            System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                        "&&" => System.Linq.Expressions.Expression.Condition(
+                            System.Linq.Expressions.Expression.NotEqual(lf, System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.NotEqual(rf, System.Linq.Expressions.Expression.Constant(0.0)), System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Constant(0.0)),
+                        "||" => System.Linq.Expressions.Expression.Condition(
+                            System.Linq.Expressions.Expression.NotEqual(lf, System.Linq.Expressions.Expression.Constant(0.0)),
+                            System.Linq.Expressions.Expression.Constant(1.0),
+                            System.Linq.Expressions.Expression.Condition(System.Linq.Expressions.Expression.NotEqual(rf, System.Linq.Expressions.Expression.Constant(0.0)), System.Linq.Expressions.Expression.Constant(1.0), System.Linq.Expressions.Expression.Constant(0.0))),
+                        _ => System.Linq.Expressions.Expression.Constant(0.0)
+                    };
+                }
+
+                case CallExpr call when call.Callee is IdentExpr mathId:
+                {
+                    if (_mathExprMethods.TryGetValue(mathId.Name, out var overloads))
+                    {
+                        var method = Array.Find(overloads, m => m.GetParameters().Length == call.Args.Count);
+                        if (method != null)
+                        {
+                            var argExprs = call.Args.Select(a => ToDoubleExpr(BuildExprTreeNoX(a))).ToArray();
+                            var callNode = System.Linq.Expressions.Expression.Call(method, argExprs);
+                            return callNode.Type == typeof(double) ? (System.Linq.Expressions.Expression)callNode
+                                : System.Linq.Expressions.Expression.Convert(callNode, typeof(double));
+                        }
+                    }
+                    if (_mathFastPath.TryGetValue(mathId.Name, out var mathFn))
+                    {
+                        var argFuncs = call.Args.ConvertAll(a => CompileExprFastLegacy(a));
+                        int ac = argFuncs.Count;
+                        var buf = new double[ac];
+                        var fn  = mathFn;
+                        Func<double> nodeClosure = () => {
+                            for (int i = 0; i < ac; i++) buf[i] = argFuncs[i]();
+                            return fn(buf);
+                        };
+                        return System.Linq.Expressions.Expression.Invoke(
+                            System.Linq.Expressions.Expression.Constant(nodeClosure));
+                    }
+                    throw new InvalidOperationException($"Unknown function: {mathId.Name}");
+                }
+
+                default:
+                {
+                    var capturedExpr = expr;
+                    Func<double> evalFn = () => Convert.ToDouble(Eval(capturedExpr));
+                    return System.Linq.Expressions.Expression.Invoke(
+                        System.Linq.Expressions.Expression.Constant(evalFn));
+                }
+            }
+        }
+
+        // Legacy delegate-chain fallback for CompileExprFast
+        private Func<double> CompileExprFastLegacy(Expr expr)
         {
             switch (expr)
             {
@@ -1439,16 +1745,16 @@ namespace PhysicsSimulation.Base
                 case IdentExpr id:
                 {
                     var name = id.Name;
-                    return () => Registry.TryGetVar(name, out var v) ? Convert.ToDouble(v) : 0.0;
+                    return () => Registry.GetVarDouble(name);
                 }
                 case BinaryExpr b:
                 {
-                    if (b.Op == "&&") { var lf = CompileExprFast(b.Left); var rf = CompileExprFast(b.Right); return () => lf() != 0.0 ? (rf() != 0.0 ? 1.0 : 0.0) : 0.0; }
-                    if (b.Op == "||") { var lf = CompileExprFast(b.Left); var rf = CompileExprFast(b.Right); return () => lf() != 0.0 ? 1.0 : (rf() != 0.0 ? 1.0 : 0.0); }
-                    if (b.Op == "!")  { var rf = CompileExprFast(b.Right); return () => rf() == 0.0 ? 1.0 : 0.0; }
+                    if (b.Op == "&&") { var lf = CompileExprFastLegacy(b.Left); var rf = CompileExprFastLegacy(b.Right); return () => lf() != 0.0 ? (rf() != 0.0 ? 1.0 : 0.0) : 0.0; }
+                    if (b.Op == "||") { var lf = CompileExprFastLegacy(b.Left); var rf = CompileExprFastLegacy(b.Right); return () => lf() != 0.0 ? 1.0 : (rf() != 0.0 ? 1.0 : 0.0); }
+                    if (b.Op == "!")  { var rf = CompileExprFastLegacy(b.Right); return () => rf() == 0.0 ? 1.0 : 0.0; }
                     {
-                        var lf = CompileExprFast(b.Left);
-                        var rf = CompileExprFast(b.Right);
+                        var lf = CompileExprFastLegacy(b.Left);
+                        var rf = CompileExprFastLegacy(b.Right);
                         return b.Op switch
                         {
                             "+"  => () => lf() + rf(),
@@ -1469,7 +1775,7 @@ namespace PhysicsSimulation.Base
                 case CallExpr call when call.Callee is IdentExpr mathId
                                         && _mathFastPath.TryGetValue(mathId.Name, out var mathFn):
                 {
-                    var argFuncs = call.Args.ConvertAll(CompileExprFast);
+                    var argFuncs = call.Args.ConvertAll(CompileExprFastLegacy);
                     int argCount = argFuncs.Count;
                     var argBuf = new double[argCount];
                     return () =>

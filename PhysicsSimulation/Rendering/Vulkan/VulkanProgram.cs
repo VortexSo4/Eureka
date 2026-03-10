@@ -35,6 +35,27 @@ namespace PhysicsSimulation.Rendering.Vulkan
             int    height     = 1080,
             bool   fullscreen = false,
             bool   validation = true)
+            where TScene : VulkanSceneGpu, new()
+        {
+            Run(
+                factory: (ctx, arena) => (TScene)Activator.CreateInstance(typeof(TScene), ctx, arena)!,
+                title: title, width: width, height: height,
+                fullscreen: fullscreen, validation: validation);
+        }
+
+        /// <summary>
+        /// Перегрузка с явной фабрикой — не использует рефлексию, совместима с AOT.
+        ///
+        /// Пример:
+        ///   VulkanProgram.Run((ctx, arena) => new MyScene(ctx, arena), "Demo");
+        /// </summary>
+        public static void Run<TScene>(
+            Func<VulkanContext, GeometryArena, TScene> factory,
+            string title      = "EurekaSharp",
+            int    width      = 1920,
+            int    height     = 1080,
+            bool   fullscreen = false,
+            bool   validation = true)
             where TScene : VulkanSceneGpu
         {
             // Конфигурация окна Silk.NET
@@ -61,7 +82,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
             window.Load += () =>
             {
                 ctx   = new VulkanContext(window, enableValidation: validation);
-                scene = (TScene)Activator.CreateInstance(typeof(TScene), ctx, arena)!;
+                scene = factory(ctx, arena);
                 scene.Setup();
                 scene.Initialize();
 
