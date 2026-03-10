@@ -1054,13 +1054,32 @@ namespace PhysicsSimulation.Rendering.Vulkan
             // (persistent mapped → просто memcpy)
             _bufIndirect[frame].Write(new ReadOnlySpan<IndirectDrawCmd>(cmds, drawCount));
 
-            // Один вызов вместо N — это и есть главная оптимизация
-            _ctx.Vk.CmdDrawIndexedIndirect(
-                cmd,
-                _bufIndirect[frame].Handle,
-                offset:    0,
-                drawCount: (uint)drawCount,
-                stride:    (uint)sizeof(IndirectDrawCmd));
+            if (_ctx.MultiDrawIndirectSupported)
+            {
+                // Один вызов на весь кадр — главная оптимизация
+                _ctx.Vk.CmdDrawIndexedIndirect(
+                    cmd,
+                    _bufIndirect[frame].Handle,
+                    offset:    0,
+                    drawCount: (uint)drawCount,
+                    stride:    (uint)sizeof(IndirectDrawCmd));
+            }
+            else
+            {
+                // Fallback: GPU не поддерживает multiDrawIndirect —
+                // CmdDrawIndexedIndirect допускает drawCount=1, поэтому
+                // вызываем его N раз со смещением stride * i.
+                ulong stride = (ulong)sizeof(IndirectDrawCmd);
+                for (int i = 0; i < drawCount; i++)
+                {
+                    _ctx.Vk.CmdDrawIndexedIndirect(
+                        cmd,
+                        _bufIndirect[frame].Handle,
+                        offset:    stride * (ulong)i,
+                        drawCount: 1,
+                        stride:    (uint)stride);
+                }
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────

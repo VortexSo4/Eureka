@@ -84,6 +84,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
         // │ поэтому RenderFinished[imageIndex] всегда безопасен.            │
         // └─────────────────────────────────────────────────────────────────┘
         public const int           MaxFramesInFlight = 2;
+        public bool                        MultiDrawIndirectSupported { get; private set; }
         public Silk.NET.Vulkan.Semaphore[] ImageAvailable  { get; private set; } = [];
         public Silk.NET.Vulkan.Semaphore[] RenderFinished  { get; private set; } = [];
         public Fence[]                     InFlightFences  { get; private set; } = [];
@@ -397,11 +398,16 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 };
             }
 
+            // Проверяем поддержку multiDrawIndirect до создания девайса
+            Vk.GetPhysicalDeviceFeatures(PhysicalDevice, out var supported);
+            MultiDrawIndirectSupported = supported.MultiDrawIndirect;
+            if (!MultiDrawIndirectSupported)
+                Console.WriteLine("[VulkanContext] multiDrawIndirect не поддерживается — fallback на N×CmdDrawIndexed.");
+
             // Включаем нужные фичи
             var features = new PhysicalDeviceFeatures
             {
-                // Для работы с геометрией как на desktop, так и на мобилках
-                // FillModeNonSolid нужен если хотим wireframe — опционально
+                MultiDrawIndirect = MultiDrawIndirectSupported,
             };
 
             // Vulkan12Features убраны — DescriptorIndexing/TimelineSemaphore не нужны

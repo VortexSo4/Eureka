@@ -34,6 +34,9 @@ namespace PhysicsSimulation.Rendering.Vulkan
         // ── Общие поля сцены ───────────────────────────────────────────────
         protected List<PrimitiveGpu> _primitives = [];
         protected GeometryArena _arena;
+        // Кэшированный флаг — есть ли примитивы с CPU-геометрией (IsDynamic).
+        // Обновляется при AddPrimitive. Избегает LINQ Any() + аллокации каждый кадр.
+        private bool _hasDynamicGeometry;
 
         // ── Vulkan-специфичные поля ────────────────────────────────────────
         protected readonly VulkanContext _vkCtx;
@@ -73,6 +76,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
 
             _primitives.Add(p);
+            if (p.IsDynamic) _hasDynamicGeometry = true;
             DebugManager.Scene($"VulkanSceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
 
@@ -156,15 +160,18 @@ namespace PhysicsSimulation.Rendering.Vulkan
             // их VertexOffset в арене не меняется, пересчитывать незачем.
             // PlotGpu пересчитывает кривую внутри RegisterGeometryInternal,
             // поэтому ему нужен InvalidateGeometry перед каждым EnsureGeometryRegistered.
-            if (_primitives.Any(p => p.IsDynamic))
+            if (_hasDynamicGeometry)
             {
-                foreach (var p in _primitives)
-                    if (p.IsDynamic) p.InvalidateGeometry();
-
+                // arena.Reset() обнуляет все offsets — все примитивы теряют свои слоты.
+                // Поэтому инвалидируем ВСЕХ перед сбросом, а не только IsDynamic.
+                // Статические примитивы кэшируют геометрию в _cachedFlat и пересчитывать
+                // координаты не будут — просто выделят новый слот в арене (дёшево).
+                // IsDynamic примитивы (PlotGpu) пересчитают кривую в RegisterGeometryInternal.
+                foreach (var p in _primitives) p.InvalidateGeometry();
                 _arena.Reset();
                 foreach (var p in _primitives) p.EnsureGeometryRegistered(_arena);
 
-                _vkAnimationEngine?.RebuildAllDescriptors();
+                // Только заливка XY — без DeviceWaitIdle/RebuildAllDescriptors.
                 _vkAnimationEngine?.UploadGeometryFromPrimitives();
             }
 

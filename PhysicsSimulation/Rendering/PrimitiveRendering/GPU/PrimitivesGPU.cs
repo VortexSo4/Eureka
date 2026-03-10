@@ -187,8 +187,14 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         internal Vector2[] GetVertices() => CachedVertices ?? [];
         public int PrimitiveId { get; internal set; } = -1;
         private const int ANIM_ENTRY_SIZE_BYTES = 80;
+        // IsDynamic = true только у примитивов с CPU-пересчётом геометрии каждый кадр
+        // (PlotGpu и подобные). AnimateXxx НЕ устанавливает этот флаг —
+        // GPU-анимации живут в compute шейдере и не требуют CPU-rebuild геометрии.
         public bool IsDynamic { get; set; } = false;
         internal bool IsGeometryRegistered { get; private set; } = false;
+        // Кэшированный bool — обновляется при установке DynX/DynY/etc.
+        // Избегает 8 null-проверок на каждый примитив каждый кадр.
+        public bool HasDynCallbacks { get; private set; } = false;
         protected abstract void RegisterGeometryInternal(GeometryArena arena);
         public void InvalidateGeometry()
         {
@@ -217,18 +223,21 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
         public float HitRadius { get; set; } = 0.12f;
 
         // ── Dynamic expression callbacks (dynPos / dynRot / dynColor / dynScale) ──
-        public Func<double>? DynX        { get; set; }
-        public Func<double>? DynY        { get; set; }
-        public Func<double>? DynRotation { get; set; }
-        public Func<double>? DynScale    { get; set; }
-        public Func<double>? DynR        { get; set; }
-        public Func<double>? DynG        { get; set; }
-        public Func<double>? DynB        { get; set; }
-        public Func<double>? DynA        { get; set; }
+        private Func<double>? _dynX, _dynY, _dynRotation, _dynScale, _dynR, _dynG, _dynB, _dynA;
+        private void RefreshHasDynCallbacks() =>
+            HasDynCallbacks = _dynX != null || _dynY != null || _dynRotation != null || _dynScale != null ||
+                              _dynR  != null || _dynG != null || _dynB != null || _dynA != null;
 
-        public bool HasDynCallbacks =>
-            DynX != null || DynY != null || DynRotation != null || DynScale != null ||
-            DynR != null || DynG != null || DynB != null || DynA != null;
+        public Func<double>? DynX        { get => _dynX;        set { _dynX        = value; RefreshHasDynCallbacks(); } }
+        public Func<double>? DynY        { get => _dynY;        set { _dynY        = value; RefreshHasDynCallbacks(); } }
+        public Func<double>? DynRotation { get => _dynRotation; set { _dynRotation = value; RefreshHasDynCallbacks(); } }
+        public Func<double>? DynScale    { get => _dynScale;    set { _dynScale    = value; RefreshHasDynCallbacks(); } }
+        public Func<double>? DynR        { get => _dynR;        set { _dynR        = value; RefreshHasDynCallbacks(); } }
+        public Func<double>? DynG        { get => _dynG;        set { _dynG        = value; RefreshHasDynCallbacks(); } }
+        public Func<double>? DynB        { get => _dynB;        set { _dynB        = value; RefreshHasDynCallbacks(); } }
+        public Func<double>? DynA        { get => _dynA;        set { _dynA        = value; RefreshHasDynCallbacks(); } }
+
+        // HasDynCallbacks is now a cached bool field above
 
         internal float DynPosX, DynPosY, DynRot, DynSc = 1f;
         internal float DynCR = 1f, DynCG = 1f, DynCB = 1f, DynCA = 1f;
@@ -311,7 +320,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Translate, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(to.X, to.Y, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimatePosition: Position animation added.");
-            IsDynamic = true;
             return this;
         }
 
@@ -324,7 +332,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Rotate, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(toRad, 0f, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimateRotation: Rotation animation added.");
-            IsDynamic = true;
             return this;
         }
 
@@ -335,7 +342,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Scale, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(to, 0f, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimateScale: Scale animation added.");
-            IsDynamic = true;
             return this;
         }
 
@@ -346,7 +352,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Color, PrimitiveId, start, end, ease,
                 Vector4.Zero, to));
             DebugManager.Anim($"PrimitiveGpu.AnimateColor: Color animation added.");
-            IsDynamic = true;
             return this;
         }
 
@@ -358,7 +363,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.Morph, PrimitiveId, start, end, ease,
                 Vector4.Zero, Vector4.Zero, offsetA, offsetB, offsetM, vertexCount));
             DebugManager.Anim($"PrimitiveGpu.AnimateMorph: Morph animation added.");
-            IsDynamic = true;
             return this;
         }
 
@@ -369,7 +373,6 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             PendingAnimations.Add(new AnimEntryCpu(AnimType.DashLengths, PrimitiveId, start, end, ease,
                 Vector4.Zero, new Vector4(toLengths.X, toLengths.Y, 0f, 0f)));
             DebugManager.Anim($"PrimitiveGpu.AnimateDash: Dash animation added.");
-            IsDynamic = true;
             return this;
         }
 
