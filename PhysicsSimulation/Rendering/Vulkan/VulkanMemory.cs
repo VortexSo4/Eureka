@@ -188,24 +188,14 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 MemoryPropertyFlags.HostCoherentBit);
         }
 
-        /// <summary>
-        /// Index buffer (uint16) — для vkCmdDrawIndexed.
-        /// 0xFFFF = primitive restart token (разрыв LineStrip между контурами).
-        /// Обновляется каждый кадр вместе с геометрией → HostVisible.
-        /// </summary>
         public VulkanBuffer CreateIndexBuffer(ulong sizeBytes)
         {
             var usage = BufferUsageFlags.IndexBufferBit | BufferUsageFlags.TransferDstBit;
-
             if (_hasUmaMemory)
                 return AllocateBuffer(sizeBytes, usage,
-                    MemoryPropertyFlags.HostVisibleBit |
-                    MemoryPropertyFlags.HostCoherentBit |
-                    MemoryPropertyFlags.DeviceLocalBit);
-
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit | MemoryPropertyFlags.DeviceLocalBit);
             return AllocateBuffer(sizeBytes, usage,
-                MemoryPropertyFlags.HostVisibleBit |
-                MemoryPropertyFlags.HostCoherentBit);
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         }
 
         /// <summary>

@@ -68,8 +68,11 @@ namespace PhysicsSimulation.Rendering.Vulkan
         private VulkanBuffer _bufAnimIndex      = null!;
         private VulkanBuffer _bufMorphDesc      = null!;
         private VulkanBuffer _bufGeometry       = null!;
-        private VulkanBuffer _bufIndex          = null!;  // uint16, primitive-restart index buffer
+        private VulkanBuffer _bufIndex          = null!;  // uint16 primitive-restart
         private VulkanBuffer _bufRenderInstances = null!;
+
+        // Rebuild index topology only on scene change — never every frame.
+        private bool _indexDirty = true;
         private VulkanBuffer _bufUniforms        = null!;  // aspectRatio, time
 
         // Pipelines
@@ -151,7 +154,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
             _bufAnimIndex       = _vma.CreateStorageBuffer((ulong)(safeCount * ANIM_INDEX_SIZE));
             _bufMorphDesc       = _vma.CreateStorageBuffer((ulong)(safeCount * MORPH_DESC_SIZE));
             _bufGeometry        = _vma.CreateVertexBuffer(256 * 1024);
-            _bufIndex           = _vma.CreateIndexBuffer(256 * 1024);  // uint16 indices
+            _bufIndex           = _vma.CreateIndexBuffer(256 * 1024);
             _bufRenderInstances = _vma.CreateStorageBuffer((ulong)(safeCount * RENDER_INST_SIZE));
             _bufUniforms        = _vma.CreateUniformBuffer((ulong)sizeof(FramePushConstants));
 
@@ -686,21 +689,12 @@ namespace PhysicsSimulation.Rendering.Vulkan
         }
 
         // ── Geometry + Index upload ───────────────────────────────────────────────
-        // Both staging arrays reused every frame — no per-frame heap allocation.
+        // HOT PATH (every frame): copy XY coords — no IsNaN, O(totalVerts) memcpy only.
+        // COLD PATH (_indexDirty): scan for NaN separators → build 0xFFFF restart indices.
+        //   Triggered once at startup and by RebuildAllDescriptors (vertex count change).
         //
-        // INDEX BUFFER LOGIC (important — two bugs to avoid):
-        //
-        // The vertex shader does:  vec2 in_pos = geom[inst.meta.x + gl_VertexIndex]
-        // So gl_VertexIndex must be the LOCAL (0-based) position within the primitive.
-        // CmdDrawIndexed adds vertexOffset to each index from the buffer → gl_VertexIndex.
-        // We pass vertexOffset=0, so gl_VertexIndex = raw index value from the buffer.
-        //
-        // For vertices [v0, v1, NaN, v2, v3]:
-        //   Emit indices: [0, 1, 0xFFFF, 3, 4]   ← absolute k position, NaN slot skipped
-        //   NOT:          [0, 1, 0xFFFF, 2, 3]   ← WRONG: index 2 still points to NaN slot
-        //
-        // 0xFFFF = primitive restart: GPU ends current LineStrip, starts a new one.
-        // The NaN geometry slot is simply never referenced by any index.
+        // Shader: geom[inst.meta.x + gl_VertexIndex], vertexOffset=0 in CmdDrawIndexed.
+        // [v0,v1,NaN,v2,v3] → indices [0,1,0xFFFF,3,4] — absolute k, NaN slot unreferenced.
         private float[]  _geometryStagingBuf = [];
         private ushort[] _indexStagingBuf    = [];
         private int[]    _primIndexStart     = [];
@@ -712,95 +706,77 @@ namespace PhysicsSimulation.Rendering.Vulkan
             int totalVerts = _arena.TotalVertexCount;
             if (totalVerts <= 0) return;
 
-            int primCount   = _primitives.Count;
-            int geomNeeded  = totalVerts * 2;
-            int indexNeeded = totalVerts; // worst case: one index per vertex
-
-            // Grow staging arrays only when necessary
+            int primCount  = _primitives.Count;
+            int geomNeeded = totalVerts * 2;
             if (_geometryStagingBuf.Length < geomNeeded)
                 _geometryStagingBuf = new float[geomNeeded];
-            if (_indexStagingBuf.Length < indexNeeded)
-                _indexStagingBuf = new ushort[indexNeeded];
-            if (_primIndexStart.Length < primCount)
-            {
-                _primIndexStart = new int[primCount];
-                _primIndexCount = new int[primCount];
-            }
 
-            int globalIdxCursor = 0;
-
+            // ── HOT PATH: copy positions every frame ──────────────────────────
             foreach (var p in _primitives)
             {
-                int pid = p.PrimitiveId;
-
-                if (p.VertexOffsetRaw < 0 || p.VertexCount <= 0)
-                {
-                    if (pid >= 0 && pid < primCount)
-                    {
-                        _primIndexStart[pid] = globalIdxCursor;
-                        _primIndexCount[pid] = 0;
-                    }
-                    continue;
-                }
-
-                var cached  = p.GetVertices();
-                int limit   = cached is { Length: > 0 } ? Math.Min(cached.Length, p.VertexCount) : 0;
-                int primStart = globalIdxCursor;
-
+                if (p.VertexOffsetRaw < 0 || p.VertexCount <= 0) continue;
+                var cached    = p.GetVertices();
+                if (cached is not { Length: > 0 }) continue;
+                int offsetRaw = p.VertexOffsetRaw;
+                int limit     = Math.Min(cached.Length, p.VertexCount);
                 for (int k = 0; k < limit; k++)
                 {
-                    float vx = cached[k].X;
-                    float vy = cached[k].Y;
-
-                    // Always write geometry (NaN slots stay NaN — they're never indexed)
-                    int geomIdx = (p.VertexOffsetRaw + k) * 2;
-                    _geometryStagingBuf[geomIdx]     = vx;
-                    _geometryStagingBuf[geomIdx + 1] = vy;
-
-                    if (float.IsNaN(vx) || float.IsNaN(vy))
-                    {
-                        // Primitive restart — ends current LineStrip, starts next.
-                        // The NaN slot at position k is never referenced by an index.
-                        _indexStagingBuf[globalIdxCursor++] = 0xFFFF;
-                    }
-                    else
-                    {
-                        // Emit absolute local position k as the index.
-                        // gl_VertexIndex = k (with vertexOffset=0 in CmdDrawIndexed).
-                        // Shader reads geom[OffsetM + k] = correct vertex.
-                        _indexStagingBuf[globalIdxCursor++] = (ushort)k;
-                    }
+                    int geomIdx = (offsetRaw + k) * 2;
+                    _geometryStagingBuf[geomIdx]     = cached[k].X;
+                    _geometryStagingBuf[geomIdx + 1] = cached[k].Y;
                 }
+            }
 
-                if (pid >= 0 && pid < primCount)
+            // ── COLD PATH: rebuild index topology only when dirty ─────────────
+            if (_indexDirty)
+            {
+                if (_indexStagingBuf.Length < totalVerts) _indexStagingBuf = new ushort[totalVerts];
+                if (_primIndexStart.Length < primCount)
                 {
-                    _primIndexStart[pid] = primStart;
-                    _primIndexCount[pid] = globalIdxCursor - primStart;
+                    _primIndexStart = new int[primCount];
+                    _primIndexCount = new int[primCount];
                 }
+                int cur = 0;
+                foreach (var p in _primitives)
+                {
+                    int pid = p.PrimitiveId;
+                    if (p.VertexOffsetRaw < 0 || p.VertexCount <= 0)
+                    {
+                        if (pid >= 0 && pid < primCount) { _primIndexStart[pid] = cur; _primIndexCount[pid] = 0; }
+                        continue;
+                    }
+                    int offsetRaw = p.VertexOffsetRaw;
+                    int limit     = p.VertexCount;
+                    int start     = cur;
+                    for (int k = 0; k < limit; k++)
+                    {
+                        // Read from already-written staging to avoid redundant GetVertices call
+                        float vx = _geometryStagingBuf[(offsetRaw + k) * 2];
+                        _indexStagingBuf[cur++] = float.IsNaN(vx) ? (ushort)0xFFFF : (ushort)k;
+                    }
+                    if (pid >= 0 && pid < primCount) { _primIndexStart[pid] = start; _primIndexCount[pid] = cur - start; }
+                }
+                ulong idxReq = (ulong)(cur * sizeof(ushort));
+                if (idxReq > _bufIndex.Size)
+                {
+                    _ctx.Vk.DeviceWaitIdle(_ctx.Device);
+                    _bufIndex.Dispose();
+                    _bufIndex = _vma.CreateIndexBuffer(idxReq * 4);
+                }
+                _vma.Upload(_bufIndex, new ReadOnlySpan<ushort>(_indexStagingBuf, 0, cur));
+                _indexDirty = false;
             }
 
             // ── Upload geometry ───────────────────────────────────────────────
-            ulong geomRequired = (ulong)(geomNeeded * sizeof(float));
-            if (geomRequired > _bufGeometry.Size)
+            ulong geomReq = (ulong)(geomNeeded * sizeof(float));
+            if (geomReq > _bufGeometry.Size)
             {
                 _ctx.Vk.DeviceWaitIdle(_ctx.Device);
                 _bufGeometry.Dispose();
-                _bufGeometry = _vma.CreateVertexBuffer(geomRequired * 4);
+                _bufGeometry = _vma.CreateVertexBuffer(geomReq * 4);
                 UpdateGeometryDescriptor();
             }
             _vma.Upload(_bufGeometry, new ReadOnlySpan<float>(_geometryStagingBuf, 0, geomNeeded));
-
-            // ── Upload index buffer ───────────────────────────────────────────
-            ulong idxRequired = (ulong)(globalIdxCursor * sizeof(ushort));
-            if (idxRequired > _bufIndex.Size)
-            {
-                _ctx.Vk.DeviceWaitIdle(_ctx.Device);
-                _bufIndex.Dispose();
-                _bufIndex = _vma.CreateIndexBuffer(idxRequired * 4);
-            }
-            _vma.Upload(_bufIndex, new ReadOnlySpan<ushort>(_indexStagingBuf, 0, globalIdxCursor));
-
-            DebugManager.Memory($"VulkanAnimationEngine: {totalVerts} вершин, {globalIdxCursor} индексов.");
         }
 
         private void UpdateGeometryDescriptor()
@@ -824,6 +800,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         public void RebuildAllDescriptors()
         {
+            _indexDirty = true;
             InitMorphDescs();
             UploadMorphDescs();
             InitRenderInstances();
@@ -929,13 +906,16 @@ namespace PhysicsSimulation.Rendering.Vulkan
         // dispatch — полная сериализация GPU при наличии морф-примитивов.
         // Новый вариант: один submit → одно ожидание в конце.
 
-        public void UpdateAndDispatch(float time)
+        /// <summary>
+        /// Records compute dispatches into an EXISTING command buffer.
+        /// Must be called BEFORE CmdBeginRenderPass so compute and graphics
+        /// are in the same submit — no QueueWaitIdle between them.
+        /// </summary>
+        public void RecordComputeCommands(CommandBuffer cmd, float time)
         {
             if (_primitives.Count == 0) return;
             if (_uploadedAnimEntries.Count == 0) return;
             if (_animComputePipeline.Handle == 0) return;
-
-            var cmd = _ctx.BeginSingleTimeCommands();
 
             // ── 1. Anim compute: один dispatch покрывает ВСЕ примитивы ──
             _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _animComputePipeline);
@@ -1022,7 +1002,8 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 0, null,
                 0, null);
 
-            _ctx.EndSingleTimeCommands(cmd); // ← одно QueueWaitIdle вместо N
+            // No EndSingleTimeCommands — caller owns the command buffer.
+            // The pipeline barrier above (Compute→Vertex) ensures GPU ordering.
         }
 
         // ── DynOverrides (идентично AnimationEngine) ──────────────────────────
@@ -1092,14 +1073,12 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics,
                     _graphicsLayout, 0, 1, pDs, 0, null);
 
-            // Bind index buffer once for all primitives.
-            // vertexOffset=0 in CmdDrawIndexed: gl_VertexIndex = raw index from buffer (0,1,2,...).
-            // Shader handles global arena offset via inst.meta.x (OffsetM).
+            // One index buffer bind — each primitive slices it via firstIndex.
             _ctx.Vk.CmdBindIndexBuffer(cmd, _bufIndex.Handle, 0, IndexType.Uint16);
 
             for (int i = 0; i < _primitives.Count; i++)
             {
-                var p  = _primitives[i];
+                var p   = _primitives[i];
                 int pid = p.PrimitiveId;
                 if (p.VertexCount <= 0) continue;
 
@@ -1116,11 +1095,13 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _ctx.Vk.CmdPushConstants(cmd, _graphicsLayout,
                     ShaderStageFlags.VertexBit, 0, (uint)sizeof(FramePushConstants), &push);
 
+                // vertexOffset=0: gl_VertexIndex = raw index k.
+                // Shader adds inst.meta.x (OffsetM) — do NOT double-add VertexOffsetRaw.
                 _ctx.Vk.CmdDrawIndexed(cmd,
                     indexCount:    (uint)idxCount,
                     instanceCount: 1,
                     firstIndex:    (uint)idxStart,
-                    vertexOffset:  0,  // DO NOT pass VertexOffsetRaw — shader adds OffsetM itself
+                    vertexOffset:  0,
                     firstInstance: 0);
             }
         }
