@@ -1612,15 +1612,32 @@ namespace PhysicsSimulation.Base
                 var lambda = ctx.GetLambda("func");
                 if (lambda == null) throw new Exception("plot требует func: x => ...");
 
-                float xmin = named != null && named.TryGetValue("xmin", out var xm) ? Convert.ToSingle(xm) : -1f;
-                float xmax = named != null && named.TryGetValue("xmax", out var xM) ? Convert.ToSingle(xM) : 1f;
-                bool dynamic = named != null && named.TryGetValue("dynamic", out var dv) && Convert.ToBoolean(dv);
+                // "from"/"to" — границы X (также принимаем "xmin"/"xmax" для совместимости)
+                float xmin = -1f, xmax = 1f;
+                if (named != null)
+                {
+                    if (named.TryGetValue("from",  out var fm)) xmin = Convert.ToSingle(fm);
+                    else if (named.TryGetValue("xmin", out var xm)) xmin = Convert.ToSingle(xm);
+                    if (named.TryGetValue("to",    out var to)) xmax = Convert.ToSingle(to);
+                    else if (named.TryGetValue("xmax", out var xM)) xmax = Convert.ToSingle(xM);
+                }
+                // steps / resolution
+                int steps = 120;
+                if (named != null)
+                {
+                    if (named.TryGetValue("steps", out var st)) steps = Math.Max(2, Convert.ToInt32(st));
+                    else if (named.TryGetValue("resolution", out var rs)) steps = Math.Max(2, Convert.ToInt32(rs));
+                }
+                // dynamic: по умолчанию true — функция может содержать T, MX, MY и т.д.
+                bool dynamic = true;
+                if (named != null && named.TryGetValue("dynamic", out var dv))
+                    dynamic = Convert.ToBoolean(dv);
 
                 // Compile lambda into snapshot-aware pair:
-                //   snap() — called once per frame before the 300-point loop (1 Registry read per var)
+                //   snap() — called once per frame before the point loop (1 Registry read per var)
                 //   fn(x)  — called per point (pure array reads, no dict lookups)
                 var (snap, fn) = CompileMathLambdaWithSnapshot(lambda);
-                var plot = new PlotGpu(fn, xmin, xmax, 80, dynamic);
+                var plot = new PlotGpu(fn, xmin, xmax, steps, dynamic);
                 plot.PreFrameUpdate = snap;
 
                 return plot;

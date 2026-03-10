@@ -37,6 +37,10 @@ namespace PhysicsSimulation.Rendering.Vulkan
         // Кэшированный флаг — есть ли примитивы с CPU-геометрией (IsDynamic).
         // Обновляется при AddPrimitive. Избегает LINQ Any() + аллокации каждый кадр.
         private bool _hasDynamicGeometry;
+        // Pre-allocated — не создаём new List<> каждый кадр.
+        private readonly List<VulkanAnimationEngine.DynOverride> _dynOverrides = new(32);
+        // Кэш: есть ли хоть один примитив с HasDynCallbacks.
+        private bool _hasDynCallbacks;
 
         // ── Vulkan-специфичные поля ────────────────────────────────────────
         protected readonly VulkanContext _vkCtx;
@@ -76,7 +80,8 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
 
             _primitives.Add(p);
-            if (p.IsDynamic) _hasDynamicGeometry = true;
+            if (p.IsDynamic)      _hasDynamicGeometry = true;
+            if (p.HasDynCallbacks) _hasDynCallbacks    = true;
             DebugManager.Scene($"VulkanSceneGpu.AddPrimitive: Added '{p.Name}' (ID: {p.PrimitiveId}), Vertices: {p.VertexCount}, Offset: {p.VertexOffsetRaw}");
         }
 
@@ -154,35 +159,44 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 }
             }
 
-            // Conditional geometry rebuild:
-            // Rebuild если на сцене есть хотя бы один IsDynamic примитив.
-            // Инвалидируем ТОЛЬКО динамические — статические не трогаем,
-            // их VertexOffset в арене не меняется, пересчитывать незачем.
-            // PlotGpu пересчитывает кривую внутри RegisterGeometryInternal,
-            // поэтому ему нужен InvalidateGeometry перед каждым EnsureGeometryRegistered.
+            // Dynamic geometry update:
+            // Только IsDynamic примитивы (PlotGpu) пересчитывают вершины на месте.
+            // arena.Reset() + полная перерегистрация НЕ нужны — Resolution фиксирован,
+            // VertexOffsetRaw стабилен между кадрами, меняются только XY координаты.
             if (_hasDynamicGeometry)
             {
-                // arena.Reset() обнуляет все offsets — все примитивы теряют свои слоты.
-                // Поэтому инвалидируем ВСЕХ перед сбросом, а не только IsDynamic.
-                // Статические примитивы кэшируют геометрию в _cachedFlat и пересчитывать
-                // координаты не будут — просто выделят новый слот в арене (дёшево).
-                // IsDynamic примитивы (PlotGpu) пересчитают кривую в RegisterGeometryInternal.
-                foreach (var p in _primitives) p.InvalidateGeometry();
-                _arena.Reset();
-                foreach (var p in _primitives) p.EnsureGeometryRegistered(_arena);
+                bool anyDirty = false;
+                foreach (var p in _primitives)
+                    if (p.IsDynamic && p.RefreshDynamicVertices()) anyDirty = true;
 
-                // Только заливка XY — без DeviceWaitIdle/RebuildAllDescriptors.
-                _vkAnimationEngine?.UploadGeometryFromPrimitives();
+                if (anyDirty)
+                    _vkAnimationEngine?.UploadGeometryFromPrimitives(rebuildIndex: false, dynamicOnly: true);
             }
 
-            // Накапливаем новые анимационные entries (только CPU, без GPU upload)
-            _vkAnimationEngine?.UploadPendingAnimationsAndIndex();
+            // Один проход по примитивам: pending anims + dyn callbacks.
+            // _dynOverrides pre-allocated — нет new List<> каждый кадр.
+            // UploadPendingAnimationsAndIndex встроен сюда, чтобы не итерировать список дважды.
+            _dynOverrides.Clear();
+            bool hasNewAnims = false;
 
-            // DynCallbacks: вычисляем новые значения и пишем в CPU-зеркало _renderInstances[]
-            // Фактический upload произойдёт в FlushPendingUploads после BeginFrame.
-            var dynOverrides = new List<VulkanAnimationEngine.DynOverride>();
             foreach (var p in _primitives)
             {
+                // ── Pending animations (было UploadPendingAnimationsAndIndex) ──
+                if (p.PendingAnimations.Count > 0)
+                {
+                    for (int i = 0; i < p.PendingAnimations.Count; i++)
+                    {
+                        var entry = p.PendingAnimations[i];
+                        if (!entry.PendingOnGpu) continue;
+                        if (entry.PrimitiveId < 0) continue;
+                        _vkAnimationEngine?.EnqueueAnimEntry(entry);
+                        entry.PendingOnGpu = false;
+                        p.PendingAnimations[i] = entry;
+                        hasNewAnims = true;
+                    }
+                }
+
+                // ── Dyn callbacks ──────────────────────────────────────────
                 if (!p.HasDynCallbacks) continue;
 
                 if (!p.DynInitialized)
@@ -194,24 +208,19 @@ namespace PhysicsSimulation.Rendering.Vulkan
                     p.DynInitialized = true;
                 }
 
+                // try/catch убран из горячего пути: скомпилированные замыкания не бросают
+                // исключений в нормальной работе. Ошибки будут видны как NaN/Infinity в кадре.
                 bool hasPos = false, hasRot = false, hasScale = false, hasColor = false;
-                try
-                {
-                    if (p.DynX        != null) { p.DynPosX = (float)p.DynX();        hasPos   = true; }
-                    if (p.DynY        != null) { p.DynPosY = (float)p.DynY();        hasPos   = true; }
-                    if (p.DynRotation != null) { p.DynRot  = (float)p.DynRotation(); hasRot   = true; }
-                    if (p.DynScale    != null) { p.DynSc   = (float)p.DynScale();    hasScale = true; }
-                    if (p.DynR        != null) { p.DynCR   = (float)p.DynR();        hasColor = true; }
-                    if (p.DynG        != null) { p.DynCG   = (float)p.DynG();        hasColor = true; }
-                    if (p.DynB        != null) { p.DynCB   = (float)p.DynB();        hasColor = true; }
-                    if (p.DynA        != null) { p.DynCA   = (float)p.DynA();        hasColor = true; }
-                }
-                catch (Exception ex)
-                {
-                    DebugManager.Warn($"dynExpr error on '{p.Name}': {ex.Message}");
-                }
+                if (p.DynX        != null) { p.DynPosX = (float)p.DynX();        hasPos   = true; }
+                if (p.DynY        != null) { p.DynPosY = (float)p.DynY();        hasPos   = true; }
+                if (p.DynRotation != null) { p.DynRot  = (float)p.DynRotation(); hasRot   = true; }
+                if (p.DynScale    != null) { p.DynSc   = (float)p.DynScale();    hasScale = true; }
+                if (p.DynR        != null) { p.DynCR   = (float)p.DynR();        hasColor = true; }
+                if (p.DynG        != null) { p.DynCG   = (float)p.DynG();        hasColor = true; }
+                if (p.DynB        != null) { p.DynCB   = (float)p.DynB();        hasColor = true; }
+                if (p.DynA        != null) { p.DynCA   = (float)p.DynA();        hasColor = true; }
 
-                dynOverrides.Add(new VulkanAnimationEngine.DynOverride
+                _dynOverrides.Add(new VulkanAnimationEngine.DynOverride
                 {
                     Pid      = p.PrimitiveId,
                     PosX     = p.DynPosX, PosY  = p.DynPosY,
@@ -220,8 +229,11 @@ namespace PhysicsSimulation.Rendering.Vulkan
                     HasPos   = hasPos, HasRot = hasRot, HasScale = hasScale, HasColor = hasColor
                 });
             }
-            if (dynOverrides.Count > 0)
-                _vkAnimationEngine?.ApplyDynOverrides(dynOverrides);
+
+            if (hasNewAnims)
+                _vkAnimationEngine?.FlushEnqueuedAnimEntries();
+            if (_dynOverrides.Count > 0)
+                _vkAnimationEngine?.ApplyDynOverrides(_dynOverrides);
         }
 
         // ── Render ─────────────────────────────────────────────────────────

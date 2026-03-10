@@ -594,9 +594,17 @@ namespace PhysicsSimulation.Rendering.Vulkan
         //     COLD PATH (_indexDirty): build restart-index table → _bufIndex
         // ─────────────────────────────────────────────────────────────────────
 
-        public void UploadGeometryFromPrimitives()
+        /// <param name="rebuildIndex">
+        /// true  — при смене сцены/добавлении примитивов (меняется топология).
+        /// false — при per-frame пересчёте динамических примитивов:
+        ///         порядок re-register детерминирован → offsets идентичны → index не нужен.
+        /// </param>
+        // dynamicOnly=true: копировать только IsDynamic примитивы.
+        // Статическая геометрия не меняется — незачем копировать circle/text/grid каждый кадр.
+        public void UploadGeometryFromPrimitives(bool rebuildIndex = true, bool dynamicOnly = false)
         {
             if (_disposed) return;
+            if (!rebuildIndex) _indexDirty = false; // пропустить index rebuild в этом вызове
             int totalVerts = _arena.TotalVertexCount;
             if (totalVerts <= 0) return;
 
@@ -606,9 +614,12 @@ namespace PhysicsSimulation.Rendering.Vulkan
             if (_geometryStagingBuf.Length < geomNeeded)
                 _geometryStagingBuf = new float[geomNeeded];
 
-            // HOT: copy positions
+            // HOT: copy positions.
+            // dynamicOnly=true пропускает статические примитивы — staging буфер для них
+            // уже корректен с момента предыдущего полного upload (при загрузке сцены).
             foreach (var p in _primitives)
             {
+                if (dynamicOnly && !p.IsDynamic) continue;
                 if (p.VertexOffsetRaw < 0 || p.VertexCount <= 0) continue;
                 var cached = p.GetVertices();
                 if (cached is not { Length: > 0 }) continue;
@@ -854,15 +865,31 @@ namespace PhysicsSimulation.Rendering.Vulkan
         // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Собирает новые анимационные entries из примитивов.
-        /// НЕ заливает на GPU — только помечает все frame slots как dirty.
-        /// Заливка произойдёт в FlushPendingUploads() при следующем Render.
+        /// Принимает один AnimEntry напрямую — вызывается из VulkanSceneGpu
+        /// в том же проходе что и DynCallbacks (без отдельного foreach по примитивам).
         /// </summary>
+        public void EnqueueAnimEntry(AnimEntryCpu entry)
+        {
+            if (_disposed) return;
+            if (entry.PrimitiveId < 0 || entry.PrimitiveId >= _primitives.Count) return;
+            _uploadedAnimEntries.Add(entry);
+        }
+
+        /// <summary>
+        /// Помечает все frame slots dirty. Вызывается один раз после прохода
+        /// если хотя бы одна анимация была добавлена через EnqueueAnimEntry.
+        /// </summary>
+        public void FlushEnqueuedAnimEntries()
+        {
+            if (_disposed) return;
+            _animEntriesDirtyMask = (1 << MaxFrames) - 1;
+        }
+
+        // Оставляем для обратной совместимости (вызывается из Initialize)
         public void UploadPendingAnimationsAndIndex()
         {
             if (_disposed) return;
             bool hasNew = false;
-
             foreach (var prim in _primitives)
             {
                 for (int i = 0; i < prim.PendingAnimations.Count; i++)
@@ -870,16 +897,14 @@ namespace PhysicsSimulation.Rendering.Vulkan
                     var entry = prim.PendingAnimations[i];
                     if (!entry.PendingOnGpu) continue;
                     if (entry.PrimitiveId < 0 || entry.PrimitiveId >= _primitives.Count) continue;
-
                     _uploadedAnimEntries.Add(entry);
                     entry.PendingOnGpu = false;
                     prim.PendingAnimations[i] = entry;
                     hasNew = true;
                 }
             }
-
             if (hasNew)
-                _animEntriesDirtyMask = (1 << MaxFrames) - 1;  // все frames нуждаются в обновлении
+                _animEntriesDirtyMask = (1 << MaxFrames) - 1;
         }
 
         // ─────────────────────────────────────────────────────────────────────

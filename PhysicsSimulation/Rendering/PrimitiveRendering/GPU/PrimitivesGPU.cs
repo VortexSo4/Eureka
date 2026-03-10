@@ -280,15 +280,30 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
                 $"PrimitiveGpu.EnsureGeometryRegistered: Registered. Offset={VertexOffsetRaw}, Count={VertexCount}");
         }
 
-        protected void RegisterRawGeometry(GeometryArena arena, Vector2[] flatVertices)
+        // Обновляет только данные вершин без изменения арены и offsets.
+     // IsDynamic примитивы вызывают это вместо arena.Reset() каждый кадр.
+     protected void UpdateCachedVerticesInPlace(Vector2[] verts, int count)
+     {
+         CachedVertices = verts;
+         VertexCount = count;
+     }
+
+     // Переопределяется IsDynamic примитивами для пересчёта вершин на месте.
+     // Возвращает true если вершины обновились (нужен upload в GPU).
+     internal virtual bool RefreshDynamicVertices() => false;
+
+     protected void RegisterRawGeometry(GeometryArena arena, Vector2[] flatVertices, int count = -1)
         {
+            // count позволяет передать буфер большего размера (напр. _flatBuf)
+            // и указать реальное количество вершин — без slice-аллокации.
+            int len = count < 0 ? flatVertices.Length : count;
             DebugManager.Geometry(
-                $"PrimitiveGpu.RegisterRawGeometry: Registering raw geometry for primitive '{Name}', {flatVertices.Length} vertices.");
+                $"PrimitiveGpu.RegisterRawGeometry: Registering raw geometry for primitive '{Name}', {len} vertices.");
             if (arena == null) throw new ArgumentNullException(nameof(arena));
-            if (flatVertices == null || flatVertices.Length == 0) return;
-            VertexOffsetRaw = arena.Allocate(flatVertices.Length);
+            if (flatVertices == null || len == 0) return;
+            VertexOffsetRaw = arena.Allocate(len);
             CachedVertices = flatVertices;
-            VertexCount = flatVertices.Length;
+            VertexCount    = len;
             DebugManager.Geometry(
                 $"PrimitiveGpu.RegisterRawGeometry: Registered at offset {VertexOffsetRaw}, count {VertexCount}.");
         }
@@ -698,31 +713,39 @@ namespace PhysicsSimulation.Rendering.PrimitiveRendering.GPU
             InvalidateGeometry();
         }
 
+        // Пересчитывает кривую на месте без arena.Reset().
+        // Вызывается из VulkanSceneGpu.Update каждый кадр для IsDynamic примитивов.
+        internal override bool RefreshDynamicVertices()
+        {
+            if (!IsDynamic || !IsGeometryRegistered) return false;
+            PreFrameUpdate?.Invoke();
+            int n = Resolution + 1;
+            for (int i = 0; i < n; i++)
+            {
+                float t = i / (float)Resolution;
+                float x = XMin + (XMax - XMin) * t;
+                _flatBuf[i] = new Vector2(x, Func(x));
+            }
+            UpdateCachedVerticesInPlace(_flatBuf, n);
+            return true;
+        }
+
         protected override void RegisterGeometryInternal(GeometryArena arena)
         {
             if (IsDynamic)
             {
-                // Snapshot Registry vars (T, MX, …) once — closures then read from array, not dict.
-                // Without this: 300 Dictionary.TryGetValue("T") calls per frame per plot.
-                // With this: 1 snapshot call, then 300 array[idx] reads.
+                // Первичная регистрация (при загрузке сцены или после arena.Reset).
+                // После этого вершины обновляются через RefreshDynamicVertices() — без arena.
                 PreFrameUpdate?.Invoke();
-
-                // Fill pre-allocated point buffer — no heap allocation
                 int n = Resolution + 1;
                 for (int i = 0; i < n; i++)
                 {
                     float t = i / (float)Resolution;
-                    float x = (XMin + (XMax - XMin) * t);
-                    _pointBuf[i] = new Vector2(x, Func(x));
+                    float x = XMin + (XMax - XMin) * t;
+                    _flatBuf[i] = new Vector2(x, Func(x));
                 }
-
-                // Flatten directly into pre-allocated flat buffer
-                if (_flatBuf.Length < n + 1)
-                    _flatBuf = new Vector2[n + 1];
-                Array.Copy(_pointBuf, _flatBuf, n);
-                // No NaN separator needed for a single open polyline
-
-                RegisterRawGeometry(arena, _flatBuf[..n]);
+                // _flatBuf передаётся напрямую (без [..n] slice) → нет аллокации
+                RegisterRawGeometry(arena, _flatBuf, n);
                 return;
             }
 
