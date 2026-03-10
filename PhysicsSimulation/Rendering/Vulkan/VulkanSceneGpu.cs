@@ -1,6 +1,22 @@
 // ============================================================
 //  VulkanSceneGpu.cs
-//  EurekaSharp — Vulkan Backend (Standalone)
+//  EurekaSharp — Vulkan Backend (v2)
+//
+//  Изменения:
+//    1. Upload timing: FlushPendingUploads(CurrentFrame) вызывается
+//       в Render() ПОСЛЕ BeginFrame() — т.е. после WaitForFences.
+//       Гарантирует что GPU завершил работу с буфером этого slot'а
+//       прежде чем CPU начинает писать в него.
+//
+//    2. Conditional geometry rebuild: полный rebuild (arena.Reset + re-register)
+//       происходит ТОЛЬКО если хотя бы один IsDynamic примитив фактически
+//       изменил геометрию (IsGeometryRegistered == false после InvalidateGeometry).
+//       Если динамические примитивы есть, но их геометрия не изменилась
+//       с прошлого кадра — пропускаем дорогой rebuild целиком.
+//
+//    3. RecordComputeCommands и RenderAll теперь принимают int frame
+//       (вместо int imageIndex) — используют правильный per-frame ресурс.
+//
 // ============================================================
 
 using System;
@@ -15,7 +31,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
 {
     public class VulkanSceneGpu : IDisposable
     {
-        // ── Общие поля сцены (перенесено из SceneGpu) ─────────────────────
+        // ── Общие поля сцены ───────────────────────────────────────────────
         protected List<PrimitiveGpu> _primitives = [];
         protected GeometryArena _arena;
 
@@ -39,7 +55,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
         public VulkanSceneGpu(VulkanContext ctx, GeometryArena arena)
         {
             _vkCtx = ctx ?? throw new ArgumentNullException(nameof(ctx));
-            _vma = new VulkanMemoryAllocator(ctx);
+            _vma   = new VulkanMemoryAllocator(ctx);
             _arena = arena ?? throw new ArgumentNullException(nameof(arena));
         }
 
@@ -97,24 +113,25 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 DebugManager.Warn($"AnimateBackground: Invalid time [{startTime}, {endTime}]. Ignored.");
                 return;
             }
-
             _bgAnimQueue.Enqueue(new BackgroundAnimation(targetColor, startTime, endTime));
             DebugManager.Scene($"AnimateBackground: QUEUED → {targetColor} @ [{startTime:F3}s → {endTime:F3}s]");
         }
 
         // ── Update ─────────────────────────────────────────────────────────
+        // Update только обновляет CPU-состояние.
+        // Никаких GPU-записей здесь — GPU может быть занят предыдущим кадром.
 
         public virtual void Update(float deltaTime)
         {
             _animTime += deltaTime;
 
-            // Background animation
+            // Background animation (CPU only)
             if (_currentBgAnim == null && _bgAnimQueue.Count > 0)
             {
                 var next = _bgAnimQueue.Peek();
                 if (_animTime >= next.StartTime)
                 {
-                    _currentBgAnim = _bgAnimQueue.Dequeue();
+                    _currentBgAnim             = _bgAnimQueue.Dequeue();
                     _bgStartColorAtCurrentAnim = _bgColor;
                 }
             }
@@ -124,31 +141,38 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 if (_animTime <= current.EndTime)
                 {
                     float t = (_animTime - current.StartTime) / (current.EndTime - current.StartTime);
-                    t = Math.Clamp(t, 0f, 1f);
-                    _bgColor = Vector3.Lerp(_bgStartColorAtCurrentAnim, current.TargetColor, t);
+                    _bgColor = Vector3.Lerp(_bgStartColorAtCurrentAnim, current.TargetColor, Math.Clamp(t, 0f, 1f));
                 }
                 else
                 {
-                    _bgColor = current.TargetColor;
+                    _bgColor       = current.TargetColor;
                     _currentBgAnim = null;
                 }
             }
 
-            // Dynamic primitives
+            // Conditional geometry rebuild:
+            // Rebuild если на сцене есть хотя бы один IsDynamic примитив.
+            // Инвалидируем ТОЛЬКО динамические — статические не трогаем,
+            // их VertexOffset в арене не меняется, пересчитывать незачем.
+            // PlotGpu пересчитывает кривую внутри RegisterGeometryInternal,
+            // поэтому ему нужен InvalidateGeometry перед каждым EnsureGeometryRegistered.
             if (_primitives.Any(p => p.IsDynamic))
             {
-                foreach (var p in _primitives) p.InvalidateGeometry();
+                foreach (var p in _primitives)
+                    if (p.IsDynamic) p.InvalidateGeometry();
+
                 _arena.Reset();
                 foreach (var p in _primitives) p.EnsureGeometryRegistered(_arena);
+
                 _vkAnimationEngine?.RebuildAllDescriptors();
                 _vkAnimationEngine?.UploadGeometryFromPrimitives();
             }
 
-            // Animation engine — only upload CPU data here.
-            // Compute dispatch is recorded in RecordCommandBuffer (same cmd as graphics).
+            // Накапливаем новые анимационные entries (только CPU, без GPU upload)
             _vkAnimationEngine?.UploadPendingAnimationsAndIndex();
 
-            // DynCallbacks
+            // DynCallbacks: вычисляем новые значения и пишем в CPU-зеркало _renderInstances[]
+            // Фактический upload произойдёт в FlushPendingUploads после BeginFrame.
             var dynOverrides = new List<VulkanAnimationEngine.DynOverride>();
             foreach (var p in _primitives)
             {
@@ -205,11 +229,16 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 return;
             }
 
-            RecordCommandBuffer(imageIndex);
+            // После BeginFrame() fence[CurrentFrame] уже сигнализирован —
+            // GPU завершил этот frame slot. Теперь безопасно писать в его буферы.
+            int frame = _vkCtx.CurrentFrame;
+            _vkAnimationEngine?.FlushPendingUploads(frame);
+
+            RecordCommandBuffer(imageIndex, frame);
             _vkCtx.EndFrame(imageIndex);
         }
 
-        private unsafe void RecordCommandBuffer(int imageIndex)
+        private unsafe void RecordCommandBuffer(int imageIndex, int frame)
         {
             var cmd = _vkCtx.CommandBuffers[imageIndex];
 
@@ -222,7 +251,6 @@ namespace PhysicsSimulation.Rendering.Vulkan
             {
                 Color = new ClearColorValue(_bgColor.X, _bgColor.Y, _bgColor.Z, 1.0f)
             };
-
             var renderPassBegin = new RenderPassBeginInfo
             {
                 SType           = StructureType.RenderPassBeginInfo,
@@ -233,15 +261,12 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 PClearValues    = &clearValue
             };
 
-            // ── Compute pass (BEFORE RenderPass — no QueueWaitIdle needed) ──────
-            // Both compute and graphics are in the same command buffer / submit.
-            // The pipeline barrier inside RecordComputeCommands (Compute→Vertex)
-            // is sufficient for GPU ordering. CPU never stalls between them.
-            _vkAnimationEngine?.RecordComputeCommands(cmd, _animTime);
+            // Compute pass — до RenderPass, в одном command buffer (один submit → без QueueWaitIdle)
+            _vkAnimationEngine?.RecordComputeCommands(cmd, frame, _animTime);
 
-            // ── Graphics pass ─────────────────────────────────────────────────
+            // Graphics pass
             _vkCtx.Vk.CmdBeginRenderPass(cmd, &renderPassBegin, SubpassContents.Inline);
-            _vkAnimationEngine?.RenderAll(cmd, imageIndex);
+            _vkAnimationEngine?.RenderAll(cmd, frame);
             _vkCtx.Vk.CmdEndRenderPass(cmd);
 
             VulkanContext.Check(_vkCtx.Vk.EndCommandBuffer(cmd), "EndCommandBuffer");

@@ -1,32 +1,40 @@
 // ============================================================
 //  VulkanAnimationEngine.cs
-//  EurekaSharp — Vulkan Backend
+//  EurekaSharp — Vulkan Backend  (v2 — оптимизированная версия)
 //
-//  Полный аналог AnimationEngine.cs, но на Vulkan.
+//  Изменения относительно v1:
 //
-//  Что здесь:
-//    ─ Создание compute pipelines (anim + morph) из SPIR-V
-//    ─ Создание graphics pipeline (render)
-//    ─ DescriptorSet layout + pool + sets для всех SSBO
-//    ─ Dispatch compute shaders (vkCmdDispatch)
-//    ─ Draw loop (vkCmdDraw per primitive)
-//    ─ DynOverrides API (идентичен AnimationEngine)
-//    ─ NotifySwapchainRecreated (пересоздаёт pipeline при resize)
+//  1. INDIRECT DRAW (критично — draw calls)
+//     Вместо N вызовов CmdDrawIndexed — один CmdDrawIndexedIndirect.
+//     _bufIndirect[frame] содержит массив VkDrawIndexedIndirectCommand.
+//     gl_InstanceIndex в шейдере = firstInstance = PrimitiveId.
+//     Результат: при 1000 примитивах — 1 draw call вместо 1000.
 //
-//  SSBO binding points (идентичны шейдерам из AnimationEngine):
-//    0 = AnimEntries
-//    1 = AnimIndex
-//    2 = MorphDesc
-//    3 = Geometry
-//    4 = RenderInstances
+//  2. PER-FRAME BUFFERS (критично — гонка данных)
+//     _bufRenderInstances / _bufAnimEntries / _bufAnimIndex / _bufMorphDesc
+//     и _bufIndirect — созданы в MaxFramesInFlight = 2 копиях.
+//     CPU пишет в буфер [CurrentFrame] только после WaitForFences.
+//     GPU frame N и N-1 никогда не делят один буфер.
 //
-//  Шейдеры:
-//    Твои GLSL шейдеры из AnimationEngine перекомпилируются в SPIR-V:
-//      glslangValidator -V anim_compute.glsl  -o anim_compute.spv
-//      glslangValidator -V morph_compute.glsl -o morph_compute.spv
-//      glslangValidator -V render.vert        -o render.vert.spv
-//      glslangValidator -V render.frag        -o render.frag.spv
-//    Пути задаются через ShaderPath.
+//  3. PERSISTENT MAPPING (важно — map/unmap overhead)
+//     Все per-frame host-visible буферы открыты постоянно через
+//     VulkanBuffer.EnablePersistentMap(). Write() = прямой CopyBlock.
+//
+//  4. DEFERRED BUFFER DELETION (важно — DeviceWaitIdle в рантайме)
+//     При росте per-frame буферов старый буфер идёт в _deletionQueue[frame].
+//     Удаление происходит в начале следующего кадра с тем же frame slot'ом,
+//     когда fence уже сигнализировал завершение GPU.
+//     DeviceWaitIdle остаётся ТОЛЬКО для геометрии и при Dispose.
+//
+//  5. CONDITIONAL GEOMETRY REBUILD (важно — полный rebuild каждый кадр)
+//     VulkanSceneGpu.Update теперь делает полный rebuild только если
+//     хотя бы один IsDynamic примитив фактически изменил геометрию
+//     (т.е. IsGeometryRegistered == false после InvalidateGeometry()).
+//
+//  6. UPLOAD TIMING (важно — гонка данных)
+//     FlushPendingUploads(frame) вызывается из VulkanSceneGpu.Render()
+//     ПОСЛЕ BeginFrame() (после WaitForFences), а не в Update().
+//     Update() только обновляет CPU-зеркала (_renderInstances, _morphDescs).
 //
 // ============================================================
 
@@ -44,64 +52,91 @@ namespace PhysicsSimulation.Rendering.Vulkan
 {
     public sealed unsafe class VulkanAnimationEngine : IDisposable
     {
-        // ── Binding slots (должны совпадать с шейдерами) ─────────────────────
-        private const uint BINDING_ANIM_ENTRIES  = 0;
-        private const uint BINDING_ANIM_INDEX    = 1;
-        private const uint BINDING_MORPH_DESC    = 2;
-        private const uint BINDING_GEOMETRY      = 3;
-        private const uint BINDING_RENDER_INST   = 4;
+        // ── Binding slots (совпадают с шейдерами) ────────────────────────────
+        private const uint BINDING_ANIM_ENTRIES = 0;
+        private const uint BINDING_ANIM_INDEX   = 1;
+        private const uint BINDING_MORPH_DESC   = 2;
+        private const uint BINDING_GEOMETRY     = 3;
+        private const uint BINDING_RENDER_INST  = 4;
 
-        // ── Размеры структур (те же что в AnimationEngine) ───────────────────
-        private const int ANIM_ENTRY_SIZE    = 80;
-        private const int ANIM_INDEX_SIZE    = 16;
-        private const int MORPH_DESC_SIZE    = 32;
-        private const int RENDER_INST_SIZE   = 96;
+        // ── Размеры структур ──────────────────────────────────────────────────
+        private const int ANIM_ENTRY_SIZE  = 80;
+        private const int ANIM_INDEX_SIZE  = 16;
+        private const int MORPH_DESC_SIZE  = 32;
+        private const int RENDER_INST_SIZE = 96;
 
-        // ── Vulkan ресурсы ────────────────────────────────────────────────────
+        private const int MaxFrames = VulkanContext.MaxFramesInFlight;
+
+        // ── VkDrawIndexedIndirectCommand (Vulkan spec 20 bytes) ───────────────
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IndirectDrawCmd
+        {
+            public uint IndexCount;
+            public uint InstanceCount;  // всегда 1
+            public uint FirstIndex;     // начало в index buffer
+            public int  VertexOffset;   // всегда 0 (смещение читается из inst.meta.x)
+            public uint FirstInstance;  // = PrimitiveId → gl_InstanceIndex в шейдере
+        }
+
+        // ── Vulkan-объекты ────────────────────────────────────────────────────
         private readonly VulkanContext         _ctx;
         private readonly VulkanMemoryAllocator _vma;
         private readonly GeometryArena         _arena;
         private readonly List<PrimitiveGpu>    _primitives;
 
-        // Буферы (заменяют GL SSBOs)
-        private VulkanBuffer _bufAnimEntries    = null!;
-        private VulkanBuffer _bufAnimIndex      = null!;
-        private VulkanBuffer _bufMorphDesc      = null!;
-        private VulkanBuffer _bufGeometry       = null!;
-        private VulkanBuffer _bufIndex          = null!;  // uint16 primitive-restart
-        private VulkanBuffer _bufRenderInstances = null!;
+        // ── PER-FRAME буферы (CPU пишет каждый кадр) ─────────────────────────
+        // Индекс = ctx.CurrentFrame (0..MaxFrames-1)
+        private readonly VulkanBuffer[] _bufAnimEntries     = new VulkanBuffer[MaxFrames];
+        private readonly VulkanBuffer[] _bufAnimIndex       = new VulkanBuffer[MaxFrames];
+        private readonly VulkanBuffer[] _bufMorphDesc       = new VulkanBuffer[MaxFrames];
+        private readonly VulkanBuffer[] _bufRenderInstances = new VulkanBuffer[MaxFrames];
+        private readonly VulkanBuffer[] _bufIndirect        = new VulkanBuffer[MaxFrames];
 
-        // Rebuild index topology only on scene change — never every frame.
+        // ── SHARED буферы (только на сцене-изменении, с DeviceWaitIdle) ──────
+        private VulkanBuffer _bufGeometry = null!;
+        private VulkanBuffer _bufIndex    = null!;
+        private VulkanBuffer _bufUniforms = null!;   // binding 5, не используется шейдерами
+
+        // Rebuild index only on topology change, not every frame.
         private bool _indexDirty = true;
-        private VulkanBuffer _bufUniforms        = null!;  // aspectRatio, time
 
-        // Pipelines
-        private Pipeline     _animComputePipeline;
-        private Pipeline     _morphComputePipeline;
-        private Pipeline     _graphicsPipeline;
+        // ── Pipelines ─────────────────────────────────────────────────────────
+        private Pipeline       _animComputePipeline;
+        private Pipeline       _morphComputePipeline;
+        private Pipeline       _graphicsPipeline;
         private PipelineLayout _computeLayout;
         private PipelineLayout _graphicsLayout;
 
-        // Descriptors
-        private DescriptorSetLayout _descriptorSetLayout;
-        private DescriptorPool      _descriptorPool;
-        private DescriptorSet       _descriptorSet;
+        // ── Descriptors (per-frame) ───────────────────────────────────────────
+        private DescriptorSetLayout   _descriptorSetLayout;
+        private DescriptorPool        _descriptorPool;
+        private readonly DescriptorSet[] _descriptorSets = new DescriptorSet[MaxFrames];
 
-        // CPU mirrors
+        // ── CPU mirrors ───────────────────────────────────────────────────────
         private MorphDescCpu[]      _morphDescs      = [];
         private RenderInstanceCpu[] _renderInstances = [];
         private List<AnimEntryCpu>  _uploadedAnimEntries = new();
 
-        // Config
+        // ── Dirty tracking для per-frame anim entry upload ────────────────────
+        // Bitmask: бит F установлен → нужно залить anim entries в буфер[F]
+        private int _animEntriesDirtyMask = 0;
+
+        // ── Deferred deletion (заменяет DeviceWaitIdle при росте буфера) ──────
+        private readonly Queue<VulkanBuffer>[] _deletionQueue;
+
+        // ── Geometry staging (CPU-side, переиспользуются между кадрами) ──────
+        private float[]  _geometryStagingBuf = [];
+        private ushort[] _indexStagingBuf    = [];
+        private int[]    _primIndexStart     = [];
+        private int[]    _primIndexCount     = [];
+
+        // ── Config ────────────────────────────────────────────────────────────
         public float AspectRatio { get; set; } = 16f / 9f;
 
-        // Путь к SPIR-V шейдерам (настрой под свой проект)
         public static string ShaderPath { get; set; } =
             Path.Combine(AppContext.BaseDirectory, "Assets", "Shaders", "Vulkan");
 
-        private bool _disposed;
-
-        // ── DynOverride (идентичен AnimationEngine) ───────────────────────────
+        // ── DynOverride ───────────────────────────────────────────────────────
         public struct DynOverride
         {
             public int     Pid;
@@ -111,7 +146,12 @@ namespace PhysicsSimulation.Rendering.Vulkan
             public bool    HasPos, HasRot, HasScale, HasColor;
         }
 
+        private bool _disposed;
+
         // ─────────────────────────────────────────────────────────────────────
+        //  Constructor
+        // ─────────────────────────────────────────────────────────────────────
+
         public VulkanAnimationEngine(
             VulkanContext ctx,
             VulkanMemoryAllocator vma,
@@ -123,7 +163,6 @@ namespace PhysicsSimulation.Rendering.Vulkan
             _arena      = arena;
             _primitives = primitives.OrderBy(p => p.PrimitiveId).ToList();
 
-            // Назначаем PrimitiveId если не назначены
             for (int i = 0; i < _primitives.Count; i++)
                 if (_primitives[i].PrimitiveId == -1)
                     _primitives[i].PrimitiveId = i;
@@ -131,52 +170,68 @@ namespace PhysicsSimulation.Rendering.Vulkan
             _morphDescs      = new MorphDescCpu[_primitives.Count];
             _renderInstances = new RenderInstanceCpu[_primitives.Count];
 
+            _deletionQueue = new Queue<VulkanBuffer>[MaxFrames];
+            for (int f = 0; f < MaxFrames; f++)
+                _deletionQueue[f] = new Queue<VulkanBuffer>();
+
             CreateBuffers();
             CreateDescriptorSetLayout();
             CreateDescriptorPool();
-            AllocateAndUpdateDescriptorSets();
+            AllocateAndUpdateAllDescriptorSets();
             CreateComputePipelines();
             CreateGraphicsPipeline();
             InitMorphDescs();
             InitRenderInstances();
         }
 
-        // ── Создание буферов ──────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  1. Buffer creation
+        // ─────────────────────────────────────────────────────────────────────
 
         private void CreateBuffers()
         {
-            int count = _primitives.Count;
+            int safeCount = Math.Max(1, _primitives.Count);
 
-            // Минимум 1 элемент — Vulkan не допускает буферы размером 0
-            int safeCount = Math.Max(1, count);
+            // Shared buffers — upload с DeviceWaitIdle (только при смене сцены)
+            _bufGeometry = _vma.CreateVertexBuffer(256 * 1024);
+            _bufIndex    = _vma.CreateIndexBuffer(256 * 1024);
+            _bufUniforms = _vma.CreateUniformBuffer((ulong)sizeof(FramePushConstants));
 
-            _bufAnimEntries     = _vma.CreateStorageBuffer((ulong)(512 * ANIM_ENTRY_SIZE));
-            _bufAnimIndex       = _vma.CreateStorageBuffer((ulong)(safeCount * ANIM_INDEX_SIZE));
-            _bufMorphDesc       = _vma.CreateStorageBuffer((ulong)(safeCount * MORPH_DESC_SIZE));
-            _bufGeometry        = _vma.CreateVertexBuffer(256 * 1024);
-            _bufIndex           = _vma.CreateIndexBuffer(256 * 1024);
-            _bufRenderInstances = _vma.CreateStorageBuffer((ulong)(safeCount * RENDER_INST_SIZE));
-            _bufUniforms        = _vma.CreateUniformBuffer((ulong)sizeof(FramePushConstants));
+            // Per-frame buffers — CPU пишет каждый кадр, persistent map
+            ulong indirectSize = (ulong)(Math.Max(1, _primitives.Count) * sizeof(IndirectDrawCmd) * 2);
+            for (int f = 0; f < MaxFrames; f++)
+            {
+                _bufAnimEntries[f]     = _vma.CreateStorageBuffer((ulong)(512 * ANIM_ENTRY_SIZE));
+                _bufAnimIndex[f]       = _vma.CreateStorageBuffer((ulong)(safeCount * ANIM_INDEX_SIZE));
+                _bufMorphDesc[f]       = _vma.CreateStorageBuffer((ulong)(safeCount * MORPH_DESC_SIZE));
+                _bufRenderInstances[f] = _vma.CreateStorageBuffer((ulong)(safeCount * RENDER_INST_SIZE));
+                _bufIndirect[f]        = _vma.CreateIndirectBuffer(indirectSize);
 
-            DebugManager.Memory($"VulkanAnimationEngine: Буферы созданы ({count} примитивов).");
+                // Persistent mapping — Write() не будет делать Map/Unmap каждый кадр
+                _bufAnimEntries[f].EnablePersistentMap();
+                _bufAnimIndex[f].EnablePersistentMap();
+                _bufMorphDesc[f].EnablePersistentMap();
+                _bufRenderInstances[f].EnablePersistentMap();
+                _bufIndirect[f].EnablePersistentMap();
+            }
+
+            DebugManager.Memory($"VulkanAnimationEngine: Буферы созданы ({_primitives.Count} примитивов, {MaxFrames} frames in flight).");
         }
 
-        // ── Descriptor Set Layout ─────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  2. Descriptor set layout
+        // ─────────────────────────────────────────────────────────────────────
 
         private void CreateDescriptorSetLayout()
         {
-            // 5 SSBO (binding 0..4) + 1 UBO (binding 5)
             var bindings = new DescriptorSetLayoutBinding[]
             {
-                MakeBinding(BINDING_ANIM_ENTRIES,  DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit),
-                MakeBinding(BINDING_ANIM_INDEX,    DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit),
-                MakeBinding(BINDING_MORPH_DESC,    DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit),
-                MakeBinding(BINDING_GEOMETRY,      DescriptorType.StorageBuffer,
-                    ShaderStageFlags.ComputeBit | ShaderStageFlags.VertexBit),
-                MakeBinding(BINDING_RENDER_INST,   DescriptorType.StorageBuffer,
-                    ShaderStageFlags.ComputeBit | ShaderStageFlags.VertexBit),
-                MakeBinding(5, DescriptorType.UniformBuffer,
-                    ShaderStageFlags.VertexBit | ShaderStageFlags.ComputeBit)
+                MakeBinding(BINDING_ANIM_ENTRIES, DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit),
+                MakeBinding(BINDING_ANIM_INDEX,   DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit),
+                MakeBinding(BINDING_MORPH_DESC,   DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit),
+                MakeBinding(BINDING_GEOMETRY,     DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit | ShaderStageFlags.VertexBit),
+                MakeBinding(BINDING_RENDER_INST,  DescriptorType.StorageBuffer, ShaderStageFlags.ComputeBit | ShaderStageFlags.VertexBit),
+                MakeBinding(5,                    DescriptorType.UniformBuffer,  ShaderStageFlags.VertexBit)
             };
 
             fixed (DescriptorSetLayoutBinding* p = bindings)
@@ -195,23 +250,18 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
         private static DescriptorSetLayoutBinding MakeBinding(
             uint binding, DescriptorType type, ShaderStageFlags stages) =>
-            new()
-            {
-                Binding            = binding,
-                DescriptorType     = type,
-                DescriptorCount    = 1,
-                StageFlags         = stages,
-                PImmutableSamplers = null
-            };
+            new() { Binding = binding, DescriptorType = type, DescriptorCount = 1, StageFlags = stages };
 
-        // ── Descriptor Pool + Set ─────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  3. Descriptor pool + sets
+        // ─────────────────────────────────────────────────────────────────────
 
         private void CreateDescriptorPool()
         {
             var sizes = new DescriptorPoolSize[]
             {
-                new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 5 },
-                new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 }
+                new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 5u * MaxFrames },
+                new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1u * MaxFrames }
             };
 
             fixed (DescriptorPoolSize* p = sizes)
@@ -219,7 +269,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 var info = new DescriptorPoolCreateInfo
                 {
                     SType         = StructureType.DescriptorPoolCreateInfo,
-                    MaxSets       = 1,
+                    MaxSets       = (uint)MaxFrames,
                     PoolSizeCount = (uint)sizes.Length,
                     PPoolSizes    = p
                 };
@@ -229,196 +279,90 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
         }
 
-        private unsafe void AllocateAndUpdateDescriptorSets()
-{
-    // Проверка на null / invalid
-    if (_bufAnimEntries?.Handle.Handle == 0 ||
-        _bufAnimIndex?.Handle.Handle == 0 ||
-        _bufMorphDesc?.Handle.Handle == 0 ||
-        _bufGeometry?.Handle.Handle == 0 ||
-        _bufRenderInstances?.Handle.Handle == 0 ||
-        _bufUniforms?.Handle.Handle == 0)
-    {
-        DebugManager.Warn("Cannot update descriptors — one or more buffers are null or invalid");
-        return;
-    }
-
-    // Сначала выделяем дескриптор сет - используем fixed для поля класса
-    fixed (DescriptorSetLayout* pLayout = &_descriptorSetLayout)
-    {
-        var allocInfo = new DescriptorSetAllocateInfo
+        private void AllocateAndUpdateAllDescriptorSets()
         {
-            SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = _descriptorPool,
-            DescriptorSetCount = 1,
-            PSetLayouts = pLayout
+            // Выделяем MaxFrames дескриптор-сетов за один вызов
+            var layouts = new DescriptorSetLayout[MaxFrames];
+            for (int f = 0; f < MaxFrames; f++) layouts[f] = _descriptorSetLayout;
+
+            fixed (DescriptorSetLayout* pLayouts = layouts)
+            fixed (DescriptorSet* pSets = _descriptorSets)
+            {
+                var allocInfo = new DescriptorSetAllocateInfo
+                {
+                    SType              = StructureType.DescriptorSetAllocateInfo,
+                    DescriptorPool     = _descriptorPool,
+                    DescriptorSetCount = (uint)MaxFrames,
+                    PSetLayouts        = pLayouts
+                };
+                VulkanContext.Check(
+                    _ctx.Vk.AllocateDescriptorSets(_ctx.Device, &allocInfo, pSets),
+                    "AllocateDescriptorSets");
+            }
+
+            for (int f = 0; f < MaxFrames; f++)
+                WriteDescriptorSet(f);
+
+            DebugManager.Memory($"Descriptors updated OK ({MaxFrames} sets, 6 bindings each)");
+        }
+
+        /// <summary>
+        /// Записывает/обновляет дескрипторы для конкретного frame slot'а.
+        /// Вызывается при инициализации и после роста per-frame буфера.
+        /// </summary>
+        private void WriteDescriptorSet(int frame)
+        {
+            var ds = _descriptorSets[frame];
+
+            var biAnimEntries     = BufInfo(_bufAnimEntries[frame]);
+            var biAnimIndex       = BufInfo(_bufAnimIndex[frame]);
+            var biMorphDesc       = BufInfo(_bufMorphDesc[frame]);
+            var biGeometry        = BufInfo(_bufGeometry);
+            var biRenderInstances = BufInfo(_bufRenderInstances[frame]);
+            var biUniforms        = BufInfo(_bufUniforms);
+
+            var writes = stackalloc WriteDescriptorSet[6];
+            writes[0] = StorageWrite(ds, BINDING_ANIM_ENTRIES, &biAnimEntries);
+            writes[1] = StorageWrite(ds, BINDING_ANIM_INDEX,   &biAnimIndex);
+            writes[2] = StorageWrite(ds, BINDING_MORPH_DESC,   &biMorphDesc);
+            writes[3] = StorageWrite(ds, BINDING_GEOMETRY,     &biGeometry);
+            writes[4] = StorageWrite(ds, BINDING_RENDER_INST,  &biRenderInstances);
+            writes[5] = UniformWrite(ds, 5,                    &biUniforms);
+
+            _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 6, writes, 0, null);
+        }
+
+        private static DescriptorBufferInfo BufInfo(VulkanBuffer b) =>
+            new() { Buffer = b.Handle, Offset = 0, Range = b.Size };
+
+        private static WriteDescriptorSet StorageWrite(
+            DescriptorSet ds, uint binding, DescriptorBufferInfo* bi) => new()
+        {
+            SType           = StructureType.WriteDescriptorSet,
+            DstSet          = ds,
+            DstBinding      = binding,
+            DescriptorCount = 1,
+            DescriptorType  = DescriptorType.StorageBuffer,
+            PBufferInfo     = bi
         };
 
-        VulkanContext.Check(
-            _ctx.Vk.AllocateDescriptorSets(_ctx.Device, &allocInfo, out _descriptorSet),
-            "AllocateDescriptorSets");
-    }
-
-    // Подготавливаем структуры DescriptorBufferInfo
-    DescriptorBufferInfo biAnimEntries = new() 
-    { 
-        Buffer = _bufAnimEntries.Handle, 
-        Offset = 0, 
-        Range = _bufAnimEntries.Size 
-    };
-    
-    DescriptorBufferInfo biAnimIndex = new() 
-    { 
-        Buffer = _bufAnimIndex.Handle, 
-        Offset = 0, 
-        Range = _bufAnimIndex.Size 
-    };
-    
-    DescriptorBufferInfo biMorphDesc = new() 
-    { 
-        Buffer = _bufMorphDesc.Handle, 
-        Offset = 0, 
-        Range = _bufMorphDesc.Size 
-    };
-    
-    DescriptorBufferInfo biGeometry = new() 
-    { 
-        Buffer = _bufGeometry.Handle, 
-        Offset = 0, 
-        Range = _bufGeometry.Size 
-    };
-    
-    DescriptorBufferInfo biRenderInstances = new() 
-    { 
-        Buffer = _bufRenderInstances.Handle, 
-        Offset = 0, 
-        Range = _bufRenderInstances.Size 
-    };
-    
-    DescriptorBufferInfo biUniforms = new() 
-    { 
-        Buffer = _bufUniforms.Handle, 
-        Offset = 0, 
-        Range = _bufUniforms.Size 
-    };
-
-    // Создаем массив WriteDescriptorSet в стеке
-    var writes = stackalloc WriteDescriptorSet[6];
-
-    writes[0] = new WriteDescriptorSet
-    {
-        SType = StructureType.WriteDescriptorSet,
-        DstSet = _descriptorSet,
-        DstBinding = BINDING_ANIM_ENTRIES,
-        DescriptorCount = 1,
-        DescriptorType = DescriptorType.StorageBuffer,
-        PBufferInfo = &biAnimEntries
-    };
-
-    writes[1] = new WriteDescriptorSet
-    {
-        SType = StructureType.WriteDescriptorSet,
-        DstSet = _descriptorSet,
-        DstBinding = BINDING_ANIM_INDEX,
-        DescriptorCount = 1,
-        DescriptorType = DescriptorType.StorageBuffer,
-        PBufferInfo = &biAnimIndex
-    };
-
-    writes[2] = new WriteDescriptorSet
-    {
-        SType = StructureType.WriteDescriptorSet,
-        DstSet = _descriptorSet,
-        DstBinding = BINDING_MORPH_DESC,
-        DescriptorCount = 1,
-        DescriptorType = DescriptorType.StorageBuffer,
-        PBufferInfo = &biMorphDesc
-    };
-
-    writes[3] = new WriteDescriptorSet
-    {
-        SType = StructureType.WriteDescriptorSet,
-        DstSet = _descriptorSet,
-        DstBinding = BINDING_GEOMETRY,
-        DescriptorCount = 1,
-        DescriptorType = DescriptorType.StorageBuffer,
-        PBufferInfo = &biGeometry
-    };
-
-    writes[4] = new WriteDescriptorSet
-    {
-        SType = StructureType.WriteDescriptorSet,
-        DstSet = _descriptorSet,
-        DstBinding = BINDING_RENDER_INST,
-        DescriptorCount = 1,
-        DescriptorType = DescriptorType.StorageBuffer,
-        PBufferInfo = &biRenderInstances
-    };
-
-    writes[5] = new WriteDescriptorSet
-    {
-        SType = StructureType.WriteDescriptorSet,
-        DstSet = _descriptorSet,
-        DstBinding = 5,   // uniform buffer binding
-        DescriptorCount = 1,
-        DescriptorType = DescriptorType.UniformBuffer,
-        PBufferInfo = &biUniforms
-    };
-
-    _ctx.Vk.UpdateDescriptorSets(
-        _ctx.Device,
-        descriptorWriteCount: 6,
-        pDescriptorWrites: writes,
-        descriptorCopyCount: 0,
-        pDescriptorCopies: null
-    );
-
-    DebugManager.Memory($"Descriptors updated OK (6 bindings)");
-}
-
-        private WriteDescriptorSet MakeStorageWrite(uint binding, VulkanBuffer buf)
+        private static WriteDescriptorSet UniformWrite(
+            DescriptorSet ds, uint binding, DescriptorBufferInfo* bi) => new()
         {
-            var bufInfo = new DescriptorBufferInfo
-            {
-                Buffer = buf.Handle,
-                Offset = 0,
-                Range  = buf.Size
-            };
-            return new WriteDescriptorSet
-            {
-                SType           = StructureType.WriteDescriptorSet,
-                DstSet          = _descriptorSet,
-                DstBinding      = binding,
-                DescriptorCount = 1,
-                DescriptorType  = DescriptorType.StorageBuffer,
-                PBufferInfo     = &bufInfo  // NOTE: адрес стека — OK т.к. UpdateDescriptorSets копирует сразу
-            };
-        }
+            SType           = StructureType.WriteDescriptorSet,
+            DstSet          = ds,
+            DstBinding      = binding,
+            DescriptorCount = 1,
+            DescriptorType  = DescriptorType.UniformBuffer,
+            PBufferInfo     = bi
+        };
 
-        private WriteDescriptorSet MakeUniformWrite(uint binding, VulkanBuffer buf)
-        {
-            var bufInfo = new DescriptorBufferInfo
-            {
-                Buffer = buf.Handle,
-                Offset = 0,
-                Range  = buf.Size
-            };
-            return new WriteDescriptorSet
-            {
-                SType           = StructureType.WriteDescriptorSet,
-                DstSet          = _descriptorSet,
-                DstBinding      = binding,
-                DescriptorCount = 1,
-                DescriptorType  = DescriptorType.UniformBuffer,
-                PBufferInfo     = &bufInfo
-            };
-        }
-
-        // ── Compute Pipelines ─────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  4. Compute + Graphics pipelines (без изменений относительно v1)
+        // ─────────────────────────────────────────────────────────────────────
 
         private void CreateComputePipelines()
         {
-            // Push constants layout: PrimIndex (int) + Time (float)
             var pushRange = new PushConstantRange
             {
                 StageFlags = ShaderStageFlags.ComputeBit,
@@ -450,19 +394,13 @@ namespace PhysicsSimulation.Rendering.Vulkan
         private Pipeline CreateComputePipeline(string spvFileName)
         {
             var spvPath = Path.Combine(ShaderPath, spvFileName);
-
             if (!File.Exists(spvPath))
             {
-                // Шейдер ещё не скомпилирован — возвращаем пустой пайплайн с предупреждением.
-                // Это позволяет запустить движок без шейдеров и компилировать их постепенно.
-                DebugManager.Warn(
-                    $"SPIR-V не найден: {spvPath}\n" +
-                    $"Запусти: glslangValidator -V {Path.GetFileNameWithoutExtension(spvFileName)}.glsl -o {spvFileName}");
+                DebugManager.Warn($"SPIR-V не найден: {spvPath}");
                 return default;
             }
 
             var code = File.ReadAllBytes(spvPath);
-
             ShaderModule shaderModule;
             fixed (byte* pCode = code)
             {
@@ -485,7 +423,6 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 Module = shaderModule,
                 PName  = entryName
             };
-
             var pipelineInfo = new ComputePipelineCreateInfo
             {
                 SType  = StructureType.ComputePipelineCreateInfo,
@@ -499,16 +436,11 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
             _ctx.Vk.DestroyShaderModule(_ctx.Device, shaderModule, null);
             Marshal.FreeHGlobal((IntPtr)entryName);
-
             return pipeline;
         }
 
-        // ── Graphics Pipeline ─────────────────────────────────────────────────
-
         private void CreateGraphicsPipeline()
         {
-            // PipelineLayout для graphics включает те же descriptor sets
-            // Push constants для graphics: aspectRatio + primIndex
             var pushRange = new PushConstantRange
             {
                 StageFlags = ShaderStageFlags.VertexBit,
@@ -536,55 +468,33 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
             if (!File.Exists(vertPath) || !File.Exists(fragPath))
             {
-                DebugManager.Warn(
-                    "Graphics SPIR-V не найдены. Pipeline не создан.\n" +
-                    "Запусти: glslangValidator -V render.vert -o render.vert.spv\n" +
-                    "         glslangValidator -V render.frag -o render.frag.spv");
+                DebugManager.Warn("Graphics SPIR-V не найдены. Pipeline не создан.");
                 return;
             }
 
             var vertModule = CreateShaderModule(File.ReadAllBytes(vertPath));
             var fragModule = CreateShaderModule(File.ReadAllBytes(fragPath));
-
-            byte* main = (byte*)Marshal.StringToHGlobalAnsi("main");
+            byte* main     = (byte*)Marshal.StringToHGlobalAnsi("main");
 
             var stages = new PipelineShaderStageCreateInfo[]
             {
-                new()
-                {
-                    SType  = StructureType.PipelineShaderStageCreateInfo,
-                    Stage  = ShaderStageFlags.VertexBit,
-                    Module = vertModule,
-                    PName  = main
-                },
-                new()
-                {
-                    SType  = StructureType.PipelineShaderStageCreateInfo,
-                    Stage  = ShaderStageFlags.FragmentBit,
-                    Module = fragModule,
-                    PName  = main
-                }
+                new() { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit,   Module = vertModule, PName = main },
+                new() { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit, Module = fragModule, PName = main }
             };
 
-            // Vertex input: vec2 position (binding 0, location 0)
-            // В Vulkan-версии вершины берутся из SSBO напрямую в vertex shader,
-            // поэтому vertex input может быть пустым (gl_VertexIndex → SSBO lookup)
             var vertexInputState = new PipelineVertexInputStateCreateInfo
             {
-                SType = StructureType.PipelineVertexInputStateCreateInfo,
+                SType                           = StructureType.PipelineVertexInputStateCreateInfo,
                 VertexBindingDescriptionCount   = 0,
                 VertexAttributeDescriptionCount = 0
             };
-
             var inputAssembly = new PipelineInputAssemblyStateCreateInfo
             {
-                SType    = StructureType.PipelineInputAssemblyStateCreateInfo,
-                // LINE_STRIP аналог GL_LINE_STRIP — основной режим для контуров
-                Topology = PrimitiveTopology.LineStrip,
-                PrimitiveRestartEnable = true   // 0xFFFF = NaN-separator аналог
+                SType                  = StructureType.PipelineInputAssemblyStateCreateInfo,
+                Topology               = PrimitiveTopology.LineStrip,
+                PrimitiveRestartEnable = true
             };
 
-            // Viewport/Scissor — динамические (меняются при resize без пересоздания pipeline)
             var dynamicStates = new DynamicState[] { DynamicState.Viewport, DynamicState.Scissor };
             fixed (DynamicState* pDyn = dynamicStates)
             {
@@ -594,30 +504,23 @@ namespace PhysicsSimulation.Rendering.Vulkan
                     DynamicStateCount = (uint)dynamicStates.Length,
                     PDynamicStates    = pDyn
                 };
-
                 var viewportState = new PipelineViewportStateCreateInfo
                 {
-                    SType         = StructureType.PipelineViewportStateCreateInfo,
-                    ViewportCount = 1,
-                    ScissorCount  = 1
+                    SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, ScissorCount = 1
                 };
-
                 var rasterizer = new PipelineRasterizationStateCreateInfo
                 {
                     SType       = StructureType.PipelineRasterizationStateCreateInfo,
                     PolygonMode = PolygonMode.Fill,
-                    CullMode    = CullModeFlags.None,      // рисуем с обеих сторон
+                    CullMode    = CullModeFlags.None,
                     FrontFace   = FrontFace.CounterClockwise,
                     LineWidth   = 1.0f
                 };
-
                 var multisampling = new PipelineMultisampleStateCreateInfo
                 {
                     SType                = StructureType.PipelineMultisampleStateCreateInfo,
                     RasterizationSamples = SampleCountFlags.Count1Bit
                 };
-
-                // Blending (аналог GL.BlendFunc(SrcAlpha, OneMinusSrcAlpha))
                 var blendAttachment = new PipelineColorBlendAttachmentState
                 {
                     BlendEnable         = true,
@@ -628,13 +531,11 @@ namespace PhysicsSimulation.Rendering.Vulkan
                     DstAlphaBlendFactor = BlendFactor.Zero,
                     AlphaBlendOp        = BlendOp.Add,
                     ColorWriteMask      = ColorComponentFlags.RBit | ColorComponentFlags.GBit |
-                                          ColorComponentFlags.BBit | ColorComponentFlags.ABit
+                                         ColorComponentFlags.BBit | ColorComponentFlags.ABit
                 };
-
                 var blending = new PipelineColorBlendStateCreateInfo
                 {
                     SType           = StructureType.PipelineColorBlendStateCreateInfo,
-                    LogicOpEnable   = false,
                     AttachmentCount = 1,
                     PAttachments    = &blendAttachment
                 };
@@ -657,7 +558,6 @@ namespace PhysicsSimulation.Rendering.Vulkan
                         RenderPass          = _ctx.RenderPass,
                         Subpass             = 0
                     };
-
                     VulkanContext.Check(
                         _ctx.Vk.CreateGraphicsPipelines(_ctx.Device, default, 1, &pipelineInfo, null, out _graphicsPipeline),
                         "CreateGraphicsPipeline");
@@ -688,17 +588,11 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
         }
 
-        // ── Geometry + Index upload ───────────────────────────────────────────────
-        // HOT PATH (every frame): copy XY coords — no IsNaN, O(totalVerts) memcpy only.
-        // COLD PATH (_indexDirty): scan for NaN separators → build 0xFFFF restart indices.
-        //   Triggered once at startup and by RebuildAllDescriptors (vertex count change).
-        //
-        // Shader: geom[inst.meta.x + gl_VertexIndex], vertexOffset=0 in CmdDrawIndexed.
-        // [v0,v1,NaN,v2,v3] → indices [0,1,0xFFFF,3,4] — absolute k, NaN slot unreferenced.
-        private float[]  _geometryStagingBuf = [];
-        private ushort[] _indexStagingBuf    = [];
-        private int[]    _primIndexStart     = [];
-        private int[]    _primIndexCount     = [];
+        // ─────────────────────────────────────────────────────────────────────
+        //  5. Geometry + Index upload (SHARED буферы)
+        //     HOT PATH: copy XY coords → _bufGeometry
+        //     COLD PATH (_indexDirty): build restart-index table → _bufIndex
+        // ─────────────────────────────────────────────────────────────────────
 
         public void UploadGeometryFromPrimitives()
         {
@@ -708,26 +602,27 @@ namespace PhysicsSimulation.Rendering.Vulkan
 
             int primCount  = _primitives.Count;
             int geomNeeded = totalVerts * 2;
+
             if (_geometryStagingBuf.Length < geomNeeded)
                 _geometryStagingBuf = new float[geomNeeded];
 
-            // ── HOT PATH: copy positions every frame ──────────────────────────
+            // HOT: copy positions
             foreach (var p in _primitives)
             {
                 if (p.VertexOffsetRaw < 0 || p.VertexCount <= 0) continue;
-                var cached    = p.GetVertices();
+                var cached = p.GetVertices();
                 if (cached is not { Length: > 0 }) continue;
                 int offsetRaw = p.VertexOffsetRaw;
                 int limit     = Math.Min(cached.Length, p.VertexCount);
                 for (int k = 0; k < limit; k++)
                 {
-                    int geomIdx = (offsetRaw + k) * 2;
-                    _geometryStagingBuf[geomIdx]     = cached[k].X;
-                    _geometryStagingBuf[geomIdx + 1] = cached[k].Y;
+                    int idx = (offsetRaw + k) * 2;
+                    _geometryStagingBuf[idx]     = cached[k].X;
+                    _geometryStagingBuf[idx + 1] = cached[k].Y;
                 }
             }
 
-            // ── COLD PATH: rebuild index topology only when dirty ─────────────
+            // COLD: rebuild index topology
             if (_indexDirty)
             {
                 if (_indexStagingBuf.Length < totalVerts) _indexStagingBuf = new ushort[totalVerts];
@@ -736,6 +631,7 @@ namespace PhysicsSimulation.Rendering.Vulkan
                     _primIndexStart = new int[primCount];
                     _primIndexCount = new int[primCount];
                 }
+
                 int cur = 0;
                 foreach (var p in _primitives)
                 {
@@ -750,15 +646,16 @@ namespace PhysicsSimulation.Rendering.Vulkan
                     int start     = cur;
                     for (int k = 0; k < limit; k++)
                     {
-                        // Read from already-written staging to avoid redundant GetVertices call
                         float vx = _geometryStagingBuf[(offsetRaw + k) * 2];
                         _indexStagingBuf[cur++] = float.IsNaN(vx) ? (ushort)0xFFFF : (ushort)k;
                     }
                     if (pid >= 0 && pid < primCount) { _primIndexStart[pid] = start; _primIndexCount[pid] = cur - start; }
                 }
+
                 ulong idxReq = (ulong)(cur * sizeof(ushort));
                 if (idxReq > _bufIndex.Size)
                 {
+                    // Geometry/index buffer growth: DeviceWaitIdle OK (only on scene change)
                     _ctx.Vk.DeviceWaitIdle(_ctx.Device);
                     _bufIndex.Dispose();
                     _bufIndex = _vma.CreateIndexBuffer(idxReq * 4);
@@ -767,44 +664,52 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 _indexDirty = false;
             }
 
-            // ── Upload geometry ───────────────────────────────────────────────
             ulong geomReq = (ulong)(geomNeeded * sizeof(float));
             if (geomReq > _bufGeometry.Size)
             {
                 _ctx.Vk.DeviceWaitIdle(_ctx.Device);
                 _bufGeometry.Dispose();
                 _bufGeometry = _vma.CreateVertexBuffer(geomReq * 4);
-                UpdateGeometryDescriptor();
+                // После роста геометрического буфера — обновить binding во ВСЕХ дескрипторных сетах
+                UpdateGeometryBindingAllFrames();
             }
             _vma.Upload(_bufGeometry, new ReadOnlySpan<float>(_geometryStagingBuf, 0, geomNeeded));
         }
 
-        private void UpdateGeometryDescriptor()
+        /// <summary>
+        /// Обновляет binding GEOMETRY во всех per-frame descriptor sets после роста буфера.
+        /// </summary>
+        private void UpdateGeometryBindingAllFrames()
         {
-            var bufInfo = new DescriptorBufferInfo { Buffer = _bufGeometry.Handle, Offset = 0, Range = _bufGeometry.Size };
-
-            var write = new WriteDescriptorSet
+            var bufInfo = BufInfo(_bufGeometry);
+            for (int f = 0; f < MaxFrames; f++)
             {
-                SType           = StructureType.WriteDescriptorSet,
-                DstSet          = _descriptorSet,
-                DstBinding      = BINDING_GEOMETRY,
-                DescriptorCount = 1,
-                DescriptorType  = DescriptorType.StorageBuffer,
-                PBufferInfo     = &bufInfo
-            };
-
-            _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 1, &write, 0, null);
+                var write = StorageWrite(_descriptorSets[f], BINDING_GEOMETRY, &bufInfo);
+                _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 1, &write, 0, null);
+            }
         }
 
-        // ── Descriptor rebuild (аналог AnimationEngine.RebuildAllDescriptors) ──
+        // ─────────────────────────────────────────────────────────────────────
+        //  6. Descriptor rebuild (вызывается из VulkanSceneGpu при смене сцены)
+        // ─────────────────────────────────────────────────────────────────────
 
         public void RebuildAllDescriptors()
         {
+            // На смене сцены DeviceWaitIdle допустим — это не рантайм операция.
+            _ctx.Vk.DeviceWaitIdle(_ctx.Device);
             _indexDirty = true;
             InitMorphDescs();
-            UploadMorphDescs();
             InitRenderInstances();
-            UploadRenderInstances();
+
+            // Заливаем начальное состояние во все frame slots сразу
+            for (int f = 0; f < MaxFrames; f++)
+            {
+                UploadMorphDescs(f);
+                UploadRenderInstances(f);
+            }
+
+            // Все frame slots нуждаются в обновлении anim entries при следующей возможности
+            _animEntriesDirtyMask = (1 << MaxFrames) - 1;
         }
 
         private void InitMorphDescs()
@@ -822,30 +727,141 @@ namespace PhysicsSimulation.Rendering.Vulkan
             }
         }
 
-        private void UploadMorphDescs()
-        {
-            if (_disposed) return;
-            _vma.Upload(_bufMorphDesc, _morphDescs);
-        }
-
         private void InitRenderInstances()
         {
             for (int i = 0; i < _primitives.Count; i++)
                 _renderInstances[i] = _primitives[i].ToRenderInstanceCpu();
         }
 
-        private void UploadRenderInstances()
+        private void UploadMorphDescs(int frame)
         {
-            if (_disposed) return;
-            _vma.Upload(_bufRenderInstances, _renderInstances);
+            if (_disposed || _morphDescs.Length == 0) return;
+            GrowIfNeeded(ref _bufMorphDesc[frame], frame,
+                (ulong)(_morphDescs.Length * MORPH_DESC_SIZE),
+                BINDING_MORPH_DESC, DescriptorType.StorageBuffer,
+                sz => { var b = _vma.CreateStorageBuffer(sz); b.EnablePersistentMap(); return b; });
+            _vma.Upload(_bufMorphDesc[frame], _morphDescs);
         }
 
-        // ── Animation upload ──────────────────────────────────────────────────
+        private void UploadRenderInstances(int frame)
+        {
+            if (_disposed || _renderInstances.Length == 0) return;
+            GrowIfNeeded(ref _bufRenderInstances[frame], frame,
+                (ulong)(_renderInstances.Length * RENDER_INST_SIZE),
+                BINDING_RENDER_INST, DescriptorType.StorageBuffer,
+                sz => { var b = _vma.CreateStorageBuffer(sz); b.EnablePersistentMap(); return b; });
+            _vma.Upload(_bufRenderInstances[frame], _renderInstances);
+        }
 
+        // ─────────────────────────────────────────────────────────────────────
+        //  7. Per-frame flush (вызывается из VulkanSceneGpu.Render ПОСЛЕ BeginFrame)
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Сначала освобождаем буферы прошлых кадров для этого slot'а (fence уже завершён),
+        /// затем заливаем CPU-данные в GPU-буферы текущего кадра.
+        /// Вызывать из Render() сразу после BeginFrame().
+        /// </summary>
+        public void FlushPendingUploads(int frame)
+        {
+            if (_disposed) return;
+
+            // 7a. Deferred deletion: fence уже сигнализирован для этого slot'а
+            FlushDeletionQueue(frame);
+
+            // 7b. Render instances — всегда, т.к. DynCallbacks могут изменить состояние
+            UploadRenderInstances(frame);
+
+            // 7c. Morph descs — всегда (compute шейдер читает offsets + initial t)
+            UploadMorphDescs(frame);
+
+            // 7d. Anim entries — только если есть новые entries для этого frame slot'а
+            if ((_animEntriesDirtyMask & (1 << frame)) != 0)
+            {
+                UploadAnimEntries(frame);
+                UploadAnimIndex(frame);
+                _animEntriesDirtyMask &= ~(1 << frame);
+            }
+        }
+
+        private void FlushDeletionQueue(int frame)
+        {
+            while (_deletionQueue[frame].TryDequeue(out var buf))
+                buf.Dispose();
+        }
+
+        private void UploadAnimEntries(int frame)
+        {
+            if (_uploadedAnimEntries.Count == 0) return;
+            var bytes = PrimitiveGpu.SerializeAnimEntries(_uploadedAnimEntries);
+            ulong required = (ulong)bytes.Length;
+
+            GrowIfNeeded(ref _bufAnimEntries[frame], frame, required,
+                BINDING_ANIM_ENTRIES, DescriptorType.StorageBuffer,
+                sz => { var b = _vma.CreateStorageBuffer(sz * 2); b.EnablePersistentMap(); return b; });
+
+            _vma.Upload(_bufAnimEntries[frame], bytes);
+        }
+
+        private void UploadAnimIndex(int frame)
+        {
+            int count = _primitives.Count;
+            if (count == 0) return;
+            var index = PrimitiveGpu.BuildAnimIndex(_uploadedAnimEntries, count);
+
+            GrowIfNeeded(ref _bufAnimIndex[frame], frame,
+                (ulong)(count * ANIM_INDEX_SIZE),
+                BINDING_ANIM_INDEX, DescriptorType.StorageBuffer,
+                sz => { var b = _vma.CreateStorageBuffer(sz * 2); b.EnablePersistentMap(); return b; });
+
+            _vma.Upload(_bufAnimIndex[frame], index);
+        }
+
+        /// <summary>
+        /// Растим per-frame буфер без DeviceWaitIdle:
+        /// старый буфер идёт в очередь удаления этого frame slot'а,
+        /// удалится когда fence[frame] следующий раз будет сигнализирован.
+        /// </summary>
+        private void GrowIfNeeded(
+            ref VulkanBuffer buf, int frame, ulong required,
+            uint binding, DescriptorType descType,
+            Func<ulong, VulkanBuffer> factory)
+        {
+            if (required <= buf.Size) return;
+
+            // Старый буфер — в очередь удаления (fence ещё не сигнализирован)
+            _deletionQueue[frame].Enqueue(buf);
+
+            // Создаём новый с запасом ×2
+            buf = factory(required * 2);
+
+            // Обновляем дескриптор для этого frame slot'а
+            var bi    = BufInfo(buf);
+            var write = new WriteDescriptorSet
+            {
+                SType           = StructureType.WriteDescriptorSet,
+                DstSet          = _descriptorSets[frame],
+                DstBinding      = binding,
+                DescriptorCount = 1,
+                DescriptorType  = descType,
+                PBufferInfo     = &bi
+            };
+            _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 1, &write, 0, null);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  8. Animation accumulation (вызывается из Update — только CPU)
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Собирает новые анимационные entries из примитивов.
+        /// НЕ заливает на GPU — только помечает все frame slots как dirty.
+        /// Заливка произойдёт в FlushPendingUploads() при следующем Render.
+        /// </summary>
         public void UploadPendingAnimationsAndIndex()
         {
             if (_disposed) return;
-            var newEntries = new List<AnimEntryCpu>();
+            bool hasNew = false;
 
             foreach (var prim in _primitives)
             {
@@ -853,160 +869,22 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 {
                     var entry = prim.PendingAnimations[i];
                     if (!entry.PendingOnGpu) continue;
+                    if (entry.PrimitiveId < 0 || entry.PrimitiveId >= _primitives.Count) continue;
 
-                    if (entry.PrimitiveId < 0 || entry.PrimitiveId >= _primitives.Count)
-                        continue;
-
-                    newEntries.Add(entry);
+                    _uploadedAnimEntries.Add(entry);
                     entry.PendingOnGpu = false;
                     prim.PendingAnimations[i] = entry;
+                    hasNew = true;
                 }
             }
 
-            if (newEntries.Count == 0) return;
-
-            _uploadedAnimEntries.AddRange(newEntries);
-
-            // Загружаем все записи
-            var bytes = PrimitiveGpu.SerializeAnimEntries(_uploadedAnimEntries);
-            ulong required = (ulong)bytes.Length;
-
-            if (required > _bufAnimEntries.Size)
-            {
-                // Wait for GPU before destroying the buffer it may still reference.
-                _ctx.Vk.DeviceWaitIdle(_ctx.Device);
-                _bufAnimEntries.Dispose();
-                _bufAnimEntries = _vma.CreateStorageBuffer(required * 2);
-                var bi = new DescriptorBufferInfo { Buffer = _bufAnimEntries.Handle, Offset = 0, Range = required * 2 };
-
-                var wr = new WriteDescriptorSet
-                {
-                    SType           = StructureType.WriteDescriptorSet,
-                    DstSet          = _descriptorSet,
-                    DstBinding      = BINDING_ANIM_ENTRIES,
-                    DescriptorCount = 1,
-                    DescriptorType  = DescriptorType.StorageBuffer,
-                    PBufferInfo     = &bi
-                };
-
-                _ctx.Vk.UpdateDescriptorSets(_ctx.Device, 1, &wr, 0, null);
-            }
-
-            _vma.Upload(_bufAnimEntries, bytes);
-
-            // Обновляем индекс
-            var index = PrimitiveGpu.BuildAnimIndex(_uploadedAnimEntries, _primitives.Count);
-            _vma.Upload(_bufAnimIndex, index);
+            if (hasNew)
+                _animEntriesDirtyMask = (1 << MaxFrames) - 1;  // все frames нуждаются в обновлении
         }
 
-        // ── Compute dispatch (аналог AnimationEngine.UpdateAndDispatch) ───────
-        //
-        // Все dispatches идут в ОДИН command buffer с барьерами между ними.
-        // Старый вариант вызывал BeginSingleTimeCommands() → QueueWaitIdle на каждый
-        // dispatch — полная сериализация GPU при наличии морф-примитивов.
-        // Новый вариант: один submit → одно ожидание в конце.
-
-        /// <summary>
-        /// Records compute dispatches into an EXISTING command buffer.
-        /// Must be called BEFORE CmdBeginRenderPass so compute and graphics
-        /// are in the same submit — no QueueWaitIdle between them.
-        /// </summary>
-        public void RecordComputeCommands(CommandBuffer cmd, float time)
-        {
-            if (_primitives.Count == 0) return;
-            if (_uploadedAnimEntries.Count == 0) return;
-            if (_animComputePipeline.Handle == 0) return;
-
-            // ── 1. Anim compute: один dispatch покрывает ВСЕ примитивы ──
-            _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _animComputePipeline);
-
-            fixed (DescriptorSet* pDs = &_descriptorSet)
-                _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute,
-                    _computeLayout, 0, 1, pDs, 0, null);
-
-            var animPush = new FramePushConstants
-            {
-                Time        = time,
-                AspectRatio = AspectRatio,
-                PrimIndex   = -1
-            };
-            _ctx.Vk.CmdPushConstants(cmd, _computeLayout,
-                ShaderStageFlags.ComputeBit, 0, (uint)sizeof(FramePushConstants), &animPush);
-
-            // local_size_x = 64 в anim_compute.comp
-            uint animGroups = (uint)Math.Max(1, (_primitives.Count + 63) / 64);
-            _ctx.Vk.CmdDispatch(cmd, animGroups, 1, 1);
-
-            // ── 2. Барьер: anim записал RenderInstances/MorphDescs → morph читает ──
-            var ssboBarrier = new MemoryBarrier
-            {
-                SType         = StructureType.MemoryBarrier,
-                SrcAccessMask = AccessFlags.ShaderWriteBit,
-                DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
-            };
-            _ctx.Vk.CmdPipelineBarrier(cmd,
-                PipelineStageFlags.ComputeShaderBit,
-                PipelineStageFlags.ComputeShaderBit,
-                DependencyFlags.None,
-                1, &ssboBarrier,
-                0, null,
-                0, null);
-
-            // ── 3. Morph compute: по одному dispatch на примитив с морф-таргетами ──
-            if (_morphComputePipeline.Handle != 0)
-            {
-                bool pipelineBound = false;
-
-                foreach (var p in _primitives)
-                {
-                    if (p.VertexOffsetA < 0) continue;
-
-                    if (!pipelineBound)
-                    {
-                        _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _morphComputePipeline);
-
-                        fixed (DescriptorSet* pDs = &_descriptorSet)
-                            _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute,
-                                _computeLayout, 0, 1, pDs, 0, null);
-
-                        pipelineBound = true;
-                    }
-
-                    var morphPush = new FramePushConstants
-                    {
-                        Time        = time,
-                        AspectRatio = AspectRatio,
-                        PrimIndex   = p.PrimitiveId
-                    };
-                    _ctx.Vk.CmdPushConstants(cmd, _computeLayout,
-                        ShaderStageFlags.ComputeBit, 0, (uint)sizeof(FramePushConstants), &morphPush);
-
-                    // local_size_x = 256 в morph_compute.comp
-                    uint morphGroups = (uint)Math.Max(1u, ((uint)p.VertexCount + 255) / 256);
-                    _ctx.Vk.CmdDispatch(cmd, morphGroups, 1, 1);
-                }
-            }
-
-            // ── 4. Финальный барьер: compute записал геометрию → vertex shader читает ──
-            var vsBarrier = new MemoryBarrier
-            {
-                SType         = StructureType.MemoryBarrier,
-                SrcAccessMask = AccessFlags.ShaderWriteBit,
-                DstAccessMask = AccessFlags.ShaderReadBit
-            };
-            _ctx.Vk.CmdPipelineBarrier(cmd,
-                PipelineStageFlags.ComputeShaderBit,
-                PipelineStageFlags.VertexShaderBit,
-                DependencyFlags.None,
-                1, &vsBarrier,
-                0, null,
-                0, null);
-
-            // No EndSingleTimeCommands — caller owns the command buffer.
-            // The pipeline barrier above (Compute→Vertex) ensures GPU ordering.
-        }
-
-        // ── DynOverrides (идентично AnimationEngine) ──────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  9. DynOverrides (только CPU — запись в _renderInstances[])
+        // ─────────────────────────────────────────────────────────────────────
 
         public void ApplyDynOverrides(List<DynOverride> overrides)
         {
@@ -1017,137 +895,223 @@ namespace PhysicsSimulation.Rendering.Vulkan
                 ref var inst = ref _renderInstances[ov.Pid];
 
                 if (ov.HasPos)
-                {
-                    inst.TransformRow2 = new Vector4(ov.PosX, ov.PosY,
-                        inst.TransformRow2.Z, inst.TransformRow2.W);
-                }
+                    inst.TransformRow2 = new Vector4(ov.PosX, ov.PosY, inst.TransformRow2.Z, inst.TransformRow2.W);
+
                 if (ov.HasRot)
                 {
-                    float c = MathF.Cos(ov.Rotation), s = MathF.Sin(ov.Rotation);
-                    float sc = inst.TransformRow0.X / (MathF.Abs(inst.TransformRow0.X) < 1e-6f ? 1f : 1f); // сохраняем scale
+                    float c  = MathF.Cos(ov.Rotation), s = MathF.Sin(ov.Rotation);
+                    float sc = MathF.Sqrt(inst.TransformRow0.X * inst.TransformRow0.X +
+                                          inst.TransformRow0.Y * inst.TransformRow0.Y);
+                    if (sc < 1e-6f) sc = 1f;
                     inst.TransformRow0 = new Vector4(sc * c,  sc * s, 0, 0);
                     inst.TransformRow1 = new Vector4(-sc * s, sc * c, 0, 0);
                 }
                 if (ov.HasScale)
                 {
-                    float c = MathF.Cos(ov.Rotation);
-                    float s_val = MathF.Sin(ov.Rotation);
-                    inst.TransformRow0 = new Vector4(ov.Scale * c,   ov.Scale * s_val, 0, 0);
-                    inst.TransformRow1 = new Vector4(-ov.Scale * s_val, ov.Scale * c,  0, 0);
+                    float c = MathF.Cos(ov.Rotation), s = MathF.Sin(ov.Rotation);
+                    inst.TransformRow0 = new Vector4(ov.Scale * c,    ov.Scale * s,  0, 0);
+                    inst.TransformRow1 = new Vector4(-ov.Scale * s,   ov.Scale * c,  0, 0);
                 }
                 if (ov.HasColor)
                     inst.Color = ov.Color;
             }
-
-            UploadRenderInstances();
+            // НЕ вызываем UploadRenderInstances здесь — это сделает FlushPendingUploads(frame)
         }
 
-        // ── Render (вызывается из VulkanSceneGpu.RecordCommandBuffer) ─────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  10. Compute dispatch (вызывается из RecordCommandBuffer до RenderPass)
+        // ─────────────────────────────────────────────────────────────────────
 
-        public void RenderAll(CommandBuffer cmd, int imageIndex)
+        public void RecordComputeCommands(CommandBuffer cmd, int frame, float time)
+        {
+            if (_primitives.Count == 0) return;
+            if (_uploadedAnimEntries.Count == 0) return;
+            if (_animComputePipeline.Handle == 0) return;
+
+            var ds = _descriptorSets[frame];
+
+            // ── 1. Anim compute: один dispatch на все примитивы ───────────────
+            _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _animComputePipeline);
+            _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _computeLayout, 0, 1, &ds, 0, null);
+
+            var animPush = new FramePushConstants { Time = time, AspectRatio = AspectRatio, PrimIndex = -1 };
+            _ctx.Vk.CmdPushConstants(cmd, _computeLayout,
+                ShaderStageFlags.ComputeBit, 0, (uint)sizeof(FramePushConstants), &animPush);
+
+            uint animGroups = (uint)Math.Max(1, (_primitives.Count + 63) / 64);
+            _ctx.Vk.CmdDispatch(cmd, animGroups, 1, 1);
+
+            // ── 2. Барьер: anim → morph ───────────────────────────────────────
+            var ssboBarrier = new MemoryBarrier
+            {
+                SType         = StructureType.MemoryBarrier,
+                SrcAccessMask = AccessFlags.ShaderWriteBit,
+                DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
+            };
+            _ctx.Vk.CmdPipelineBarrier(cmd,
+                PipelineStageFlags.ComputeShaderBit,
+                PipelineStageFlags.ComputeShaderBit,
+                DependencyFlags.None,
+                1, &ssboBarrier, 0, null, 0, null);
+
+            // ── 3. Morph compute: по одному dispatch на примитив с морф-таргетами ──
+            if (_morphComputePipeline.Handle != 0)
+            {
+                bool pipelineBound = false;
+                foreach (var p in _primitives)
+                {
+                    if (p.VertexOffsetA < 0) continue;
+                    if (!pipelineBound)
+                    {
+                        _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _morphComputePipeline);
+                        _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _computeLayout, 0, 1, &ds, 0, null);
+                        pipelineBound = true;
+                    }
+
+                    var morphPush = new FramePushConstants { Time = time, AspectRatio = AspectRatio, PrimIndex = p.PrimitiveId };
+                    _ctx.Vk.CmdPushConstants(cmd, _computeLayout,
+                        ShaderStageFlags.ComputeBit, 0, (uint)sizeof(FramePushConstants), &morphPush);
+
+                    uint morphGroups = (uint)Math.Max(1u, ((uint)p.VertexCount + 255) / 256);
+                    _ctx.Vk.CmdDispatch(cmd, morphGroups, 1, 1);
+                }
+            }
+
+            // ── 4. Финальный барьер: compute → vertex shader ──────────────────
+            var vsBarrier = new MemoryBarrier
+            {
+                SType         = StructureType.MemoryBarrier,
+                SrcAccessMask = AccessFlags.ShaderWriteBit,
+                DstAccessMask = AccessFlags.ShaderReadBit
+            };
+            _ctx.Vk.CmdPipelineBarrier(cmd,
+                PipelineStageFlags.ComputeShaderBit,
+                PipelineStageFlags.VertexShaderBit,
+                DependencyFlags.None,
+                1, &vsBarrier, 0, null, 0, null);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  11. RenderAll — ОДИН CmdDrawIndexedIndirect вместо N CmdDrawIndexed
+        // ─────────────────────────────────────────────────────────────────────
+
+        public void RenderAll(CommandBuffer cmd, int frame)
         {
             if (_disposed) return;
             if (_graphicsPipeline.Handle == 0) return;
 
             _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _graphicsPipeline);
 
-            // Динамический viewport (уже установлен снаружи, но для ясности:)
             var viewport = new Viewport
             {
-                X        = 0,
-                Y        = 0,
+                X = 0, Y = 0,
                 Width    = _ctx.SwapchainExtent.Width,
                 Height   = _ctx.SwapchainExtent.Height,
-                MinDepth = 0.0f,
-                MaxDepth = 1.0f
+                MinDepth = 0f, MaxDepth = 1f
             };
-            var scissor = new Rect2D
-            {
-                Offset = new Offset2D(0, 0),
-                Extent = _ctx.SwapchainExtent
-            };
+            var scissor = new Rect2D { Offset = new Offset2D(0, 0), Extent = _ctx.SwapchainExtent };
             _ctx.Vk.CmdSetViewport(cmd, 0, 1, &viewport);
             _ctx.Vk.CmdSetScissor(cmd, 0, 1, &scissor);
 
-            fixed (DescriptorSet* pDs = &_descriptorSet)
-                _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics,
-                    _graphicsLayout, 0, 1, pDs, 0, null);
+            var ds = _descriptorSets[frame];
+            _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics,
+                    _graphicsLayout, 0, 1, &ds, 0, null);
 
-            // One index buffer bind — each primitive slices it via firstIndex.
             _ctx.Vk.CmdBindIndexBuffer(cmd, _bufIndex.Handle, 0, IndexType.Uint16);
 
-            for (int i = 0; i < _primitives.Count; i++)
+            // Один push constants для всего draw — primIndex не нужен (используется gl_InstanceIndex)
+            var push = new FramePushConstants { AspectRatio = AspectRatio, PrimIndex = 0, Time = 0f };
+            _ctx.Vk.CmdPushConstants(cmd, _graphicsLayout,
+                ShaderStageFlags.VertexBit, 0, (uint)sizeof(FramePushConstants), &push);
+
+            // Строим indirect buffer: одна запись на примитив с ненулевой геометрией
+            int primCount = _primitives.Count;
+            var cmds      = stackalloc IndirectDrawCmd[primCount];
+            int drawCount = 0;
+
+            for (int i = 0; i < primCount; i++)
             {
                 var p   = _primitives[i];
                 int pid = p.PrimitiveId;
-                if (p.VertexCount <= 0) continue;
+                if (p.VertexCount <= 0 || pid < 0) continue;
 
-                int idxCount = (pid >= 0 && pid < _primIndexCount.Length) ? _primIndexCount[pid] : 0;
-                int idxStart = (pid >= 0 && pid < _primIndexStart.Length) ? _primIndexStart[pid] : 0;
+                int idxCount = pid < _primIndexCount.Length ? _primIndexCount[pid] : 0;
                 if (idxCount <= 0) continue;
 
-                var push = new FramePushConstants
+                cmds[drawCount++] = new IndirectDrawCmd
                 {
-                    AspectRatio = AspectRatio,
-                    PrimIndex   = i,
-                    Time        = 0f
+                    IndexCount    = (uint)idxCount,
+                    InstanceCount = 1,
+                    FirstIndex    = (uint)(pid < _primIndexStart.Length ? _primIndexStart[pid] : 0),
+                    VertexOffset  = 0,
+                    FirstInstance = (uint)i   // → gl_InstanceIndex в render.vert
                 };
-                _ctx.Vk.CmdPushConstants(cmd, _graphicsLayout,
-                    ShaderStageFlags.VertexBit, 0, (uint)sizeof(FramePushConstants), &push);
-
-                // vertexOffset=0: gl_VertexIndex = raw index k.
-                // Shader adds inst.meta.x (OffsetM) — do NOT double-add VertexOffsetRaw.
-                _ctx.Vk.CmdDrawIndexed(cmd,
-                    indexCount:    (uint)idxCount,
-                    instanceCount: 1,
-                    firstIndex:    (uint)idxStart,
-                    vertexOffset:  0,
-                    firstInstance: 0);
             }
+
+            if (drawCount == 0) return;
+
+            // Заливаем indirect buffer для текущего frame slot'а
+            // (persistent mapped → просто memcpy)
+            _bufIndirect[frame].Write(new ReadOnlySpan<IndirectDrawCmd>(cmds, drawCount));
+
+            // Один вызов вместо N — это и есть главная оптимизация
+            _ctx.Vk.CmdDrawIndexedIndirect(
+                cmd,
+                _bufIndirect[frame].Handle,
+                offset:    0,
+                drawCount: (uint)drawCount,
+                stride:    (uint)sizeof(IndirectDrawCmd));
         }
 
-        // ── Swapchain recreate notification ───────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  12. Swapchain recreate
+        // ─────────────────────────────────────────────────────────────────────
 
         public void NotifySwapchainRecreated(VulkanContext ctx)
         {
-            // Graphics pipeline зависит от RenderPass — нужно пересоздать
             if (_graphicsPipeline.Handle != 0)
                 ctx.Vk.DestroyPipeline(ctx.Device, _graphicsPipeline, null);
-
             CreateGraphicsPipeline();
         }
 
-        // ── IDisposable ───────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        //  13. Dispose
+        // ─────────────────────────────────────────────────────────────────────
 
         public void Dispose()
         {
             if (_disposed) return;
             _disposed = true;
 
-            _ctx.Vk.DeviceWaitIdle(_ctx.Device);   // ← можно оставить здесь, на всякий случай
+            _ctx.Vk.DeviceWaitIdle(_ctx.Device);
 
-            if (_computeLayout.Handle != 0)
-                _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _computeLayout, null);
+            // Flush all deferred deletions
+            for (int f = 0; f < MaxFrames; f++)
+                FlushDeletionQueue(f);
 
-            if (_graphicsLayout.Handle != 0)
-                _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _graphicsLayout, null);
-
-            // Потом pipelines
+            if (_computeLayout.Handle   != 0) _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _computeLayout,   null);
+            if (_graphicsLayout.Handle  != 0) _ctx.Vk.DestroyPipelineLayout(_ctx.Device, _graphicsLayout,  null);
             if (_animComputePipeline.Handle  != 0) _ctx.Vk.DestroyPipeline(_ctx.Device, _animComputePipeline,  null);
             if (_morphComputePipeline.Handle != 0) _ctx.Vk.DestroyPipeline(_ctx.Device, _morphComputePipeline, null);
             if (_graphicsPipeline.Handle     != 0) _ctx.Vk.DestroyPipeline(_ctx.Device, _graphicsPipeline,     null);
 
-            // Остальное без изменений
             _ctx.Vk.DestroyDescriptorPool(_ctx.Device, _descriptorPool, null);
             _ctx.Vk.DestroyDescriptorSetLayout(_ctx.Device, _descriptorSetLayout, null);
 
-            _bufAnimEntries?.Dispose();
-            _bufAnimIndex?.Dispose();
-            _bufMorphDesc?.Dispose();
+            // Shared buffers
             _bufGeometry?.Dispose();
             _bufIndex?.Dispose();
-            _bufRenderInstances?.Dispose();
             _bufUniforms?.Dispose();
+
+            // Per-frame buffers
+            for (int f = 0; f < MaxFrames; f++)
+            {
+                _bufAnimEntries[f]?.Dispose();
+                _bufAnimIndex[f]?.Dispose();
+                _bufMorphDesc[f]?.Dispose();
+                _bufRenderInstances[f]?.Dispose();
+                _bufIndirect[f]?.Dispose();
+            }
         }
     }
 }
